@@ -13,11 +13,11 @@ onlyoffice_image: "onlyoffice/documentserver:8.2"
 openclaw_image: "alpine/openclaw:2026.5.18"
 
 # App-built images (all use deploy_sha set at runtime by CI)
-# Pulled from local Artifactory: 127.0.0.1:8082/artifactory/api/docker/vecta-docker-local
-fleet_gateway_image: "127.0.0.1:8082/artifactory/api/docker/vecta-docker-local/fleet-gateway:{{ deploy_sha }}"
-channel_gateway_image: "127.0.0.1:8082/artifactory/api/docker/vecta-docker-local/channel-gateway:{{ deploy_sha }}"
-a2a_router_image: "127.0.0.1:8082/artifactory/api/docker/vecta-docker-local/a2a-router:{{ deploy_sha }}"
-rag_service_image: "127.0.0.1:8082/artifactory/api/docker/vecta-docker-local/rag-service:{{ deploy_sha }}"
-directory_service_image: "127.0.0.1:8082/artifactory/api/docker/vecta-docker-local/directory-service:{{ deploy_sha }}"
-admin_console_image: "127.0.0.1:8082/artifactory/api/docker/vecta-docker-local/admin-console:{{ deploy_sha }}"
-wechat_contact_sync_image: "127.0.0.1:8082/artifactory/api/docker/vecta-docker-local/wechat-contact-sync:{{ deploy_sha }}"
+# Pulled from local Docker registry at 127.0.0.1:5000
+fleet_gateway_image: "127.0.0.1:5000/fleet-gateway:{{ deploy_sha }}"
+channel_gateway_image: "127.0.0.1:5000/channel-gateway:{{ deploy_sha }}"
+a2a_router_image: "127.0.0.1:5000/a2a-router:{{ deploy_sha }}"
+rag_service_image: "127.0.0.1:5000/rag-service:{{ deploy_sha }}"
+directory_service_image: "127.0.0.1:5000/directory-service:{{ deploy_sha }}"
+admin_console_image: "127.0.0.1:5000/admin-console:{{ deploy_sha }}"
+wechat_contact_sync_image: "127.0.0.1:5000/wechat-contact-sync:{{ deploy_sha }}"

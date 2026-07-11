@@ -1,6 +1,10 @@
-- name: Login to Artifactory Docker registry
-  community.docker.docker_login:
-    registry_url: "http://127.0.0.1:8082/artifactory/api/docker/vecta-docker-virtual"
-    username: admin
-    password: "{{ lookup('env', 'JFROG_TOKEN') }}"
-  no_log: true
+# No auth needed — registry:2 on localhost does not require login.
+# This file is a placeholder for when a remote authenticated registry is used.
+- name: Verify local Docker registry is accessible
+  uri:
+    url: "http://127.0.0.1:5000/v2/"
+    method: GET
+    status_code: 200
+    timeout: 5
+  register: registry_check
+  failed_when: registry_check.status != 200
