@@ -1,11 +1,11 @@
-- name: Check Artifactory health
+- name: Check Nexus OSS health
   uri:
-    url: "{{ jfrog_base_url }}/api/system/ping"
+    url: "http://127.0.0.1:8081/service/rest/v1/status"
     method: GET
     status_code: 200
     timeout: 10
-  register: jfrog_health
+  register: nexus_health
   retries: 3
   delay: 5
-  until: jfrog_health.status == 200
-  failed_when: jfrog_health.status != 200
+  until: nexus_health.status == 200
+  failed_when: nexus_health.status != 200

@@ -24,7 +24,7 @@ on:
         required: true
       SERVICE_KEY:
         required: true
-      JFROG_TOKEN:
+      NEXUS_ADMIN_PASSWORD:
         required: true
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.VTEST_DATABASE_URL }}
       SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
-      JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+      NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
       DEPLOY_SHA: ${{ inputs.image_tag }}
       VTEST_ALLOW_MIGRATE: ${{ inputs.run_migrations && '1' || '0' }}
       DEPLOY_TAGS: ${{ inputs.tags || 'vecta-app' }}
@@ -51,7 +51,7 @@ jobs:
 
       - name: Fail closed if secrets missing
         run: |
-          for v in DATABASE_URL SERVICE_KEY JFROG_TOKEN; do
+          for v in DATABASE_URL SERVICE_KEY NEXUS_ADMIN_PASSWORD; do
             [ -n "${!v:-}" ] || { echo "secret $v missing — refusing to deploy"; exit 1; }
           done
 

@@ -1,9 +1,17 @@
-# No auth needed — registry:2 on localhost does not require login.
-# This file is a placeholder for when a remote authenticated registry is used.
-- name: Verify local Docker registry is accessible
+- name: Login to Nexus Docker registry
+  community.docker.docker_login:
+    registry_url: "http://127.0.0.1:8082"
+    username: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+  no_log: true
+
+- name: Verify Docker registry accessible
   uri:
-    url: "http://127.0.0.1:5000/v2/"
+    url: "http://127.0.0.1:8082/v2/"
     method: GET
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
     status_code: 200
     timeout: 5
   register: registry_check

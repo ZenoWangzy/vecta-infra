@@ -12,12 +12,15 @@ kk_file_view_image: "keking/kkfileview:latest"
 onlyoffice_image: "onlyoffice/documentserver:8.2"
 openclaw_image: "alpine/openclaw:2026.5.18"
 
-# App-built images (all use deploy_sha set at runtime by CI)
-# Pulled from local Docker registry at 127.0.0.1:5000
-fleet_gateway_image: "127.0.0.1:5000/fleet-gateway:{{ deploy_sha }}"
-channel_gateway_image: "127.0.0.1:5000/channel-gateway:{{ deploy_sha }}"
-a2a_router_image: "127.0.0.1:5000/a2a-router:{{ deploy_sha }}"
-rag_service_image: "127.0.0.1:5000/rag-service:{{ deploy_sha }}"
-directory_service_image: "127.0.0.1:5000/directory-service:{{ deploy_sha }}"
-admin_console_image: "127.0.0.1:5000/admin-console:{{ deploy_sha }}"
-wechat_contact_sync_image: "127.0.0.1:5000/wechat-contact-sync:{{ deploy_sha }}"
+# App-built images — stored in Nexus OSS Docker hosted repo on port 8082
+# Login: docker login 127.0.0.1:8082 -u admin -p vecta-nexus-admin-2026
+fleet_gateway_image: "127.0.0.1:8082/fleet-gateway:{{ deploy_sha }}"
+channel_gateway_image: "127.0.0.1:8082/channel-gateway:{{ deploy_sha }}"
+a2a_router_image: "127.0.0.1:8082/a2a-router:{{ deploy_sha }}"
+rag_service_image: "127.0.0.1:8082/rag-service:{{ deploy_sha }}"
+directory_service_image: "127.0.0.1:8082/directory-service:{{ deploy_sha }}"
+admin_console_image: "127.0.0.1:8082/admin-console:{{ deploy_sha }}"
+wechat_contact_sync_image: "127.0.0.1:8082/wechat-contact-sync:{{ deploy_sha }}"
+
+# npm: Nexus proxy → https://mirrors.tencent.com/npm/
+npm_registry_url: "http://127.0.0.1:8081/repository/vecta-npm-proxy/"
