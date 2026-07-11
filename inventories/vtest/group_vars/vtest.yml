@@ -13,7 +13,7 @@ onlyoffice_image: "onlyoffice/documentserver:8.2"
 openclaw_image: "alpine/openclaw:2026.5.18"
 
 # App-built images — stored in Nexus OSS Docker hosted repo on port 8082
-# Login: docker login 127.0.0.1:8082 -u admin -p vecta-nexus-admin-2026
+# Login: docker login 127.0.0.1:8082 -u admin -p "$NEXUS_ADMIN_PASSWORD"
 fleet_gateway_image: "127.0.0.1:8082/fleet-gateway:{{ deploy_sha }}"
 channel_gateway_image: "127.0.0.1:8082/channel-gateway:{{ deploy_sha }}"
 a2a_router_image: "127.0.0.1:8082/a2a-router:{{ deploy_sha }}"

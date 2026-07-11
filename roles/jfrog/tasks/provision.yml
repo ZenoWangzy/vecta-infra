@@ -27,7 +27,7 @@
     url: "{{ jfrog_base_url }}/api/security/users/admin"
     method: GET
     user: admin
-    password: "{{ lookup('env', 'JFROG_TOKEN') }}"
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
     force_basic_auth: true
     status_code: [200, 401, 404]
   register: jfrog_admin_check
@@ -40,7 +40,7 @@
     body_format: json
     body:
       name: admin
-      password: "{{ lookup('env', 'JFROG_TOKEN') }}"
+      password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
       admin: true
       email: "admin@localhost"
     status_code: [200, 201]
@@ -52,7 +52,7 @@
     url: "{{ jfrog_base_url }}/api/repositories/{{ item.key }}"
     method: PUT
     user: admin
-    password: "{{ lookup('env', 'JFROG_TOKEN') }}"
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
     force_basic_auth: true
     body_format: json
     body: "{{ item.value }}"
@@ -93,7 +93,7 @@
   copy:
     content: |
       registry=http://{{ jfrog_host }}:{{ jfrog_port }}/artifactory/api/npm/vecta-npm-virtual/
-      //{{ jfrog_host }}:{{ jfrog_port }}/artifactory/api/npm/vecta-npm-virtual/:_auth={{ ('admin:' + lookup('env', 'JFROG_TOKEN')) | b64encode }}
+      //{{ jfrog_host }}:{{ jfrog_port }}/artifactory/api/npm/vecta-npm-virtual/:_auth={{ ('admin:' + lookup('env', 'NEXUS_ADMIN_PASSWORD')) | b64encode }}
       always-auth=true
     dest: "{{ remote_dir }}/.npmrc"
     mode: "0600"
