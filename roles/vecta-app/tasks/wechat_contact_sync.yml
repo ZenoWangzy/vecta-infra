@@ -1,0 +1,18 @@
+- name: Wait for fleet-gateway before wechat-contact-sync
+  wait_for:
+    host: localhost
+    port: "{{ fleet_port | default(3000) }}"
+    timeout: 30
+
+- name: Deploy wechat-contact-sync
+  community.docker.docker_container:
+    name: openclaw-wechat-contact-sync
+    image: "{{ wechat_contact_sync_image }}"
+    state: started
+    restart_policy: unless-stopped
+    pull: true
+    env:
+      TZ: Asia/Shanghai
+    networks:
+      - name: openclaw-net
+    memory: "256m"

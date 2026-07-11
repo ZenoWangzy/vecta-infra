@@ -1,0 +1,46 @@
+- name: Wait for postgres before fleet-gateway
+  wait_for:
+    host: localhost
+    port: "{{ postgres_port | default(5432) }}"
+    timeout: 60
+
+- name: Wait for a2a-router before fleet-gateway
+  wait_for:
+    host: localhost
+    port: 8080
+    timeout: 30
+
+- name: Deploy fleet-gateway
+  community.docker.docker_container:
+    name: openclaw-fleet-gateway
+    image: "{{ fleet_gateway_image }}"
+    state: started
+    restart_policy: unless-stopped
+    pull: true
+    ports:
+      - "{{ fleet_port | default('3000') }}:3000"
+    env:
+      TZ: Asia/Shanghai
+      AUTH_MODE: "{{ auth_mode | default('prod') }}"
+      DATABASE_URL: "postgresql://{{ postgres_user | default('openclaw_poc') }}:{{ postgres_password | default('poc-db-password-change-me') }}@openclaw-postgres:5432/{{ postgres_db | default('openclaw_poc') }}"
+      REDIS_URL: "redis://:{{ redis_password | default('changeme-redis-pw') }}@openclaw-redis:6379"
+      LITELM_BASE_URL: "http://openclaw-litelm:4000"
+      SERVICE_SECRET: "{{ lookup('env', 'SERVICE_KEY') }}"
+      JWT_SECRET: "{{ lookup('env', 'JWT_SECRET') }}"
+      CORS_ORIGINS: "{{ base_url }}"
+      APP_BASE_URL: "{{ base_url }}"
+      ADMIN_CONSOLE_URL: "{{ base_url }}"
+      FLEET_PUBLIC_URL: "{{ base_url }}"
+      RAG_SERVICE_URL: "http://openclaw-rag-service:8000"
+      RAG_INTERNAL_TOKEN: "{{ lookup('env', 'RAG_INTERNAL_TOKEN') }}"
+      HERMES_RUNTIME_ENABLED: "true"
+      HERMES_RUNTIME_IMAGE_VERSION: "{{ hermes_runtime_image_version | default('vecta-hermes-withopenclaw:v0.18.0-nospan-rc1') }}"
+      CONTAINER_DATA_DIR: /app/data/instances
+      PORT_RANGE_MIN: "18800"
+      PORT_RANGE_MAX: "18900"
+      FLEET_PORT: "3000"
+    volumes:
+      - "{{ remote_dir }}/deploy:/app/data/instances"
+    networks:
+      - name: openclaw-net
+    memory: "2g"

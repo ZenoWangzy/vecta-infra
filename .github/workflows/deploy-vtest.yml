@@ -1,0 +1,52 @@
+# Manual dispatch entry point for vecta-infra. Handles Artifactory provisioning,
+# full deploys, and targeted role updates.
+name: Deploy vtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        type: string
+        description: "Image tag (SHA). Leave empty to use 'latest'."
+        default: ''
+      run_migrations:
+        type: boolean
+        default: false
+        description: "Run DB migrations before deploy"
+      migration_files:
+        type: string
+        description: "Comma-separated SQL filenames from migrations/ dir (e.g. 0042_add_share_links.sql)"
+        default: ''
+      tags:
+        type: string
+        description: "Ansible tags: jfrog / infra / search / open-webui / openclaw / vecta-app / all"
+        default: vecta-app
+
+jobs:
+  upload-migrations:
+    if: inputs.run_migrations == true && inputs.migration_files != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ZeroWangzy/vecta
+          token: ${{ secrets.VECTA_READ_TOKEN }}
+
+      - name: Upload migration SQL files as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-sqls
+          retention-days: 1
+          path: |
+            migrations/${{ inputs.migration_files }}
+
+  deploy:
+    needs: [upload-migrations]
+    if: always() && (needs.upload-migrations.result == 'success' || needs.upload-migrations.result == 'skipped')
+    uses: ./.github/workflows/_deploy-vtest-job.yml
+    with:
+      image_tag: ${{ inputs.image_tag || 'latest' }}
+      run_migrations: ${{ inputs.run_migrations }}
+      tags: ${{ inputs.tags }}
+      migration_artifact_run_id: ${{ needs.upload-migrations.result == 'success' && github.run_id || '' }}
+    secrets: inherit

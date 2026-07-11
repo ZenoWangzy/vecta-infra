@@ -1,0 +1,24 @@
+- name: Wait for fleet-gateway before channel-gateway
+  wait_for:
+    host: localhost
+    port: "{{ fleet_port | default(3000) }}"
+    timeout: 60
+
+- name: Deploy channel-gateway
+  community.docker.docker_container:
+    name: openclaw-channel-gateway
+    image: "{{ channel_gateway_image }}"
+    state: started
+    restart_policy: unless-stopped
+    pull: true
+    env:
+      TZ: Asia/Shanghai
+      ALLOW_NO_CHANNEL: "false"
+      DEPLOYMENT_ROLE: "{{ deployment_role | default('primary') }}"
+      CHANNEL_ACTIVE: "{{ channel_active | default('true') }}"
+      CHANNEL_OWNER_ID: "{{ channel_owner_id | default('vtest') }}"
+      A2A_ROUTER_TOKEN: "{{ lookup('env', 'A2A_ROUTER_TOKEN') }}"
+    networks:
+      - name: openclaw-net
+    memory: "512m"
+    cpus: "0.5"

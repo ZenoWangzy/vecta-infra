@@ -1,0 +1,4 @@
+- import_tasks: health_check.yml
+
+- import_tasks: provision.yml
+  when: jfrog_full_provision | bool

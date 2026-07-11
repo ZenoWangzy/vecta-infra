@@ -1,0 +1,8 @@
+- name: Write deploy audit (start)
+  shell: scripts/write-deploy-audit.sh start "{{ deploy_sha }}" vtest
+  args:
+    chdir: "{{ playbook_dir }}/.."
+    executable: /bin/bash
+  environment:
+    DATABASE_URL: "{{ lookup('env', 'DATABASE_URL') }}"
+  changed_when: true

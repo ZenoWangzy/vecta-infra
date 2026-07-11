@@ -1,0 +1,19 @@
+- name: Create backups directory
+  file:
+    path: "{{ remote_dir }}/backups"
+    state: directory
+    mode: "0755"
+
+- name: Backup vtest DB before any migrate
+  shell: |
+    set -euo pipefail
+    docker exec openclaw-postgres pg_dump -U openclaw_poc openclaw_poc \
+      > {{ remote_dir }}/backups/vtest-$(date -u +%Y%m%dT%H%M%SZ).sql \
+      && echo BACKUP_OK
+  register: backup_result
+  changed_when: "'BACKUP_OK' in backup_result.stdout"
+
+- name: Fail if backup did not complete
+  fail:
+    msg: "DB backup did not produce BACKUP_OK — aborting"
+  when: "'BACKUP_OK' not in backup_result.stdout"

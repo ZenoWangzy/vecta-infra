@@ -1,0 +1,12 @@
+- import_tasks: preflight.yml
+- block:
+    - import_tasks: backup.yml
+      when: vtest_allow_migrate | string == '1'
+    - import_tasks: audit_start.yml
+    - import_tasks: deploy.yml
+    - import_tasks: smoke.yml
+    - import_tasks: audit_success.yml
+  rescue:
+    - import_tasks: audit_failure.yml
+    - fail:
+        msg: "Deploy failed — failure audit written"

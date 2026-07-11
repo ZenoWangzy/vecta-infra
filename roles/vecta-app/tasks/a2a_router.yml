@@ -1,0 +1,19 @@
+- name: Deploy a2a-router
+  community.docker.docker_container:
+    name: openclaw-a2a-router
+    image: "{{ a2a_router_image }}"
+    state: started
+    restart_policy: unless-stopped
+    pull: true
+    env:
+      A2A_ROUTER_TOKEN: "{{ lookup('env', 'A2A_ROUTER_TOKEN') }}"
+      TZ: Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: "10s"
+      timeout: "5s"
+      retries: 5
+    networks:
+      - name: openclaw-net
+    memory: "256m"
+    cpus: "0.25"

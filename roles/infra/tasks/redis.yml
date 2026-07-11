@@ -1,0 +1,19 @@
+- name: Start Redis
+  community.docker.docker_container:
+    name: openclaw-redis
+    image: "{{ redis_image }}"
+    state: started
+    restart_policy: unless-stopped
+    ports:
+      - "{{ redis_port | default('6379') }}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: "10s"
+      timeout: "3s"
+      retries: 5
+    networks:
+      - name: openclaw-net
+    memory: "128m"
+    cpus: "0.25"

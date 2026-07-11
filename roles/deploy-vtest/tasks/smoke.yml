@@ -1,0 +1,9 @@
+- name: Run vtest smoke test
+  shell: scripts/vtest-smoke.sh
+  args:
+    chdir: "{{ playbook_dir }}/.."
+    executable: /bin/bash
+  environment:
+    BASE: "{{ base_url }}"
+    SERVICE_KEY: "{{ lookup('env', 'SERVICE_KEY') }}"
+  changed_when: false

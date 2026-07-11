@@ -1,0 +1,41 @@
+- name: Start SearXNG
+  community.docker.docker_container:
+    name: openclaw-searxng
+    image: "{{ searxng_image }}"
+    state: started
+    restart_policy: unless-stopped
+    volumes:
+      - "{{ remote_dir }}/infra/searxng/settings.yml:/etc/searxng/settings.yml:ro"
+    networks:
+      - name: openclaw-net
+      - name: openclaw-open-webui-net
+    memory: "512m"
+    cpus: "0.25"
+
+- name: Start Baidu Search Service
+  community.docker.docker_container:
+    name: openclaw-baidu-search-service
+    image: "{{ baidu_search_image | default('openclaw-enterprise-baidu-search-service:latest') }}"
+    state: started
+    restart_policy: unless-stopped
+    env:
+      TZ: Asia/Shanghai
+      BAIDU_API_KEY: "{{ lookup('env', 'BAIDU_API_KEY') }}"
+      BAIDU_SEARCH_TIMEOUT_MS: "{{ baidu_search_timeout_ms | default('20000') }}"
+      SEARXNG_FALLBACK_BASE_URL: "http://openclaw-searxng:8080"
+    networks:
+      - name: openclaw-net
+      - name: openclaw-open-webui-net
+    memory: "512m"
+    cpus: "0.25"
+
+- name: Start Wren Engine
+  community.docker.docker_container:
+    name: openclaw-wren-engine
+    image: "{{ wren_engine_image }}"
+    state: started
+    restart_policy: unless-stopped
+    ports:
+      - "8000:8000"
+    networks:
+      - name: openclaw-net

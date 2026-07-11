@@ -1,0 +1,14 @@
+- name: Preflight — read migration ledger count
+  shell: |
+    set -euo pipefail
+    docker exec openclaw-postgres psql -U openclaw_poc -d openclaw_poc -tAc \
+      'SELECT count(*) FROM drizzle.__drizzle_migrations' 2>/dev/null \
+      || echo LEDGER_UNREADABLE
+  register: ledger_result
+  changed_when: false
+  when: vtest_allow_migrate | string == '1'
+
+- name: Fail if migration ledger is unreadable
+  fail:
+    msg: "Migration ledger unreadable — aborting before any write"
+  when: vtest_allow_migrate | string == '1' and 'LEDGER_UNREADABLE' in ledger_result.stdout

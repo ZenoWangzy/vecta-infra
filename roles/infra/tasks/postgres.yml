@@ -1,0 +1,23 @@
+- name: Start PostgreSQL
+  community.docker.docker_container:
+    name: openclaw-postgres
+    image: "{{ postgres_image }}"
+    state: started
+    restart_policy: unless-stopped
+    ports:
+      - "{{ postgres_port | default('5432') }}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    env:
+      POSTGRES_USER: "{{ postgres_user | default('openclaw_poc') }}"
+      POSTGRES_PASSWORD: "{{ postgres_password | default('poc-db-password-change-me') }}"
+      POSTGRES_DB: "{{ postgres_db | default('openclaw_poc') }}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ postgres_user | default('openclaw_poc') }}"]
+      interval: "10s"
+      timeout: "5s"
+      retries: 5
+    networks:
+      - name: openclaw-net
+    memory: "1g"
+    cpus: "1.0"

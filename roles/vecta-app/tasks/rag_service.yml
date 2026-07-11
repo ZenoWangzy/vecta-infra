@@ -1,0 +1,20 @@
+- name: Deploy rag-service
+  community.docker.docker_container:
+    name: openclaw-rag-service
+    image: "{{ rag_service_image }}"
+    state: started
+    restart_policy: unless-stopped
+    pull: true
+    ports:
+      - "8000:8000"
+    volumes:
+      - rag_model_cache:/app/model_cache
+    env:
+      DATABASE_URL: "postgresql://{{ postgres_user | default('openclaw_poc') }}:{{ postgres_password | default('poc-db-password-change-me') }}@openclaw-postgres:5432/{{ postgres_db | default('openclaw_poc') }}"
+      RAG_INTERNAL_TOKEN: "{{ lookup('env', 'RAG_INTERNAL_TOKEN') }}"
+      RAG_ADMIN_TOKEN: "{{ lookup('env', 'RAG_ADMIN_TOKEN') }}"
+      TZ: Asia/Shanghai
+    networks:
+      - name: openclaw-net
+    memory: "2g"
+    cpus: "1.0"

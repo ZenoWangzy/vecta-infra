@@ -1,0 +1,57 @@
+- name: Start OpenClaw employee instance
+  community.docker.docker_container:
+    name: openclaw-employee
+    image: "{{ openclaw_image }}"
+    state: started
+    restart_policy: always
+    ports:
+      - "18793:18789"
+      - "18801:18800"
+    volumes:
+      - "{{ remote_dir }}/deploy/instances/employee/openclaw-home:/home/node/.openclaw"
+      - "{{ remote_dir }}/deploy/instances/employee/skills:/app/skills"
+      - "{{ remote_dir }}/deploy/instances/shared/plugins:/app/plugins:ro"
+      - "{{ remote_dir }}/deploy/instances/employee/config/openclaw.json:/app/config/openclaw.json"
+      - "{{ remote_dir }}/deploy/instances/employee/config/a2n-gateway.config.json:/app/config/a2n-gateway.config.json"
+      - emp_lcm_data:/data/openclaw/employee
+      - "{{ remote_dir }}/deploy/instances/employee/system-prompt.md:/app/config/system-prompt.md"
+    env_file:
+      - "{{ remote_dir }}/deploy/instances/employee/.env"
+    env:
+      TZ: Asia/Shanghai
+      NODE_OPTIONS: "--max-old-space-size=3072"
+      LITELLM_API_KEY: "{{ lookup('env', 'LITELLM_MASTER_KEY') }}"
+      DEFAULT_MODEL: "{{ default_model | default('deepseek-chat') }}"
+    networks:
+      - name: openclaw-net
+    memory: "4g"
+    cpus: "1.0"
+
+- name: Start OpenClaw CEO instance
+  community.docker.docker_container:
+    name: openclaw-ceo
+    image: "{{ openclaw_image }}"
+    state: started
+    restart_policy: always
+    ports:
+      - "18791:18789"
+      - "18802:18800"
+    volumes:
+      - "{{ remote_dir }}/deploy/instances/ceo/openclaw-home:/home/node/.openclaw"
+      - "{{ remote_dir }}/deploy/instances/ceo/skills:/app/skills"
+      - "{{ remote_dir }}/deploy/instances/shared/plugins:/app/plugins:ro"
+      - "{{ remote_dir }}/deploy/instances/ceo/config/openclaw.json:/app/config/openclaw.json"
+      - "{{ remote_dir }}/deploy/instances/ceo/config/a2n-gateway.config.json:/app/config/a2n-gateway.config.json"
+      - ceo_lcm_data:/data/openclaw/ceo
+      - "{{ remote_dir }}/deploy/instances/ceo/system-prompt.md:/app/config/system-prompt.md"
+      - "{{ remote_dir }}/deploy/instances/ceo/cron-jobs:/app/cron-jobs"
+    env_file:
+      - "{{ remote_dir }}/deploy/instances/ceo/.env"
+    env:
+      TZ: Asia/Shanghai
+      NODE_OPTIONS: "--max-old-space-size=3072"
+      LITELLM_API_KEY: "{{ lookup('env', 'LITELLM_MASTER_KEY') }}"
+    networks:
+      - name: openclaw-net
+    memory: "4g"
+    cpus: "1.0"

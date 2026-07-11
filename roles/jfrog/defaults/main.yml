@@ -1,0 +1,6 @@
+jfrog_host: "127.0.0.1"
+jfrog_port: 8082
+jfrog_base_url: "http://{{ jfrog_host }}:{{ jfrog_port }}/artifactory"
+jfrog_data_dir: /data/artifactory
+jfrog_image: "releases-docker.jfrog.io/jfrog/artifactory-oss:latest"
+jfrog_full_provision: false

@@ -1,0 +1,65 @@
+# Reusable workflow called by vecta app repo stub and by manual dispatch.
+# Runs on the vtest self-hosted runner (co-located with the vtest host).
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        type: string
+        required: true
+        description: "Docker image tag (commit SHA) to deploy"
+      run_migrations:
+        type: boolean
+        default: false
+        description: "Whether to run DB migrations before deploy"
+      tags:
+        type: string
+        default: vecta-app
+        description: "Ansible tags to run (vecta-app, infra, search, open-webui, openclaw, jfrog, all)"
+      migration_artifact_run_id:
+        type: string
+        default: ''
+        description: "GitHub run ID containing the migration-sqls artifact"
+    secrets:
+      VTEST_DATABASE_URL:
+        required: true
+      SERVICE_KEY:
+        required: true
+      JFROG_TOKEN:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, vtest]
+    env:
+      DATABASE_URL: ${{ secrets.VTEST_DATABASE_URL }}
+      SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
+      JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+      DEPLOY_SHA: ${{ inputs.image_tag }}
+      VTEST_ALLOW_MIGRATE: ${{ inputs.run_migrations && '1' || '0' }}
+      DEPLOY_TAGS: ${{ inputs.tags || 'vecta-app' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download migration SQL files
+        if: inputs.migration_artifact_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: migration-sqls
+          run-id: ${{ inputs.migration_artifact_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: /tmp/migration-sqls
+
+      - name: Fail closed if secrets missing
+        run: |
+          for v in DATABASE_URL SERVICE_KEY JFROG_TOKEN; do
+            [ -n "${!v:-}" ] || { echo "secret $v missing — refusing to deploy"; exit 1; }
+          done
+
+      - name: Deploy via Ansible
+        run: |
+          ansible-playbook playbooks/deploy.yml \
+            -i inventories/vtest/hosts.ini \
+            -e "deploy_sha=$DEPLOY_SHA" \
+            -e "vtest_allow_migrate=$VTEST_ALLOW_MIGRATE" \
+            -e "vtest_migration_files=$(ls /tmp/migration-sqls/*.sql 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo '')" \
+            --tags "${DEPLOY_TAGS:-vecta-app}"

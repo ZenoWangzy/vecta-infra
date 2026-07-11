@@ -1,0 +1,6 @@
+- name: Login to Artifactory Docker registry
+  community.docker.docker_login:
+    registry_url: "http://127.0.0.1:8082/artifactory/api/docker/vecta-docker-virtual"
+    username: admin
+    password: "{{ lookup('env', 'JFROG_TOKEN') }}"
+  no_log: true

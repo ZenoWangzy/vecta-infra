@@ -1,0 +1,21 @@
+- name: Start ClickHouse
+  community.docker.docker_container:
+    name: openclaw-clickhouse
+    image: "{{ clickhouse_image }}"
+    state: started
+    restart_policy: unless-stopped
+    ports:
+      - "{{ clickhouse_http_port | default('8123') }}:8123"
+      - "{{ clickhouse_native_port | default('9100') }}:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - "{{ remote_dir }}/infra/clickhouse/schema.sql:/docker-entrypoint-initdb.d/schema.sql"
+    env:
+      CLICKHOUSE_DB: "{{ clickhouse_db | default('openclaw_audit') }}"
+      CLICKHOUSE_USER: "{{ clickhouse_user | default('openclaw') }}"
+      CLICKHOUSE_PASSWORD: "{{ clickhouse_password | default('changeme-clickhouse-pw') }}"
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "0"
+    networks:
+      - name: openclaw-net
+    memory: "512m"
+    cpus: "0.5"

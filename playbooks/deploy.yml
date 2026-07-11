@@ -1,0 +1,5 @@
+- name: Deploy vtest
+  hosts: vtest
+  gather_facts: false
+  roles:
+    - role: deploy-vtest

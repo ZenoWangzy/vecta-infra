@@ -1,0 +1,46 @@
+- name: Apply allowlisted migrations
+  shell: |
+    set -euo pipefail
+    IFS=',' read -r -a migration_files <<< "{{ vtest_migration_files }}"
+    for file in "${migration_files[@]}"; do
+      file="${file#"${file%%[![:space:]]*}"}"; file="${file%"${file##*[![:space:]]}"}"
+      case "$file" in /tmp/migration-sqls/*.sql) ;; *) echo "migration not allowlisted: $file" >&2; exit 1 ;; esac
+      [ -s "$file" ] || { echo "migration file not found: $file" >&2; exit 1; }
+      echo "Applying allowlisted migration: $file"
+      docker exec -i openclaw-postgres psql -U openclaw_poc -d openclaw_poc -v ON_ERROR_STOP=1 < "$file"
+    done
+  args:
+    chdir: "{{ remote_dir }}"
+    executable: /bin/bash
+  when: vtest_allow_migrate | string == '1' and vtest_migration_files | length > 0
+  changed_when: true
+
+- include_role:
+    name: infra
+    apply:
+      tags: infra
+  when: "'infra' in ansible_run_tags or 'all' in ansible_run_tags"
+
+- include_role:
+    name: search
+    apply:
+      tags: search
+  when: "'search' in ansible_run_tags or 'all' in ansible_run_tags"
+
+- include_role:
+    name: open-webui
+    apply:
+      tags: open-webui
+  when: "'open-webui' in ansible_run_tags or 'all' in ansible_run_tags"
+
+- include_role:
+    name: openclaw
+    apply:
+      tags: openclaw
+  when: "'openclaw' in ansible_run_tags or 'all' in ansible_run_tags"
+
+- include_role:
+    name: vecta-app
+    apply:
+      tags: vecta-app
+  when: "'vecta-app' in ansible_run_tags or 'all' in ansible_run_tags"

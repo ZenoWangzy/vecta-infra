@@ -1,0 +1,44 @@
+- name: Start MinIO
+  community.docker.docker_container:
+    name: openclaw-minio
+    image: "{{ minio_image }}"
+    state: started
+    restart_policy: unless-stopped
+    command: server /data --console-address ':9001'
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - "{{ remote_dir }}/data/minio:/data"
+    env:
+      MINIO_ROOT_USER: "{{ minio_root_user | default('openclaw') }}"
+      MINIO_ROOT_PASSWORD: "{{ minio_root_password | default('openclaw-minio-password') }}"
+    networks:
+      - name: openclaw-net
+
+- name: Check minio-init marker
+  stat:
+    path: "{{ remote_dir }}/.minio-initialized"
+  register: minio_init_marker
+
+- name: Run minio-init to create buckets
+  community.docker.docker_container:
+    name: openclaw-minio-init
+    image: "{{ minio_mc_image }}"
+    state: started
+    restart_policy: "no"
+    command: >
+      /bin/sh -c "
+      mc alias set local http://openclaw-minio:9000 {{ minio_root_user | default('openclaw') }} {{ minio_root_password | default('openclaw-minio-password') }} &&
+      mc mb --ignore-existing local/openclaw-files &&
+      mc mb --ignore-existing local/openclaw-artifacts &&
+      echo done"
+    networks:
+      - name: openclaw-net
+  when: not minio_init_marker.stat.exists
+
+- name: Write minio-init marker file
+  copy:
+    content: "{{ ansible_date_time.iso8601 }}\n"
+    dest: "{{ remote_dir }}/.minio-initialized"
+  when: not minio_init_marker.stat.exists

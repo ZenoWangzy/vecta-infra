@@ -1,0 +1,27 @@
+- name: Start LiteLLM proxy
+  community.docker.docker_container:
+    name: openclaw-litellm
+    image: "{{ litellm_image }}"
+    state: started
+    restart_policy: always
+    ports:
+      - "4000:4000"
+    volumes:
+      - "{{ remote_dir }}/infra/litellm/config.yaml:/app/config.yaml"
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    env:
+      LITELLM_MASTER_KEY: "{{ lookup('env', 'LITELLM_MASTER_KEY') }}"
+      TZ: Asia/Shanghai
+      ZAI_API_KEY: "{{ lookup('env', 'ZAI_API_KEY') }}"
+      DEEPSEEK_API_KEY: "{{ lookup('env', 'DEEPSEEK_API_KEY') }}"
+      MOONSHOT_API_KEY: "{{ lookup('env', 'MOONSHOT_API_KEY') }}"
+    healthcheck:
+      test: ["CMD", "curl", "-fsSL", "http://localhost:4000/health"]
+      interval: "10s"
+      timeout: "5s"
+      retries: 5
+      start_period: "30s"
+    networks:
+      - name: openclaw-net
+    memory: "2g"
+    cpus: "2.0"

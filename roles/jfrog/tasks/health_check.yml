@@ -1,0 +1,11 @@
+- name: Check Artifactory health
+  uri:
+    url: "{{ jfrog_base_url }}/api/system/ping"
+    method: GET
+    status_code: 200
+    timeout: 10
+  register: jfrog_health
+  retries: 3
+  delay: 5
+  until: jfrog_health.status == 200
+  failed_when: jfrog_health.status != 200
