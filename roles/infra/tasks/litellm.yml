@@ -22,6 +22,6 @@
       retries: 5
       start_period: "30s"
     networks:
-      - name: openclaw-net
+      - name: "{{ docker_network }}"
     memory: "2g"
     cpus: "2.0"

@@ -24,3 +24,4 @@ wechat_contact_sync_image: "127.0.0.1:8082/wechat-contact-sync:{{ deploy_sha }}"
 
 # npm: Nexus proxy → https://mirrors.tencent.com/npm/
 npm_registry_url: "http://127.0.0.1:8081/repository/vecta-npm-proxy/"
+docker_network: "openclaw-enterprise_openclaw-net"

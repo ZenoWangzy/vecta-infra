@@ -19,6 +19,6 @@
       CHANNEL_OWNER_ID: "{{ channel_owner_id | default('vtest') }}"
       A2A_ROUTER_TOKEN: "{{ lookup('env', 'A2A_ROUTER_TOKEN') }}"
     networks:
-      - name: openclaw-net
+      - name: "{{ docker_network }}"
     memory: "512m"
     cpus: "0.5"

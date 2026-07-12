@@ -9,7 +9,7 @@
     volumes:
       - "{{ jfrog_data_dir }}:/var/opt/jfrog/artifactory"
     networks:
-      - name: openclaw-net
+      - name: "{{ docker_network }}"
 
 - name: Wait for Artifactory to be ready
   uri:
