@@ -11,6 +11,7 @@
     state: started
     restart_policy: unless-stopped
     pull: true
+    image_name_mismatch: recreate
     env:
       TZ: Asia/Shanghai
       ALLOW_NO_CHANNEL: "false"
@@ -18,6 +19,18 @@
       CHANNEL_ACTIVE: "{{ channel_active | default('true') }}"
       CHANNEL_OWNER_ID: "{{ channel_owner_id | default('vtest') }}"
       A2A_ROUTER_TOKEN: "{{ lookup('env', 'A2A_ROUTER_TOKEN') }}"
+      REDIS_URL: "redis://:{{ redis_password | default('changeme-redis-pw') }}@openclaw-redis:6379"
+      FLEET_GATEWAY_URL: "http://openclaw-fleet-gateway:3000"
+      FLEET_SERVICE_SECRET: "{{ lookup('env', 'SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
+      SERVICE_SECRET: "{{ lookup('env', 'SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
+      WECOM_CORP_ID: "{{ lookup('env', 'WECOM_CORP_ID') }}"
+      WECOM_CONTACTS_SECRET: "{{ lookup('env', 'WECOM_CONTACTS_SECRET') }}"
+      WECOM_BOT_ID: "{{ lookup('env', 'WECOM_BOT_ID') }}"
+      WECOM_BOT_SECRET: "{{ lookup('env', 'WECOM_BOT_SECRET') }}"
+      FEISHU_CEO_APP_ID: "{{ lookup('env', 'FEISHU_CEO_APP_ID') }}"
+      FEISHU_CEO_APP_SECRET: "{{ lookup('env', 'FEISHU_CEO_APP_SECRET') }}"
+    ports:
+      - "9000:9000"
     networks:
       - name: "{{ docker_network }}"
     memory: "512m"

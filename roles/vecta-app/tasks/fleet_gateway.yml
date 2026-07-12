@@ -7,7 +7,7 @@
 - name: Wait for a2a-router before fleet-gateway
   wait_for:
     host: localhost
-    port: 8080
+    port: "{{ a2a_router_port | default(9200) }}"
     timeout: 30
 
 - name: Deploy fleet-gateway
@@ -17,6 +17,7 @@
     state: started
     restart_policy: unless-stopped
     pull: true
+    image_name_mismatch: recreate
     ports:
       - "{{ fleet_port | default('3000') }}:3000"
     env:
@@ -24,17 +25,29 @@
       AUTH_MODE: "{{ auth_mode | default('prod') }}"
       DATABASE_URL: "postgresql://{{ postgres_user | default('openclaw_poc') }}:{{ postgres_password | default('poc-db-password-change-me') }}@openclaw-postgres:5432/{{ postgres_db | default('openclaw_poc') }}"
       REDIS_URL: "redis://:{{ redis_password | default('changeme-redis-pw') }}@openclaw-redis:6379"
-      LITELM_BASE_URL: "http://openclaw-litelm:4000"
-      SERVICE_SECRET: "{{ lookup('env', 'SERVICE_KEY') }}"
+      LITELLM_BASE_URL: "{{ lookup('env', 'LITELLM_BASE_URL') | default('http://litellm-proxy:4000', true) }}"
+      LITELLM_MASTER_KEY: "{{ lookup('env', 'LITELLM_MASTER_KEY') }}"
+      LITELLM_CONFIG_PATH: "{{ lookup('env', 'LITELLM_CONFIG_PATH') | default('../../infra/litellm/config.yaml', true) }}"
+      LLM_KEY_ENCRYPTION_KEY: "{{ lookup('env', 'LLM_KEY_ENCRYPTION_KEY') }}"
+      SERVICE_SECRET: "{{ lookup('env', 'SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
       JWT_SECRET: "{{ lookup('env', 'JWT_SECRET') }}"
+      DEFAULT_MODEL: "{{ lookup('env', 'DEFAULT_MODEL') | default('deepseek-chat', true) }}"
       CORS_ORIGINS: "{{ base_url }}"
       APP_BASE_URL: "{{ base_url }}"
       ADMIN_CONSOLE_URL: "{{ base_url }}"
       FLEET_PUBLIC_URL: "{{ base_url }}"
+      OPENWEBUI_SERVICE_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') | default(lookup('env', 'SERVICE_KEY'), true) }}"
       RAG_SERVICE_URL: "http://openclaw-rag-service:8000"
       RAG_INTERNAL_TOKEN: "{{ lookup('env', 'RAG_INTERNAL_TOKEN') }}"
+      MINIO_ENDPOINT: "{{ lookup('env', 'MINIO_ENDPOINT') | default('openclaw-minio', true) }}"
+      MINIO_PORT: "{{ lookup('env', 'MINIO_PORT') | default('9000', true) }}"
+      MINIO_ACCESS_KEY: "{{ lookup('env', 'MINIO_ACCESS_KEY') }}"
+      MINIO_SECRET_KEY: "{{ lookup('env', 'MINIO_SECRET_KEY') }}"
+      MINIO_BUCKET: "{{ lookup('env', 'MINIO_BUCKET') | default('files', true) }}"
+      MINIO_USE_SSL: "{{ lookup('env', 'MINIO_USE_SSL') | default('false', true) }}"
+      HERMES_API_SERVER_KEY: "{{ lookup('env', 'HERMES_API_SERVER_KEY') }}"
       HERMES_RUNTIME_ENABLED: "true"
-      HERMES_RUNTIME_IMAGE_VERSION: "{{ hermes_runtime_image_version | default('vecta-hermes-withopenclaw:v0.18.0-nospan-rc1') }}"
+      HERMES_RUNTIME_IMAGE_VERSION: "{{ lookup('env', 'HERMES_RUNTIME_IMAGE_VERSION') | default(hermes_runtime_image_version | default('vecta-hermes-withopenclaw:v0.18.0-nospan-rc1'), true) }}"
       CONTAINER_DATA_DIR: /app/data/instances
       PORT_RANGE_MIN: "18800"
       PORT_RANGE_MAX: "18900"

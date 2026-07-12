@@ -1,0 +1,13 @@
+- name: Inspect write-capable app containers before migration
+  community.docker.docker_container_info:
+    name: "openclaw-{{ item }}"
+  loop: "{{ vtest_write_quiesce_services }}"
+  register: vtest_quiesce_containers
+
+- name: Stop write-capable app containers before migration
+  community.docker.docker_container:
+    name: "openclaw-{{ item.item }}"
+    state: stopped
+    stop_timeout: 60
+  loop: "{{ vtest_quiesce_containers.results }}"
+  when: item.exists

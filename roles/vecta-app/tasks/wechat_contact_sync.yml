@@ -11,8 +11,17 @@
     state: started
     restart_policy: unless-stopped
     pull: true
+    image_name_mismatch: recreate
     env:
       TZ: Asia/Shanghai
+      REDIS_URL: "redis://:{{ redis_password | default('changeme-redis-pw') }}@openclaw-redis:6379"
+      FLEET_GATEWAY_URL: "http://openclaw-fleet-gateway:3000"
+      FLEET_SERVICE_SECRET: "{{ lookup('env', 'SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
+      SERVICE_SECRET: "{{ lookup('env', 'SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
+      WECOM_CORP_ID: "{{ lookup('env', 'WECOM_CORP_ID') }}"
+      WECOM_CONTACTS_SECRET: "{{ lookup('env', 'WECOM_CONTACTS_SECRET') }}"
+      FEISHU_CEO_APP_ID: "{{ lookup('env', 'FEISHU_CEO_APP_ID') }}"
+      FEISHU_CEO_APP_SECRET: "{{ lookup('env', 'FEISHU_CEO_APP_SECRET') }}"
     networks:
       - name: "{{ docker_network }}"
     memory: "256m"

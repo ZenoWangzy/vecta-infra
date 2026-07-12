@@ -14,14 +14,40 @@ openclaw_image: "alpine/openclaw:2026.5.18"
 
 # App-built images — stored in Nexus OSS Docker hosted repo on port 8082
 # Login: docker login 127.0.0.1:8082 -u admin -p "$NEXUS_ADMIN_PASSWORD"
-fleet_gateway_image: "127.0.0.1:8082/fleet-gateway:{{ deploy_sha }}"
-channel_gateway_image: "127.0.0.1:8082/channel-gateway:{{ deploy_sha }}"
-a2a_router_image: "127.0.0.1:8082/a2a-router:{{ deploy_sha }}"
-rag_service_image: "127.0.0.1:8082/rag-service:{{ deploy_sha }}"
-directory_service_image: "127.0.0.1:8082/directory-service:{{ deploy_sha }}"
-admin_console_image: "127.0.0.1:8082/admin-console:{{ deploy_sha }}"
-wechat_contact_sync_image: "127.0.0.1:8082/wechat-contact-sync:{{ deploy_sha }}"
+nexus_docker_registry: "127.0.0.1:8082"
+
+vtest_required_image_repos:
+  - fleet-gateway
+  - channel-gateway
+  - a2a-router
+  - rag-service
+  - directory-service
+  - admin-console
+  - wechat-contact-sync
+
+vtest_migrator_image_repo: vecta-migrator
+
+vtest_write_quiesce_services:
+  - fleet-gateway
+  - channel-gateway
+  - wechat-contact-sync
+
+fleet_gateway_image: "{{ nexus_docker_registry }}/fleet-gateway:{{ deploy_sha }}"
+channel_gateway_image: "{{ nexus_docker_registry }}/channel-gateway:{{ deploy_sha }}"
+a2a_router_image: "{{ nexus_docker_registry }}/a2a-router:{{ deploy_sha }}"
+rag_service_image: "{{ nexus_docker_registry }}/rag-service:{{ deploy_sha }}"
+directory_service_image: "{{ nexus_docker_registry }}/directory-service:{{ deploy_sha }}"
+admin_console_image: "{{ nexus_docker_registry }}/admin-console:{{ deploy_sha }}"
+wechat_contact_sync_image: "{{ nexus_docker_registry }}/wechat-contact-sync:{{ deploy_sha }}"
+vecta_migrator_image: "{{ nexus_docker_registry }}/{{ vtest_migrator_image_repo }}:{{ deploy_sha }}"
 
 # npm: Nexus proxy → https://mirrors.tencent.com/npm/
 npm_registry_url: "http://127.0.0.1:8081/repository/vecta-npm-proxy/"
 docker_network: "openclaw-enterprise_openclaw-net"
+
+# Runtime DB/cache credentials are host-local vtest state, not Git repo state.
+# The self-hosted runner sources /data/ocee/.env before invoking Ansible.
+postgres_user: "{{ lookup('env', 'POSTGRES_USER') | default('openclaw_poc', true) }}"
+postgres_password: "{{ lookup('env', 'POSTGRES_PASSWORD') | default('poc-db-password-change-me', true) }}"
+postgres_db: "{{ lookup('env', 'POSTGRES_DB') | default('openclaw_poc', true) }}"
+redis_password: "{{ lookup('env', 'REDIS_PASSWORD') | default('changeme-redis-pw', true) }}"

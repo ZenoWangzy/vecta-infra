@@ -39,6 +39,9 @@ jobs:
       DEPLOY_TAGS: ${{ inputs.tags || 'vecta-app' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: wankaiss/vecta-infra
+          ref: main
 
       - name: Download migration SQL files
         if: inputs.migration_artifact_run_id != ''
@@ -55,8 +58,22 @@ jobs:
             [ -n "${!v:-}" ] || { echo "secret $v missing — refusing to deploy"; exit 1; }
           done
 
+      - name: Validate image tag is immutable full SHA
+        run: |
+          case "$DEPLOY_SHA" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *) echo "image_tag must be a full 40-character lowercase Git SHA" >&2; exit 1 ;;
+          esac
+
       - name: Deploy via Ansible
         run: |
+          set -euo pipefail
+          if [ -f /data/ocee/.env ]; then
+            set -a
+            . /data/ocee/.env
+            set +a
+          fi
+          export SERVICE_KEY="${SERVICE_KEY:-${OPENWEBUI_SERVICE_KEY:-}}"
           ansible-playbook playbooks/deploy.yml \
             -i inventories/vtest/hosts.ini \
             -e "deploy_sha=$DEPLOY_SHA" \

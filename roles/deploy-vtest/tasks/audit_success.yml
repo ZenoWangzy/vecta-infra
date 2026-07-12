@@ -4,5 +4,5 @@
     chdir: "{{ playbook_dir }}/.."
     executable: /bin/bash
   environment:
-    DATABASE_URL: "{{ lookup('env', 'DATABASE_URL') }}"
+    DATABASE_URL: "postgresql://{{ postgres_user | default('openclaw_poc') }}:{{ postgres_password | default('poc-db-password-change-me') }}@127.0.0.1:5432/{{ postgres_db | default('openclaw_poc') }}"
   changed_when: true

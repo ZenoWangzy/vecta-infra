@@ -1,3 +1,29 @@
+- name: Preflight — deploy_sha must be a full Git SHA
+  assert:
+    that:
+      - deploy_sha is match('^[0-9a-f]{40}$')
+    fail_msg: "deploy_sha must be a full 40-character lowercase Git SHA"
+
+- name: Preflight — compose required Nexus image repo list
+  set_fact:
+    vtest_required_image_repos_effective: >-
+      {{ vtest_required_image_repos + ([vtest_migrator_image_repo] if (vtest_allow_migrate | string) == '1' else []) }}
+
+- name: Preflight — check required Nexus image manifests
+  uri:
+    url: "http://{{ nexus_docker_registry }}/v2/{{ item }}/manifests/{{ deploy_sha }}"
+    method: HEAD
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
+    headers:
+      Accept: "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json"
+    status_code: 200
+    timeout: 10
+  loop: "{{ vtest_required_image_repos_effective }}"
+  register: nexus_manifest_checks
+  no_log: true
+
 - name: Preflight — read migration ledger count
   shell: |
     set -euo pipefail
@@ -8,7 +34,7 @@
   changed_when: false
   when: vtest_allow_migrate | string == '1'
 
-- name: Fail if migration ledger is unreadable
+- name: Preflight — fail if migration ledger is unreadable
   fail:
     msg: "Migration ledger unreadable — aborting before any write"
   when: vtest_allow_migrate | string == '1' and 'LEDGER_UNREADABLE' in ledger_result.stdout

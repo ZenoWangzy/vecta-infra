@@ -1,5 +1,5 @@
-# Manual dispatch entry point for vecta-infra. Handles Artifactory provisioning,
-# full deploys, and targeted role updates.
+# Manual dispatch entry point for vecta-infra. Handles Nexus-backed full deploys
+# and targeted role updates.
 name: Deploy vtest
 
 on:
@@ -7,8 +7,8 @@ on:
     inputs:
       image_tag:
         type: string
-        description: "Image tag (SHA). Leave empty to use 'latest'."
-        default: ''
+        required: true
+        description: "Full 40-character Git SHA already present in vtest Nexus"
       run_migrations:
         type: boolean
         default: false
@@ -29,23 +29,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ZeroWangzy/vecta
+          repository: ZenoWangzy/vecta
           token: ${{ secrets.VECTA_READ_TOKEN }}
+
+      - name: Stage migration SQL files
+        shell: bash
+        env:
+          MIGRATION_FILES: ${{ inputs.migration_files }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/migration-sqls
+          IFS=',' read -r -a files <<< "$MIGRATION_FILES"
+          for file in "${files[@]}"; do
+            file="${file#"${file%%[![:space:]]*}"}"
+            file="${file%"${file##*[![:space:]]}"}"
+            case "$file" in ''|*/*|*..*|.*) echo "invalid migration filename: $file" >&2; exit 1 ;; esac
+            case "$file" in *.sql) ;; *) echo "migration file must be a .sql filename: $file" >&2; exit 1 ;; esac
+            [ -f "migrations/$file" ] || { echo "migration file not found: migrations/$file" >&2; exit 1; }
+            cp -- "migrations/$file" /tmp/migration-sqls/
+          done
 
       - name: Upload migration SQL files as artifact
         uses: actions/upload-artifact@v4
         with:
           name: migration-sqls
           retention-days: 1
-          path: |
-            migrations/${{ inputs.migration_files }}
+          path: /tmp/migration-sqls/*.sql
 
   deploy:
     needs: [upload-migrations]
     if: always() && (needs.upload-migrations.result == 'success' || needs.upload-migrations.result == 'skipped')
     uses: ./.github/workflows/_deploy-vtest-job.yml
     with:
-      image_tag: ${{ inputs.image_tag || 'latest' }}
+      image_tag: ${{ inputs.image_tag }}
       run_migrations: ${{ inputs.run_migrations }}
       tags: ${{ inputs.tags }}
       migration_artifact_run_id: ${{ needs.upload-migrations.result == 'success' && github.run_id || '' }}

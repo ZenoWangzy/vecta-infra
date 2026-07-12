@@ -1,15 +1,14 @@
-- name: Deploy directory-service
+- name: Run vecta migrator image
   community.docker.docker_container:
-    name: openclaw-directory-service
-    image: "{{ directory_service_image }}"
+    name: openclaw-vecta-migrator
+    image: "{{ vecta_migrator_image }}"
     state: started
-    restart_policy: unless-stopped
-    pull: true
-    image_name_mismatch: recreate
+    detach: false
+    cleanup: true
+    pull: always
     env:
       DATABASE_URL: "postgresql://{{ postgres_user | default('openclaw_poc') }}:{{ postgres_password | default('poc-db-password-change-me') }}@openclaw-postgres:5432/{{ postgres_db | default('openclaw_poc') }}"
       TZ: Asia/Shanghai
     networks:
       - name: "{{ docker_network }}"
-    memory: "256m"
-    cpus: "0.25"
+  register: migrator_result

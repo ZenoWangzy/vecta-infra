@@ -1,12 +1,26 @@
 - import_tasks: preflight.yml
+  tags: vecta-app
 - block:
+    - import_tasks: audit_start.yml
+      tags: vecta-app
+    - import_tasks: quiesce.yml
+      when: vtest_allow_migrate | string == '1'
+      tags: vecta-app
     - import_tasks: backup.yml
       when: vtest_allow_migrate | string == '1'
-    - import_tasks: audit_start.yml
+      tags: vecta-app
+    - import_tasks: migrate.yml
+      when: vtest_allow_migrate | string == '1'
+      tags: vecta-app
     - import_tasks: deploy.yml
+      tags: always
     - import_tasks: smoke.yml
+      tags: vecta-app
     - import_tasks: audit_success.yml
+      tags: vecta-app
   rescue:
     - import_tasks: audit_failure.yml
+      tags: always
     - fail:
         msg: "Deploy failed — failure audit written"
+      tags: always

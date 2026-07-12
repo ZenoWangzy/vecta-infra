@@ -5,6 +5,7 @@
     state: started
     restart_policy: unless-stopped
     pull: true
+    image_name_mismatch: recreate
     ports:
       - "8000:8000"
     volumes:

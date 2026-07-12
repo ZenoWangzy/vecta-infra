@@ -5,11 +5,16 @@
     state: started
     restart_policy: unless-stopped
     pull: true
+    image_name_mismatch: recreate
     env:
       A2A_ROUTER_TOKEN: "{{ lookup('env', 'A2A_ROUTER_TOKEN') }}"
       TZ: Asia/Shanghai
+    ports:
+      - "{{ a2a_router_port | default('9200') }}:9200"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      test:
+        - CMD-SHELL
+        - "node -e \"fetch('http://127.0.0.1:9200/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""
       interval: "10s"
       timeout: "5s"
       retries: 5
