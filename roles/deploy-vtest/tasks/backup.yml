@@ -7,9 +7,13 @@
 - name: Backup vtest DB before any migrate
   shell: |
     set -euo pipefail
-    docker exec openclaw-postgres pg_dump -U openclaw_poc openclaw_poc \
+    docker exec openclaw-postgres pg_dump \
+      -U {{ postgres_user | default('openclaw_poc') | quote }} \
+      {{ postgres_db | default('openclaw_poc') | quote }} \
       > {{ remote_dir }}/backups/vtest-$(date -u +%Y%m%dT%H%M%SZ).sql \
       && echo BACKUP_OK
+  args:
+    executable: /bin/bash
   register: backup_result
   changed_when: "'BACKUP_OK' in backup_result.stdout"
 

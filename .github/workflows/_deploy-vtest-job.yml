@@ -19,6 +19,10 @@ on:
         type: string
         default: ''
         description: "GitHub run ID containing the migration-sqls artifact"
+      docker_cache_prune_until:
+        type: string
+        default: 48h
+        description: "Docker cache retention on the vtest runner after deploy; set to 'never' to skip"
     secrets:
       VTEST_DATABASE_URL:
         required: true
@@ -40,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: wankaiss/vecta-infra
+          repository: ZenoWangzy/vecta-infra
           ref: main
 
       - name: Download migration SQL files
@@ -80,3 +84,9 @@ jobs:
             -e "vtest_allow_migrate=$VTEST_ALLOW_MIGRATE" \
             -e "vtest_migration_files=$(ls /tmp/migration-sqls/*.sql 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo '')" \
             --tags "${DEPLOY_TAGS:-vecta-app}"
+
+      - name: Prune vtest Docker build state
+        if: always()
+        run: bash scripts/prune-vtest-docker-build-state.sh
+        env:
+          VTEST_DOCKER_CACHE_PRUNE_UNTIL: ${{ inputs.docker_cache_prune_until }}

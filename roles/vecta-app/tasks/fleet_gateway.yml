@@ -10,6 +10,14 @@
     port: "{{ a2a_router_port | default(9200) }}"
     timeout: 30
 
+- name: Ensure fleet-gateway knowledge upload directory is writable
+  file:
+    path: "{{ remote_dir }}/data/fleet-gateway/uploads"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: "0755"
+
 - name: Deploy fleet-gateway
   community.docker.docker_container:
     name: openclaw-fleet-gateway
@@ -39,6 +47,7 @@
       OPENWEBUI_SERVICE_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') | default(lookup('env', 'SERVICE_KEY'), true) }}"
       RAG_SERVICE_URL: "http://openclaw-rag-service:8000"
       RAG_INTERNAL_TOKEN: "{{ lookup('env', 'RAG_INTERNAL_TOKEN') }}"
+      KNOWLEDGE_DIR: /app/data/uploads
       MINIO_ENDPOINT: "{{ lookup('env', 'MINIO_ENDPOINT') | default('openclaw-minio', true) }}"
       MINIO_PORT: "{{ lookup('env', 'MINIO_PORT') | default('9000', true) }}"
       MINIO_ACCESS_KEY: "{{ lookup('env', 'MINIO_ACCESS_KEY') }}"
@@ -54,6 +63,7 @@
       FLEET_PORT: "3000"
     volumes:
       - "{{ remote_dir }}/deploy:/app/data/instances"
+      - "{{ remote_dir }}/data/fleet-gateway/uploads:/app/data/uploads"
     networks:
       - name: "{{ docker_network }}"
     memory: "2g"

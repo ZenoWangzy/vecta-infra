@@ -21,6 +21,10 @@ on:
         type: string
         description: "Ansible tags: jfrog / infra / search / open-webui / openclaw / vecta-app / all"
         default: vecta-app
+      docker_cache_prune_until:
+        type: string
+        description: "Docker cache retention on the vtest runner after deploy; set to 'never' to skip"
+        default: 48h
 
 jobs:
   upload-migrations:
@@ -65,4 +69,5 @@ jobs:
       run_migrations: ${{ inputs.run_migrations }}
       tags: ${{ inputs.tags }}
       migration_artifact_run_id: ${{ needs.upload-migrations.result == 'success' && github.run_id || '' }}
+      docker_cache_prune_until: ${{ inputs.docker_cache_prune_until }}
     secrets: inherit

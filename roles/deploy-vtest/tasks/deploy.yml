@@ -7,7 +7,10 @@
       case "$file" in /tmp/migration-sqls/*.sql) ;; *) echo "migration not allowlisted: $file" >&2; exit 1 ;; esac
       [ -s "$file" ] || { echo "migration file not found: $file" >&2; exit 1; }
       echo "Applying allowlisted migration: $file"
-      docker exec -i openclaw-postgres psql -U openclaw_poc -d openclaw_poc -v ON_ERROR_STOP=1 < "$file"
+      docker exec -i openclaw-postgres psql \
+        -U {{ postgres_user | default('openclaw_poc') | quote }} \
+        -d {{ postgres_db | default('openclaw_poc') | quote }} \
+        -v ON_ERROR_STOP=1 < "$file"
     done
   args:
     chdir: "{{ remote_dir }}"
