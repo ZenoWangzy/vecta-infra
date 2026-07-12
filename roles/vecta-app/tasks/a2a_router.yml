@@ -14,6 +14,6 @@
       timeout: "5s"
       retries: 5
     networks:
-      - name: "{{ docker_network }}"
+      - name: openclaw-net
     memory: "256m"
     cpus: "0.25"

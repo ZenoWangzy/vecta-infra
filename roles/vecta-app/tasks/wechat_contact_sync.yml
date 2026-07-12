@@ -14,5 +14,5 @@
     env:
       TZ: Asia/Shanghai
     networks:
-      - name: "{{ docker_network }}"
+      - name: openclaw-net
     memory: "256m"

@@ -9,6 +9,6 @@
       DATABASE_URL: "postgresql://{{ postgres_user | default('openclaw_poc') }}:{{ postgres_password | default('poc-db-password-change-me') }}@openclaw-postgres:5432/{{ postgres_db | default('openclaw_poc') }}"
       TZ: Asia/Shanghai
     networks:
-      - name: "{{ docker_network }}"
+      - name: openclaw-net
     memory: "256m"
     cpus: "0.25"

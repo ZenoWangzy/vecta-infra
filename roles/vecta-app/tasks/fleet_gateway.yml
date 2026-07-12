@@ -42,5 +42,5 @@
     volumes:
       - "{{ remote_dir }}/deploy:/app/data/instances"
     networks:
-      - name: "{{ docker_network }}"
+      - name: openclaw-net
     memory: "2g"

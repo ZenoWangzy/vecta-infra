@@ -15,6 +15,6 @@
       RAG_ADMIN_TOKEN: "{{ lookup('env', 'RAG_ADMIN_TOKEN') }}"
       TZ: Asia/Shanghai
     networks:
-      - name: "{{ docker_network }}"
+      - name: openclaw-net
     memory: "2g"
     cpus: "1.0"

@@ -23,7 +23,7 @@
       LITELLM_API_KEY: "{{ lookup('env', 'LITELLM_MASTER_KEY') }}"
       DEFAULT_MODEL: "{{ default_model | default('deepseek-chat') }}"
     networks:
-      - name: "{{ docker_network }}"
+      - name: openclaw-net
     memory: "4g"
     cpus: "1.0"
 
@@ -52,6 +52,6 @@
       NODE_OPTIONS: "--max-old-space-size=3072"
       LITELLM_API_KEY: "{{ lookup('env', 'LITELLM_MASTER_KEY') }}"
     networks:
-      - name: "{{ docker_network }}"
+      - name: openclaw-net
     memory: "4g"
     cpus: "1.0"

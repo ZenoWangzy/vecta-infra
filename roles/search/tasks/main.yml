@@ -7,8 +7,8 @@
     volumes:
       - "{{ remote_dir }}/infra/searxng/settings.yml:/etc/searxng/settings.yml:ro"
     networks:
-      - name: "{{ docker_network }}"
-      - name: "{{ docker_network }}"
+      - name: openclaw-net
+      - name: openclaw-open-webui-net
     memory: "512m"
     cpus: "0.25"
 
@@ -24,8 +24,8 @@
       BAIDU_SEARCH_TIMEOUT_MS: "{{ baidu_search_timeout_ms | default('20000') }}"
       SEARXNG_FALLBACK_BASE_URL: "http://openclaw-searxng:8080"
     networks:
-      - name: "{{ docker_network }}"
-      - name: "{{ docker_network }}"
+      - name: openclaw-net
+      - name: openclaw-open-webui-net
     memory: "512m"
     cpus: "0.25"
 
@@ -38,4 +38,4 @@
     ports:
       - "8000:8000"
     networks:
-      - name: "{{ docker_network }}"
+      - name: openclaw-net

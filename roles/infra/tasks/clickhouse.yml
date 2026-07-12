@@ -16,6 +16,6 @@
       CLICKHOUSE_PASSWORD: "{{ clickhouse_password | default('changeme-clickhouse-pw') }}"
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "0"
     networks:
-      - name: "{{ docker_network }}"
+      - name: openclaw-net
     memory: "512m"
     cpus: "0.5"
