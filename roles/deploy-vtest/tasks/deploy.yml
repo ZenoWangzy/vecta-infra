@@ -23,11 +23,9 @@
     apply:
       tags:
         - nexus
-        - jfrog
   tags:
     - nexus
-    - jfrog
-  when: "'nexus' in ansible_run_tags or 'jfrog' in ansible_run_tags or 'all' in ansible_run_tags"
+  when: "'nexus' in ansible_run_tags or 'all' in ansible_run_tags"
 
 
 - include_role:

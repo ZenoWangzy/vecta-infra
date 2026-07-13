@@ -105,3 +105,164 @@
     timeout: 30
   loop: "{{ nexus_proxy_repository_checks.results }}"
   no_log: true
+
+# ── Docker registry repositories ──────────────────────────────────────────────
+
+- name: Check Nexus Docker connector on port {{ nexus_docker_connector_port }}
+  uri:
+    url: "http://127.0.0.1:{{ nexus_docker_connector_port }}/v2/"
+    method: GET
+    status_code: [200, 401]
+    timeout: 5
+  register: nexus_docker_connector_health
+  retries: 3
+  delay: 2
+  until: nexus_docker_connector_health.status in [200, 401]
+  failed_when: nexus_docker_connector_health.status not in [200, 401]
+
+- name: Check existing Docker hosted repo
+  uri:
+    url: "{{ nexus_base_url }}/service/rest/v1/repositories/{{ nexus_docker_hosted_repo }}"
+    method: GET
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+    timeout: 10
+  register: nexus_docker_hosted_check
+  no_log: true
+
+- name: Create or update Docker hosted repo
+  uri:
+    url: >-
+      {{ nexus_base_url }}/service/rest/v1/repositories/docker/hosted{{ '/' + nexus_docker_hosted_repo if nexus_docker_hosted_check.status == 200 else '' }}
+    method: "{{ 'PUT' if nexus_docker_hosted_check.status == 200 else 'POST' }}"
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ nexus_docker_hosted_repo }}"
+      online: true
+      storage:
+        blobStoreName: "{{ nexus_blob_store }}"
+        strictContentTypeValidation: true
+        writePolicy: ALLOW
+      docker:
+        v1Enabled: false
+        forceBasicAuth: true
+        httpPort: "{{ nexus_docker_connector_port }}"
+    status_code: [200, 201, 204]
+    timeout: 30
+  no_log: true
+
+- name: Check existing Docker proxy repo
+  uri:
+    url: "{{ nexus_base_url }}/service/rest/v1/repositories/{{ nexus_docker_proxy_repo }}"
+    method: GET
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+    timeout: 10
+  register: nexus_docker_proxy_check
+  no_log: true
+
+- name: Create or update Docker proxy repo
+  uri:
+    url: >-
+      {{ nexus_base_url }}/service/rest/v1/repositories/docker/proxy{{ '/' + nexus_docker_proxy_repo if nexus_docker_proxy_check.status == 200 else '' }}
+    method: "{{ 'PUT' if nexus_docker_proxy_check.status == 200 else 'POST' }}"
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ nexus_docker_proxy_repo }}"
+      online: true
+      storage:
+        blobStoreName: "{{ nexus_blob_store }}"
+        strictContentTypeValidation: true
+      proxy:
+        remoteUrl: "{{ nexus_docker_remote_url }}"
+        contentMaxAge: 1440
+        metadataMaxAge: 1440
+      negativeCache:
+        enabled: true
+        timeToLive: 1440
+      httpClient:
+        blocked: false
+        autoBlock: true
+        connection:
+          retries: 2
+          timeout: 300
+      docker:
+        v1Enabled: false
+        forceBasicAuth: true
+      dockerProxy:
+        indexType: REGISTRY
+        indexUrl: "{{ nexus_docker_remote_index_url }}"
+    status_code: [200, 201, 204]
+    timeout: 30
+  no_log: true
+
+- name: Check existing Docker group repo
+  uri:
+    url: "{{ nexus_base_url }}/service/rest/v1/repositories/{{ nexus_docker_group_repo }}"
+    method: GET
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+    timeout: 10
+  register: nexus_docker_group_check
+  no_log: true
+
+- name: Create or update Docker group repo
+  uri:
+    url: >-
+      {{ nexus_base_url }}/service/rest/v1/repositories/docker/group{{ '/' + nexus_docker_group_repo if nexus_docker_group_check.status == 200 else '' }}
+    method: "{{ 'PUT' if nexus_docker_group_check.status == 200 else 'POST' }}"
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ nexus_docker_group_repo }}"
+      online: true
+      storage:
+        blobStoreName: "{{ nexus_blob_store }}"
+        strictContentTypeValidation: true
+      group:
+        memberNames:
+          - "{{ nexus_docker_proxy_repo }}"
+          - "{{ nexus_docker_hosted_repo }}"
+      docker:
+        v1Enabled: false
+        forceBasicAuth: true
+        httpPort: "{{ nexus_docker_connector_port }}"
+    status_code: [200, 201, 204]
+    timeout: 30
+  no_log: true
+
+# ── Docker daemon mirror + npmrc ──────────────────────────────────────────────
+
+- name: Configure Docker daemon registry mirror
+  copy:
+    content: |
+      {
+        "registry-mirrors": ["http://127.0.0.1:{{ nexus_docker_connector_port }}"]
+      }
+    dest: /etc/docker/daemon.json
+    mode: "0644"
+  notify: Reload Docker daemon
+
+- name: Write .npmrc pointing to Nexus npm proxy
+  copy:
+    content: |
+      registry={{ nexus_base_url }}/repository/{{ nexus_npm_proxy_repo }}/
+      //127.0.0.1:8081/repository/{{ nexus_npm_proxy_repo }}/:_auth={{ ('admin:' + lookup('env', 'NEXUS_ADMIN_PASSWORD')) | b64encode }}
+      always-auth=true
+    dest: "{{ remote_dir }}/.npmrc"
+    mode: "0600"
+  no_log: true
