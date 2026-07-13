@@ -10,17 +10,51 @@ SERVICE_KEY="${SERVICE_KEY:?SERVICE_KEY required}"
 AUTH_EMAIL="${AUTH_EMAIL:-IT001@openclaw.internal}"
 SMOKE_MODEL="${SMOKE_MODEL:-openclaw-agent}"
 SMOKE_CHANNEL_REQUIRED="${SMOKE_CHANNEL_REQUIRED:-auto}"
-code="$(curl -s -o /dev/null -w '%{http_code}' "${FLEET_BASE}/healthz" || echo 000)"
-[ "$code" = "200" ] || { echo "FAIL Fleet ${FLEET_BASE}/healthz -> $code" >&2; exit 1; }
+SMOKE_RETRIES="${SMOKE_RETRIES:-30}"
+SMOKE_RETRY_DELAY_SECONDS="${SMOKE_RETRY_DELAY_SECONDS:-5}"
+
+wait_code() {
+  name="$1"
+  url="$2"
+  expected="$3"
+  attempt=1
+  code=000
+  while [ "$attempt" -le "$SMOKE_RETRIES" ]; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' "$url" || echo 000)"
+    [ "$code" = "$expected" ] && return 0
+    if [ "$attempt" -lt "$SMOKE_RETRIES" ]; then
+      sleep "$SMOKE_RETRY_DELAY_SECONDS"
+    fi
+    attempt=$((attempt + 1))
+  done
+  echo "FAIL ${name} ${url} -> $code" >&2
+  return 1
+}
+
+wait_reachable() {
+  name="$1"
+  url="$2"
+  attempt=1
+  code=000
+  while [ "$attempt" -le "$SMOKE_RETRIES" ]; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' "$url" || echo 000)"
+    case "$code" in 2*|3*) return 0 ;; esac
+    if [ "$attempt" -lt "$SMOKE_RETRIES" ]; then
+      sleep "$SMOKE_RETRY_DELAY_SECONDS"
+    fi
+    attempt=$((attempt + 1))
+  done
+  echo "FAIL ${name} ${url} -> $code" >&2
+  return 1
+}
+
+wait_code Fleet "${FLEET_BASE}/healthz" 200
 echo "OK   Fleet /healthz"
-code="$(curl -s -o /dev/null -w '%{http_code}' "${OPENWEBUI_BASE}/health" || echo 000)"
-[ "$code" = "200" ] || { echo "FAIL OpenWebUI ${OPENWEBUI_BASE}/health -> $code" >&2; exit 1; }
+wait_code OpenWebUI "${OPENWEBUI_BASE}/health" 200
 echo "OK   OpenWebUI /health"
-code="$(curl -s -o /dev/null -w '%{http_code}' "${OPENWEBUI_BASE}/" || echo 000)"
-case "$code" in 2*|3*) ;; *) echo "FAIL OpenWebUI ${OPENWEBUI_BASE}/ -> $code" >&2; exit 1 ;; esac
+wait_reachable OpenWebUI "${OPENWEBUI_BASE}/"
 echo "OK   OpenWebUI / (code=$code)"
-code="$(curl -s -o /dev/null -w '%{http_code}' "${OPENWEBUI_BASE}/chat/" || echo 000)"
-case "$code" in 2*|3*) ;; *) echo "FAIL OpenWebUI ${OPENWEBUI_BASE}/chat/ -> $code" >&2; exit 1 ;; esac
+wait_reachable OpenWebUI "${OPENWEBUI_BASE}/chat/"
 echo "OK   OpenWebUI /chat/ (code=$code)"
 code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${SERVICE_KEY}" -H "X-Auth-Email: ${AUTH_EMAIL}" "${FLEET_BASE}/v1/models" || echo 000)"
 [ "$code" = "200" ] || { echo "FAIL /v1/models -> $code" >&2; exit 1; }
