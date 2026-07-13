@@ -57,6 +57,11 @@
       HERMES_API_SERVER_KEY: "{{ lookup('env', 'HERMES_API_SERVER_KEY') }}"
       HERMES_RUNTIME_ENABLED: "true"
       HERMES_RUNTIME_IMAGE_VERSION: "{{ lookup('env', 'HERMES_RUNTIME_IMAGE_VERSION') | default(hermes_runtime_image_version | default('vecta-hermes-withopenclaw:v0.18.0-nospan-rc1'), true) }}"
+      PER_USER_CONTAINERS: "true"
+      DOCKER_NETWORK: "{{ docker_network }}"
+      DOCKER_SOCKET_PATH: /var/run/docker.sock
+      CEO_GATEWAY_TOKEN: "{{ lookup('env', 'CEO_GATEWAY_TOKEN') }}"
+      EMPLOYEE_GATEWAY_TOKEN: "{{ lookup('env', 'EMPLOYEE_GATEWAY_TOKEN') }}"
       CONTAINER_DATA_DIR: /app/data/instances
       PORT_RANGE_MIN: "18800"
       PORT_RANGE_MAX: "18900"
@@ -64,6 +69,7 @@
     volumes:
       - "{{ remote_dir }}/deploy:/app/data/instances"
       - "{{ remote_dir }}/data/fleet-gateway/uploads:/app/data/uploads"
+      - "/var/run/docker.sock:/var/run/docker.sock"
     networks:
       - name: "{{ docker_network }}"
     memory: "2g"
