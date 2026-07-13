@@ -305,6 +305,10 @@ server {
         proxy_read_timeout 60s;
     }
 
+    location = / {
+        return 302 /chat/;
+    }
+
     location / {
         proxy_pass http://$admin_console:5173;
         proxy_set_header Host $host;
