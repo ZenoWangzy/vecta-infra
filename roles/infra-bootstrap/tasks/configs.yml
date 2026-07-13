@@ -1,0 +1,27 @@
+- name: Deploy LiteLLM config
+  ansible.builtin.template:
+    src: litellm-config.yaml.j2
+    dest: "{{ remote_dir }}/infra/litellm/config.yaml"
+    mode: "0644"
+  notify: restart litellm
+
+- name: Deploy ClickHouse schema
+  ansible.builtin.template:
+    src: clickhouse-schema.sql.j2
+    dest: "{{ remote_dir }}/infra/clickhouse/schema.sql"
+    mode: "0644"
+
+- name: Deploy SearXNG settings
+  ansible.builtin.template:
+    src: searxng-settings.yml.j2
+    dest: "{{ remote_dir }}/infra/searxng/settings.yml"
+    mode: "0644"
+  notify: restart searxng
+
+- name: Apply ClickHouse schema idempotently
+  community.docker.docker_container_exec:
+    container: openclaw-clickhouse
+    command: clickhouse-client --multiquery < /docker-entrypoint-initdb.d/schema.sql
+  register: ch_schema
+  changed_when: false
+  failed_when: ch_schema.rc != 0

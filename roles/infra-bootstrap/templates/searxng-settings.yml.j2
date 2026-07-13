@@ -1,0 +1,41 @@
+# Managed by Ansible — do not edit on server directly.
+use_default_settings: true
+
+general:
+  instance_name: "OpenClaw SearXNG"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "zh-CN"
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "{{ searxng_secret_key | default('openclaw-searxng-change-me-in-production') }}"
+  bind_address: "0.0.0.0"
+  port: 8080
+  limiter: false
+
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: false
+  - name: bing
+    engine: bing
+    shortcut: b
+    disabled: false
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+  - name: github
+    engine: github
+    shortcut: gh
+    disabled: false

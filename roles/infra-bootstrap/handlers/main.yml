@@ -1,0 +1,11 @@
+- name: restart litellm
+  community.docker.docker_container:
+    name: openclaw-litellm
+    state: started
+    restart: true
+
+- name: restart searxng
+  community.docker.docker_container:
+    name: openclaw-searxng
+    state: started
+    restart: true

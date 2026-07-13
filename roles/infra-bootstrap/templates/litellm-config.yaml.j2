@@ -1,0 +1,25 @@
+# Managed by Ansible — do not edit on server directly.
+model_list:
+  - model_name: openai/glm-flash
+    litellm_params:
+      model: zai/glm-5.1
+      api_key: os.environ/ZAI_API_KEY
+      api_base: https://open.bigmodel.cn/api/coding/paas/v4
+
+  - model_name: openai/deepseek-chat
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com
+
+  - model_name: openai/moonshot-v1
+    litellm_params:
+      model: moonshot/moonshot-v1-auto
+      api_key: os.environ/MOONSHOT_API_KEY
+      api_base: https://api.moonshot.cn/v1
+
+router_settings:
+  routing: "simple-shuffle"
+  num_retries: 3
+  fallbacks:
+    - {"openai/glm-flash": ["openai/deepseek-chat"]}

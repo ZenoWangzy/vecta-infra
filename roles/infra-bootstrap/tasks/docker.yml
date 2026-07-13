@@ -1,0 +1,20 @@
+- name: Ensure Docker networks exist
+  community.docker.docker_network:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - "{{ docker_network }}"
+    - openclaw-open-webui-net
+
+- name: Ensure Docker volumes exist
+  community.docker.docker_volume:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - postgres_data
+    - redis_data
+    - clickhouse_data
+    - openclaw-open-webui-data
+    - onlyoffice_data
+    - onlyoffice_logs
+    - rag_model_cache
