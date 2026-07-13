@@ -30,10 +30,17 @@ on:
         required: true
       NEXUS_ADMIN_PASSWORD:
         required: true
+      PROXY_USERNAME:
+        required: false
+      PROXY_PASSWORD:
+        required: false
 
 jobs:
   deploy:
     runs-on: [self-hosted, vtest]
+    concurrency:
+      group: vtest-deploy
+      cancel-in-progress: false
     env:
       DATABASE_URL: ${{ secrets.VTEST_DATABASE_URL }}
       SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
@@ -42,6 +49,21 @@ jobs:
       VTEST_ALLOW_MIGRATE: ${{ inputs.run_migrations && '1' || '0' }}
       DEPLOY_TAGS: ${{ inputs.tags || 'vecta-app' }}
     steps:
+      - name: Configure git proxy
+        run: |
+          if [ -z "${PROXY_USERNAME:-}" ] || [ -z "${PROXY_PASSWORD:-}" ]; then
+            echo "Proxy secrets not set; using default git network path"
+            exit 0
+          fi
+          PU="$(printf '%s' "${PROXY_USERNAME}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+          PP="$(printf '%s' "${PROXY_PASSWORD}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+          PROXY="http://${PU}:${PP}@geraldsynnas.ddns.net:8888"
+          git config --global http.proxy "$PROXY"
+          git config --global https.proxy "$PROXY"
+        env:
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+
       - uses: actions/checkout@v4
         with:
           repository: ZenoWangzy/vecta-infra

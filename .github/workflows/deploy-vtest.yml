@@ -29,12 +29,27 @@ on:
 jobs:
   upload-migrations:
     if: inputs.run_migrations == true && inputs.migration_files != ''
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, vtest]
     steps:
+      - name: Configure git proxy
+        run: |
+          if [ -z "${PROXY_USERNAME:-}" ] || [ -z "${PROXY_PASSWORD:-}" ]; then
+            echo "Proxy secrets not set; using default git network path"
+            exit 0
+          fi
+          PU="$(printf '%s' "${PROXY_USERNAME}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+          PP="$(printf '%s' "${PROXY_PASSWORD}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+          PROXY="http://${PU}:${PP}@geraldsynnas.ddns.net:8888"
+          git config --global http.proxy "$PROXY"
+          git config --global https.proxy "$PROXY"
+        env:
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+
       - uses: actions/checkout@v4
         with:
           repository: ZenoWangzy/vecta
-          token: ${{ secrets.VECTA_READ_TOKEN }}
+          token: ${{ secrets.VECTA_READ_TOKEN || github.token }}
 
       - name: Stage migration SQL files
         shell: bash
