@@ -12,6 +12,14 @@ kk_file_view_image: "keking/kkfileview:latest"
 onlyoffice_image: "onlyoffice/documentserver:8.2"
 openclaw_image: "alpine/openclaw:2026.5.18"
 
+# Nexus dependency/cache endpoints.
+nexus_base_url: "http://127.0.0.1:8081"
+nexus_npm_proxy_repo: vecta-npm-proxy
+nexus_pypi_proxy_repo: vecta-pypi-proxy
+nexus_alpine_proxy_repo: vecta-alpine-proxy
+nexus_debian_proxy_repo: vecta-debian-proxy
+nexus_debian_security_proxy_repo: vecta-debian-security-proxy
+
 # App-built images — stored in Nexus OSS Docker hosted repo on port 8082
 # Login: docker login 127.0.0.1:8082 -u admin -p "$NEXUS_ADMIN_PASSWORD"
 nexus_docker_registry: "127.0.0.1:8082"
@@ -41,8 +49,13 @@ admin_console_image: "{{ nexus_docker_registry }}/admin-console:{{ deploy_sha }}
 wechat_contact_sync_image: "{{ nexus_docker_registry }}/wechat-contact-sync:{{ deploy_sha }}"
 vecta_migrator_image: "{{ nexus_docker_registry }}/{{ vtest_migrator_image_repo }}:{{ deploy_sha }}"
 
-# npm: Nexus proxy → https://mirrors.tencent.com/npm/
-npm_registry_url: "http://127.0.0.1:8081/repository/vecta-npm-proxy/"
+# npm/apk/apt: Nexus proxies → official upstream registries.
+npm_registry_url: "{{ nexus_base_url }}/repository/{{ nexus_npm_proxy_repo }}/"
+pypi_index_url: "{{ nexus_base_url }}/repository/{{ nexus_pypi_proxy_repo }}/simple/"
+alpine_mirror: "{{ nexus_base_url }}/repository/{{ nexus_alpine_proxy_repo }}"
+debian_mirror: "{{ nexus_base_url }}/repository/{{ nexus_debian_proxy_repo }}"
+debian_security_mirror: "{{ nexus_base_url }}/repository/{{ nexus_debian_security_proxy_repo }}"
+docker_base_image_registry: "{{ nexus_docker_registry }}"
 docker_network: "openclaw-enterprise_openclaw-net"
 
 # Runtime DB/cache credentials are host-local vtest state, not Git repo state.

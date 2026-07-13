@@ -14,7 +14,7 @@ on:
       tags:
         type: string
         default: vecta-app
-        description: "Ansible tags to run (vecta-app, infra, search, open-webui, openclaw, jfrog, all)"
+        description: "Ansible tags to run (vecta-app, infra, search, open-webui, openclaw, nexus, jfrog, all)"
       migration_artifact_run_id:
         type: string
         default: ''

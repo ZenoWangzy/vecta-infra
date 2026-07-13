@@ -1,0 +1,103 @@
+- name: Check Nexus OSS health
+  uri:
+    url: "{{ nexus_base_url }}/service/rest/v1/status"
+    method: GET
+    status_code: 200
+    timeout: 10
+  register: nexus_health
+  retries: 12
+  delay: 5
+  until: nexus_health.status == 200
+
+- name: Compose Nexus proxy repository definitions
+  set_fact:
+    nexus_proxy_repositories:
+      - name: "{{ nexus_npm_proxy_repo }}"
+        format: npm
+        type: proxy
+        strict_content_type_validation: true
+        remote_url: "{{ nexus_npm_remote_url }}"
+      - name: "{{ nexus_pypi_proxy_repo }}"
+        format: pypi
+        type: proxy
+        strict_content_type_validation: true
+        remote_url: "{{ nexus_pypi_remote_url }}"
+        pypi:
+          indexPath: /simple
+      - name: "{{ nexus_alpine_proxy_repo }}"
+        format: raw
+        type: proxy
+        strict_content_type_validation: false
+        remote_url: "{{ nexus_alpine_remote_url }}"
+        raw:
+          contentDisposition: ATTACHMENT
+          forwardQueryParameters: true
+      - name: "{{ nexus_debian_proxy_repo }}"
+        format: raw
+        type: proxy
+        strict_content_type_validation: false
+        remote_url: "{{ nexus_debian_remote_url }}"
+        raw:
+          contentDisposition: ATTACHMENT
+          forwardQueryParameters: true
+      - name: "{{ nexus_debian_security_proxy_repo }}"
+        format: raw
+        type: proxy
+        strict_content_type_validation: false
+        remote_url: "{{ nexus_debian_security_remote_url }}"
+        raw:
+          contentDisposition: ATTACHMENT
+          forwardQueryParameters: true
+
+- name: Check existing Nexus proxy repositories
+  uri:
+    url: "{{ nexus_base_url }}/service/rest/v1/repositories/{{ item.name }}"
+    method: GET
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+    timeout: 20
+  loop: "{{ nexus_proxy_repositories }}"
+  register: nexus_proxy_repository_checks
+  no_log: true
+
+- name: Create or update Nexus proxy repositories
+  uri:
+    url: >-
+      {{ nexus_base_url }}/service/rest/v1/repositories/{{ item.item.format }}/{{ item.item.type }}{{ '/' + item.item.name if item.status == 200 else '' }}
+    method: "{{ 'PUT' if item.status == 200 else 'POST' }}"
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
+    body_format: json
+    body: >-
+      {{
+        {
+          'name': item.item.name,
+          'online': true,
+          'storage': {
+            'blobStoreName': nexus_blob_store,
+            'strictContentTypeValidation': item.item.strict_content_type_validation
+          },
+          'proxy': {
+            'remoteUrl': item.item.remote_url,
+            'contentMaxAge': 1440,
+            'metadataMaxAge': 1440
+          },
+          'negativeCache': {
+            'enabled': true,
+            'timeToLive': 1440
+          },
+          'httpClient': {
+            'blocked': false,
+            'autoBlock': true
+          }
+        }
+        | combine(({'raw': item.item.raw} if item.item.format == 'raw' else {}), recursive=True)
+        | combine(({'pypi': item.item.pypi} if item.item.format == 'pypi' else {}), recursive=True)
+      }}
+    status_code: [200, 201, 204]
+    timeout: 30
+  loop: "{{ nexus_proxy_repository_checks.results }}"
+  no_log: true

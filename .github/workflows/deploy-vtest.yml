@@ -19,7 +19,7 @@ on:
         default: ''
       tags:
         type: string
-        description: "Ansible tags: jfrog / infra / search / open-webui / openclaw / vecta-app / all"
+        description: "Ansible tags: nexus / jfrog / infra / search / open-webui / openclaw / vecta-app / all"
         default: vecta-app
       docker_cache_prune_until:
         type: string
