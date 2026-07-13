@@ -11,5 +11,6 @@
     RAG_BASE: "http://127.0.0.1:8000"
     OPENWEBUI_BASE: "http://127.0.0.1:3002"
     INTERNAL_BASE: "http://127.0.0.1"
+    AUTH_EMAIL: "{{ openwebui_smoke_auth_email | default('IT001@openclaw.internal') }}"
     SERVICE_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') | default(lookup('env', 'SERVICE_KEY'), true) }}"
   changed_when: false
