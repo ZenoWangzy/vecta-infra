@@ -5,3 +5,18 @@ open_webui_nginx_config_dir: "{{ vecta_infra_state_dir }}/open-webui"
 open_webui_nginx_config_path: "{{ open_webui_nginx_config_dir }}/nginx.conf"
 open_webui_network: openclaw-open-webui-net
 open_webui_nginx_image: nginx:alpine
+
+# Host nginx is environment-specific. Enable it in inventory when this role
+# should own the public vhost in addition to the container-local proxy.
+host_nginx_enabled: false
+host_nginx_site_name: vtest.fitocfo.com
+host_nginx_site_available_path: "/etc/nginx/sites-available/{{ host_nginx_site_name }}"
+host_nginx_site_enabled_path: "/etc/nginx/sites-enabled/{{ host_nginx_site_name }}"
+host_nginx_server_names:
+  - vtest.fitocfo.com
+  - vtest.matrix-ai.com.cn
+host_nginx_ssl_certificate: "/etc/letsencrypt/live/{{ host_nginx_site_name }}/fullchain.pem"
+host_nginx_ssl_certificate_key: "/etc/letsencrypt/live/{{ host_nginx_site_name }}/privkey.pem"
+host_nginx_webui_proxy_url: http://127.0.0.1:3002
+host_nginx_fleet_url: http://127.0.0.1:3000
+host_nginx_channel_url: http://127.0.0.1:9000

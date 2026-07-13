@@ -13,6 +13,16 @@ kk_file_view_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/keking/k
 onlyoffice_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/onlyoffice/documentserver:8.2"
 openclaw_image: "alpine/openclaw:2026.5.18"
 
+# Public vtest nginx vhost. The host nginx config must route browser paths into
+# the infra-owned Open WebUI proxy on :3002, not directly to app containers.
+host_nginx_enabled: true
+host_nginx_site_name: vtest.fitocfo.com
+host_nginx_server_names:
+  - vtest.fitocfo.com
+  - vtest.matrix-ai.com.cn
+host_nginx_ssl_certificate: /etc/letsencrypt/live/vtest.fitocfo.com/fullchain.pem
+host_nginx_ssl_certificate_key: /etc/letsencrypt/live/vtest.fitocfo.com/privkey.pem
+
 # Nexus dependency/cache endpoints.
 nexus_base_url: "http://127.0.0.1:8081"
 nexus_npm_proxy_repo: vecta-npm-proxy

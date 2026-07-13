@@ -1,0 +1,159 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ host_nginx_server_names | join(' ') }};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+        default_type text/plain;
+    }
+
+    location / {
+        return 308 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {{ host_nginx_server_names | join(' ') }};
+
+    ssl_certificate {{ host_nginx_ssl_certificate }};
+    ssl_certificate_key {{ host_nginx_ssl_certificate_key }};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    client_max_body_size 100m;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location = / {
+        return 302 /chat/;
+    }
+
+    location = /chat {
+        return 301 /chat/;
+    }
+
+    location /chat/ {
+        proxy_pass {{ host_nginx_webui_proxy_url }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Prefix /chat;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+
+    location = /api/knowledge/upload {
+        client_max_body_size 100m;
+        client_body_timeout 300s;
+        proxy_pass {{ host_nginx_fleet_url }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+        proxy_request_buffering off;
+    }
+
+    location ^~ /api/knowledge/uploads/ {
+        client_max_body_size 100m;
+        client_body_timeout 300s;
+        proxy_pass {{ host_nginx_fleet_url }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+
+    location = /api/wecom/contact-callback {
+        proxy_pass {{ host_nginx_channel_url }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_read_timeout 300s;
+    }
+
+    location /api/ {
+        proxy_pass {{ host_nginx_fleet_url }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_read_timeout 300s;
+    }
+
+    location /auth/ {
+        proxy_pass {{ host_nginx_fleet_url }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_read_timeout 300s;
+    }
+
+    location /v1/ {
+        proxy_pass {{ host_nginx_fleet_url }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_read_timeout 300s;
+    }
+
+    location = /healthz {
+        proxy_pass {{ host_nginx_fleet_url }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_read_timeout 300s;
+    }
+
+    location = /admin {
+        return 301 /admin/;
+    }
+
+    location ^~ /admin/ {
+        proxy_pass {{ host_nginx_webui_proxy_url }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+
+    location / {
+        proxy_pass {{ host_nginx_webui_proxy_url }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}

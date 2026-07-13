@@ -51,6 +51,48 @@
       - name: "{{ open_webui_network }}"
     restart: "{{ open_webui_nginx_config.changed | default(false) }}"
 
+- name: Render host nginx vtest site
+  become: true
+  ansible.builtin.template:
+    src: host-nginx-site.conf.j2
+    dest: "{{ host_nginx_site_available_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  register: host_nginx_site
+  when: host_nginx_enabled | bool
+
+- name: Enable host nginx vtest site
+  become: true
+  ansible.builtin.file:
+    src: "{{ host_nginx_site_available_path }}"
+    dest: "{{ host_nginx_site_enabled_path }}"
+    state: link
+    force: true
+  register: host_nginx_site_link
+  when: host_nginx_enabled | bool
+
+- name: Validate host nginx config
+  become: true
+  ansible.builtin.command:
+    argv:
+      - nginx
+      - -t
+  changed_when: false
+  when:
+    - host_nginx_enabled | bool
+    - (host_nginx_site is defined and host_nginx_site.changed | default(false)) or (host_nginx_site_link is defined and host_nginx_site_link.changed | default(false))
+
+- name: Reload host nginx
+  become: true
+  ansible.builtin.service:
+    name: nginx
+    state: reloaded
+  when:
+    - host_nginx_enabled | bool
+    - (host_nginx_site is defined and host_nginx_site.changed | default(false)) or (host_nginx_site_link is defined and host_nginx_site_link.changed | default(false))
+
 - name: Start KK File View
   community.docker.docker_container:
     name: kkfileview
