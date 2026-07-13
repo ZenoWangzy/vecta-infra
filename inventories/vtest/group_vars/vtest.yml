@@ -19,6 +19,7 @@ nexus_pypi_proxy_repo: vecta-pypi-proxy
 nexus_alpine_proxy_repo: vecta-alpine-proxy
 nexus_debian_proxy_repo: vecta-debian-proxy
 nexus_debian_security_proxy_repo: vecta-debian-security-proxy
+nexus_alpine_remote_url: "https://mirrors.aliyun.com/alpine"
 
 # App-built images — stored in Nexus OSS Docker hosted repo on port 8082
 # Login: docker login 127.0.0.1:8082 -u admin -p "$NEXUS_ADMIN_PASSWORD"
@@ -49,7 +50,7 @@ admin_console_image: "{{ nexus_docker_registry }}/admin-console:{{ deploy_sha }}
 wechat_contact_sync_image: "{{ nexus_docker_registry }}/wechat-contact-sync:{{ deploy_sha }}"
 vecta_migrator_image: "{{ nexus_docker_registry }}/{{ vtest_migrator_image_repo }}:{{ deploy_sha }}"
 
-# npm/apk/apt: Nexus proxies → official upstream registries.
+# npm/apk/apt: build containers consume Nexus proxies only.
 npm_registry_url: "{{ nexus_base_url }}/repository/{{ nexus_npm_proxy_repo }}/"
 pypi_index_url: "{{ nexus_base_url }}/repository/{{ nexus_pypi_proxy_repo }}/simple/"
 alpine_mirror: "{{ nexus_base_url }}/repository/{{ nexus_alpine_proxy_repo }}"
