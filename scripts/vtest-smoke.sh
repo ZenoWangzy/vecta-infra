@@ -16,6 +16,12 @@ echo "OK   Fleet /healthz"
 code="$(curl -s -o /dev/null -w '%{http_code}' "${OPENWEBUI_BASE}/health" || echo 000)"
 [ "$code" = "200" ] || { echo "FAIL OpenWebUI ${OPENWEBUI_BASE}/health -> $code" >&2; exit 1; }
 echo "OK   OpenWebUI /health"
+code="$(curl -s -o /dev/null -w '%{http_code}' "${OPENWEBUI_BASE}/" || echo 000)"
+case "$code" in 2*|3*) ;; *) echo "FAIL OpenWebUI ${OPENWEBUI_BASE}/ -> $code" >&2; exit 1 ;; esac
+echo "OK   OpenWebUI / (code=$code)"
+code="$(curl -s -o /dev/null -w '%{http_code}' "${OPENWEBUI_BASE}/chat/" || echo 000)"
+case "$code" in 2*|3*) ;; *) echo "FAIL OpenWebUI ${OPENWEBUI_BASE}/chat/ -> $code" >&2; exit 1 ;; esac
+echo "OK   OpenWebUI /chat/ (code=$code)"
 code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${SERVICE_KEY}" -H "X-Auth-Email: ${AUTH_EMAIL}" "${FLEET_BASE}/v1/models" || echo 000)"
 [ "$code" = "200" ] || { echo "FAIL /v1/models -> $code" >&2; exit 1; }
 echo "OK   /v1/models (authed)"

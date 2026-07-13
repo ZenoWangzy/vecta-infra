@@ -1,0 +1,5 @@
+# Controller-local state outside the app checkout. Override when the runner
+# account or host layout needs a different persistent path.
+vecta_infra_state_dir: "{{ lookup('env', 'VECTA_INFRA_STATE_DIR') | default(lookup('env', 'HOME') ~ '/.vecta-infra', true) }}"
+open_webui_nginx_config_dir: "{{ vecta_infra_state_dir }}/open-webui"
+open_webui_nginx_config_path: "{{ open_webui_nginx_config_dir }}/nginx.conf"

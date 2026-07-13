@@ -19,3 +19,27 @@
       - name: "{{ docker_network }}"
     memory: "512m"
     cpus: "0.5"
+
+- name: Wait for ClickHouse client readiness
+  community.docker.docker_container_exec:
+    container: openclaw-clickhouse
+    argv:
+      - clickhouse-client
+      - --query
+      - SELECT 1
+  register: clickhouse_ready
+  changed_when: false
+  retries: 30
+  delay: 2
+  until: clickhouse_ready.rc == 0
+
+- name: Apply ClickHouse schema idempotently
+  community.docker.docker_container_exec:
+    container: openclaw-clickhouse
+    argv:
+      - /bin/sh
+      - -c
+      - clickhouse-client --multiquery < /docker-entrypoint-initdb.d/schema.sql
+  register: ch_schema
+  changed_when: false
+  failed_when: ch_schema.rc != 0

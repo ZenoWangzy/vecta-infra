@@ -1,3 +1,16 @@
+- name: Ensure Open WebUI nginx config directory
+  ansible.builtin.file:
+    path: "{{ open_webui_nginx_config_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Render Open WebUI proxy nginx config
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ open_webui_nginx_config_path }}"
+    mode: "0644"
+  register: open_webui_nginx_config
+
 - name: Start Open WebUI
   community.docker.docker_container:
     name: openclaw-open-webui
@@ -24,10 +37,11 @@
     ports:
       - "3002:80"
     volumes:
-      - "{{ remote_dir }}/infra/open-webui/nginx.conf:/etc/nginx/conf.d/default.conf:ro"
+      - "{{ open_webui_nginx_config_path }}:/etc/nginx/conf.d/default.conf:ro"
     networks:
       - name: "{{ docker_network }}"
       - name: openclaw-open-webui-net
+    restart: "{{ open_webui_nginx_config.changed | default(false) }}"
 
 - name: Start KK File View
   community.docker.docker_container:

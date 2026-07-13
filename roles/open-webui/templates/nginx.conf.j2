@@ -1,0 +1,320 @@
+# Managed by vecta-infra roles/open-webui. Do not edit the rendered vtest file.
+# Open WebUI product entrypoint.
+# Nginx serves the public landing/login shell from Admin Console. Credential
+# exchange still goes through Fleet Gateway via /auth/login-web.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ""      close;
+}
+
+map $http_cookie $has_fleet_auth_cookie {
+    default 0;
+    "~*(^|;\s*)auth=" 1;
+}
+
+upstream fleet_gateway {
+    server openclaw-fleet-gateway:3000;
+    keepalive 32;
+}
+
+upstream open_webui {
+    server openclaw-open-webui:8080;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    absolute_redirect off;
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_types
+        text/css
+        text/javascript
+        application/javascript
+        application/json
+        application/manifest+json
+        image/svg+xml;
+
+    # ponytail: resolve admin-console via docker's embedded DNS every 30s so
+    # neighbor container recreation (IP drift) no longer returns 502.
+    # On 2026-06-19 nginx cached admin-console's pre-recreation IP
+    # 172.20.0.2 for the whole worker lifetime until webui-proxy restarted.
+    # Note: only works for proxy_pass with a variable host; upstream{} blocks
+    # (fleet_gateway / open_webui) still resolve once at startup; restart
+    # webui-proxy after those containers are recreated.
+    resolver 127.0.0.11 valid=30s ipv6=off;
+    set $admin_console "openclaw-admin-console";
+
+    location = /health {
+        proxy_pass http://open_webui/health;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_read_timeout 10s;
+        access_log off;
+    }
+
+    location = /login {
+        proxy_pass http://$admin_console:5173;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+    }
+
+    location = /auth/login-web {
+        proxy_pass http://fleet_gateway;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+    }
+
+    location ^~ /api/ {
+        proxy_pass http://fleet_gateway;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+    }
+
+    location ^~ /auth/ {
+        proxy_pass http://fleet_gateway;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+    }
+
+    location = /auth/logout {
+        proxy_pass http://fleet_gateway;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+    }
+
+    location ^~ /s/ {
+        proxy_pass http://fleet_gateway;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+    }
+
+    location = /agent {
+        proxy_pass http://fleet_gateway/agent;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+
+    location = /agent/ws/socket.io {
+        if ($has_fleet_auth_cookie = 0) { return 401; }
+        proxy_pass http://fleet_gateway/agent/ws/socket.io;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        access_log off;
+    }
+
+    location = /agent/ws/socket.io/ {
+        if ($has_fleet_auth_cookie = 0) { return 401; }
+        proxy_pass http://fleet_gateway/agent/ws/socket.io/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        access_log off;
+    }
+
+    location ^~ /agent/ {
+        proxy_pass http://fleet_gateway;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_set_header Accept-Encoding "";
+        proxy_hide_header Content-Security-Policy;
+        add_header Content-Security-Policy "default-src 'self';script-src 'self' 'unsafe-inline';style-src 'self' 'unsafe-inline';img-src 'self' data:;connect-src 'self';font-src 'self';object-src 'none';frame-ancestors 'none';base-uri 'self';form-action 'self';script-src-attr 'none';upgrade-insecure-requests" always;
+        sub_filter_once off;
+        sub_filter_types application/javascript text/javascript;
+        sub_filter 'const e="Open WebUI",a="",' 'const e="Open WebUI",a="/chat",';
+        sub_filter 'path:"/ws/socket.io"' 'path:"/chat/ws/socket.io"';
+        sub_filter '`/auth?redirect=' '`/chat/auth?redirect=';
+        sub_filter '"/auth?redirect=' '"/chat/auth?redirect=';
+        sub_filter "'/auth?redirect=" "'/chat/auth?redirect=";
+        sub_filter '??"/auth"' '??"/chat/auth"';
+        sub_filter "??'/auth'" "??'/chat/auth'";
+        sub_filter 'base: ""' 'base: "/chat"';
+        sub_filter 'import("/_app/' 'import("/chat/_app/';
+        sub_filter "import('/_app/" "import('/chat/_app/";
+        sub_filter 'href="/_app/' 'href="/chat/_app/';
+        sub_filter 'src="/_app/' 'src="/chat/_app/';
+        sub_filter 'href="/static/' 'href="/chat/static/';
+        sub_filter 'src="/static/' 'src="/chat/static/';
+        sub_filter '"/static/' '"/chat/static/';
+        sub_filter "'/static/" "'/chat/static/";
+        sub_filter 'url(/static/' 'url(/chat/static/';
+        sub_filter 'url("/static/' 'url("/chat/static/';
+        sub_filter "url('/static/" "url('/chat/static/";
+        sub_filter '"/manifest.json' '"/chat/manifest.json';
+        sub_filter "'/manifest.json" "'/chat/manifest.json";
+        sub_filter '"/audio/' '"/chat/audio/';
+        sub_filter "'/audio/" "'/chat/audio/";
+        sub_filter '"/opensearch.xml' '"/chat/opensearch.xml';
+        sub_filter "'/opensearch.xml" "'/chat/opensearch.xml";
+    }
+
+    location = /chat {
+        return 302 /chat/;
+    }
+
+    location = /chat/ws/socket.io {
+        if ($has_fleet_auth_cookie = 0) { return 401; }
+        proxy_pass http://fleet_gateway/agent/ws/socket.io;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        access_log off;
+    }
+
+    location = /chat/ws/socket.io/ {
+        if ($has_fleet_auth_cookie = 0) { return 401; }
+        proxy_pass http://fleet_gateway/agent/ws/socket.io/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        access_log off;
+    }
+
+    location ^~ /chat/ {
+        proxy_pass http://fleet_gateway/agent/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_set_header Accept-Encoding "";
+        proxy_hide_header Content-Security-Policy;
+        add_header Content-Security-Policy "default-src 'self';script-src 'self' 'unsafe-inline';style-src 'self' 'unsafe-inline';img-src 'self' data:;connect-src 'self';font-src 'self';object-src 'none';frame-ancestors 'none';base-uri 'self';form-action 'self';script-src-attr 'none';upgrade-insecure-requests" always;
+        sub_filter_once off;
+        sub_filter_types application/javascript text/javascript;
+        sub_filter 'const e="Open WebUI",a="",' 'const e="Open WebUI",a="/chat",';
+        sub_filter 'path:"/ws/socket.io"' 'path:"/chat/ws/socket.io"';
+        sub_filter '`/auth?redirect=' '`/chat/auth?redirect=';
+        sub_filter '"/auth?redirect=' '"/chat/auth?redirect=';
+        sub_filter "'/auth?redirect=" "'/chat/auth?redirect=";
+        sub_filter '??"/auth"' '??"/chat/auth"';
+        sub_filter "??'/auth'" "??'/chat/auth'";
+        sub_filter 'base: ""' 'base: "/chat"';
+        sub_filter 'import("/_app/' 'import("/chat/_app/';
+        sub_filter "import('/_app/" "import('/chat/_app/";
+        sub_filter 'href="/_app/' 'href="/chat/_app/';
+        sub_filter 'src="/_app/' 'src="/chat/_app/';
+        sub_filter 'href="/static/' 'href="/chat/static/';
+        sub_filter 'src="/static/' 'src="/chat/static/';
+        sub_filter '"/static/' '"/chat/static/';
+        sub_filter "'/static/" "'/chat/static/";
+        sub_filter 'url(/static/' 'url(/chat/static/';
+        sub_filter 'url("/static/' 'url("/chat/static/';
+        sub_filter "url('/static/" "url('/chat/static/";
+        sub_filter '"/manifest.json' '"/chat/manifest.json';
+        sub_filter "'/manifest.json" "'/chat/manifest.json";
+        sub_filter '"/audio/' '"/chat/audio/';
+        sub_filter "'/audio/" "'/chat/audio/";
+        sub_filter '"/opensearch.xml' '"/chat/opensearch.xml';
+        sub_filter "'/opensearch.xml" "'/chat/opensearch.xml";
+    }
+
+    location = /dashboard {
+        return 302 /admin/;
+    }
+
+    location ^~ /dashboard/ {
+        return 302 /admin/;
+    }
+
+    location = /admin {
+        return 302 /admin/;
+    }
+
+    location ^~ /admin/ {
+        rewrite ^/admin/(.*)$ /$1 break;
+        proxy_pass http://$admin_console:5173;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 60s;
+    }
+
+    location / {
+        proxy_pass http://$admin_console:5173;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 60s;
+    }
+}

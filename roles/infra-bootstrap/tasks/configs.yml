@@ -17,11 +17,3 @@
     dest: "{{ remote_dir }}/infra/searxng/settings.yml"
     mode: "0644"
   notify: restart searxng
-
-- name: Apply ClickHouse schema idempotently
-  community.docker.docker_container_exec:
-    container: openclaw-clickhouse
-    command: clickhouse-client --multiquery < /docker-entrypoint-initdb.d/schema.sql
-  register: ch_schema
-  changed_when: false
-  failed_when: ch_schema.rc != 0

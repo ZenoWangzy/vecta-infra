@@ -20,7 +20,7 @@ on:
       tags:
         type: string
         description: "Ansible tags: nexus / jfrog / infra / search / open-webui / openclaw / vecta-app / all"
-        default: vecta-app
+        default: open-webui,vecta-app
       docker_cache_prune_until:
         type: string
         description: "Docker cache retention on the vtest runner after deploy; set to 'never' to skip"

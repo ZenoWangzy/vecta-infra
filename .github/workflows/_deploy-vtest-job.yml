@@ -13,7 +13,7 @@ on:
         description: "Whether to run DB migrations before deploy"
       tags:
         type: string
-        default: vecta-app
+        default: open-webui,vecta-app
         description: "Ansible tags to run (vecta-app, infra, search, open-webui, openclaw, nexus, jfrog, all)"
       migration_artifact_run_id:
         type: string
@@ -59,7 +59,7 @@ jobs:
       WECOM_BOT_SECRET: ${{ secrets.WECOM_BOT_SECRET }}
       DEPLOY_SHA: ${{ inputs.image_tag }}
       VTEST_ALLOW_MIGRATE: ${{ inputs.run_migrations && '1' || '0' }}
-      DEPLOY_TAGS: ${{ inputs.tags || 'vecta-app' }}
+      DEPLOY_TAGS: ${{ inputs.tags || 'open-webui,vecta-app' }}
     steps:
       - name: Configure git proxy
         run: |
@@ -125,7 +125,7 @@ jobs:
             -e "deploy_sha=$DEPLOY_SHA" \
             -e "vtest_allow_migrate=$VTEST_ALLOW_MIGRATE" \
             -e "vtest_migration_files=$(ls /tmp/migration-sqls/*.sql 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo '')" \
-            --tags "${DEPLOY_TAGS:-vecta-app}"
+            --tags "${DEPLOY_TAGS:-open-webui,vecta-app}"
 
       - name: Prune vtest Docker build state
         if: always()
