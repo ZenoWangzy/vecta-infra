@@ -4,3 +4,4 @@ vecta_infra_state_dir: "{{ lookup('env', 'VECTA_INFRA_STATE_DIR') | default(look
 open_webui_nginx_config_dir: "{{ vecta_infra_state_dir }}/open-webui"
 open_webui_nginx_config_path: "{{ open_webui_nginx_config_dir }}/nginx.conf"
 open_webui_network: openclaw-open-webui-net
+open_webui_nginx_image: nginx:alpine

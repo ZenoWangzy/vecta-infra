@@ -7,9 +7,10 @@ clickhouse_image: "clickhouse/clickhouse-server:24.3.4.147"
 litellm_image: "ghcr.io/berriai/litellm:main-v1.83.14-stable"
 searxng_image: "searxng/searxng:latest"
 wren_engine_image: "ghcr.io/canner/wren-engine-ibis:0.24.6"
-open_webui_image: "ghcr.io/open-webui/open-webui:v0.9.2"
-kk_file_view_image: "keking/kkfileview:latest"
-onlyoffice_image: "onlyoffice/documentserver:8.2"
+open_webui_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/ghcr.io/open-webui/open-webui:v0.9.2"
+open_webui_nginx_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/nginx:alpine"
+kk_file_view_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/keking/kkfileview:latest"
+onlyoffice_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/onlyoffice/documentserver:8.2"
 openclaw_image: "alpine/openclaw:2026.5.18"
 
 # Nexus dependency/cache endpoints.

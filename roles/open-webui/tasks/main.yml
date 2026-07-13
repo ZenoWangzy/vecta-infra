@@ -39,7 +39,7 @@
 - name: Start Open WebUI proxy (nginx)
   community.docker.docker_container:
     name: openclaw-webui-proxy
-    image: nginx:alpine
+    image: "{{ open_webui_nginx_image }}"
     state: started
     restart_policy: unless-stopped
     ports:
