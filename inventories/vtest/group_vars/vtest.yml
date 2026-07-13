@@ -61,6 +61,13 @@ debian_security_mirror: "{{ nexus_base_url }}/repository/{{ nexus_debian_securit
 docker_base_image_registry: "{{ nexus_docker_registry }}"
 docker_network: "openclaw-enterprise_openclaw-net"
 
+# Docker-network endpoints consumed by app containers. These must be infra-owned
+# because host-published ports from /data/ocee/.env are not valid inside Docker.
+minio_internal_endpoint: "openclaw-minio"
+minio_internal_port: "9000"
+minio_bucket: "files"
+minio_use_ssl: "false"
+
 # Runtime DB/cache credentials are host-local vtest state, not Git repo state.
 # The self-hosted runner sources /data/ocee/.env before invoking Ansible.
 postgres_user: "{{ lookup('env', 'POSTGRES_USER') | default('openclaw_poc', true) }}"

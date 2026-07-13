@@ -30,6 +30,10 @@ on:
         required: true
       NEXUS_ADMIN_PASSWORD:
         required: true
+      WECOM_CORP_ID:
+        required: false
+      WECOM_CONTACTS_SECRET:
+        required: false
       PROXY_USERNAME:
         required: false
       PROXY_PASSWORD:
@@ -45,6 +49,8 @@ jobs:
       DATABASE_URL: ${{ secrets.VTEST_DATABASE_URL }}
       SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
       NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
+      WECOM_CORP_ID: ${{ secrets.WECOM_CORP_ID }}
+      WECOM_CONTACTS_SECRET: ${{ secrets.WECOM_CONTACTS_SECRET }}
       DEPLOY_SHA: ${{ inputs.image_tag }}
       VTEST_ALLOW_MIGRATE: ${{ inputs.run_migrations && '1' || '0' }}
       DEPLOY_TAGS: ${{ inputs.tags || 'vecta-app' }}
@@ -94,12 +100,16 @@ jobs:
       - name: Deploy via Ansible
         run: |
           set -euo pipefail
+          ci_wecom_corp_id="${WECOM_CORP_ID:-}"
+          ci_wecom_contacts_secret="${WECOM_CONTACTS_SECRET:-}"
           if [ -f /data/ocee/.env ]; then
             set -a
             . /data/ocee/.env
             set +a
           fi
           export SERVICE_KEY="${SERVICE_KEY:-${OPENWEBUI_SERVICE_KEY:-}}"
+          [ -n "$ci_wecom_corp_id" ] && export WECOM_CORP_ID="$ci_wecom_corp_id"
+          [ -n "$ci_wecom_contacts_secret" ] && export WECOM_CONTACTS_SECRET="$ci_wecom_contacts_secret"
           ansible-playbook playbooks/deploy.yml \
             -i inventories/vtest/hosts.ini \
             -e "deploy_sha=$DEPLOY_SHA" \
