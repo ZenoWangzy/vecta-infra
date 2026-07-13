@@ -5,5 +5,11 @@
     executable: /bin/bash
   environment:
     BASE: "{{ base_url }}"
+    # Smoke runs on the vtest host runner. OpenWebUI is public under /chat/,
+    # so its deploy health contract is the host-local proxy health endpoint.
+    FLEET_BASE: "http://127.0.0.1:{{ fleet_port | default(3000) }}"
+    RAG_BASE: "http://127.0.0.1:8000"
+    OPENWEBUI_BASE: "http://127.0.0.1:3002"
+    INTERNAL_BASE: "http://127.0.0.1"
     SERVICE_KEY: "{{ lookup('env', 'SERVICE_KEY') }}"
   changed_when: false
