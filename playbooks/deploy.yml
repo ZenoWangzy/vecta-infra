@@ -1,5 +1,3 @@
-- name: Deploy vtest
-  hosts: vtest
-  gather_facts: false
-  roles:
-    - role: deploy-vtest
+# Full deploy: infra bootstrap + services + application containers.
+- import_playbook: infra.yml
+- import_playbook: app.yml

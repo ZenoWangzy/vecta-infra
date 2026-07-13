@@ -1,0 +1,16 @@
+# Standalone infra management — bootstrap dirs/network/configs, then start services.
+- name: Infrastructure bootstrap and services
+  hosts: all
+  gather_facts: true
+  pre_tasks:
+    - name: Guard against accidental prod deploy
+      ansible.builtin.fail:
+        msg: "Set mypc_deploy_enabled=true and configure a real host before deploying to mypc."
+      when:
+        - "'mypc' in group_names"
+        - not (mypc_deploy_enabled | default(false) | bool)
+  roles:
+    - role: infra-bootstrap
+      tags: [infra-bootstrap, infra]
+    - role: infra-services
+      tags: [infra-services, infra]

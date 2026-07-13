@@ -29,11 +29,6 @@
     - jfrog
   when: "'nexus' in ansible_run_tags or 'jfrog' in ansible_run_tags or 'all' in ansible_run_tags"
 
-- include_role:
-    name: infra-services
-    apply:
-      tags: infra
-  when: "'infra' in ansible_run_tags or 'all' in ansible_run_tags"
 
 - include_role:
     name: search

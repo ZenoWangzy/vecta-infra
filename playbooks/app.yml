@@ -1,0 +1,14 @@
+# Application-level containers only. Assumes infra is already running.
+- name: Deploy application containers
+  hosts: all
+  gather_facts: false
+  pre_tasks:
+    - name: Guard against accidental prod deploy
+      ansible.builtin.fail:
+        msg: "Set mypc_deploy_enabled=true and configure a real host before deploying to mypc."
+      when:
+        - "'mypc' in group_names"
+        - not (mypc_deploy_enabled | default(false) | bool)
+  roles:
+    - role: deploy-vtest
+      tags: [app]
