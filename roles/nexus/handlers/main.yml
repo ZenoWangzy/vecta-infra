@@ -2,3 +2,4 @@
   systemd:
     name: docker
     state: reloaded
+  become: true

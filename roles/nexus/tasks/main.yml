@@ -267,6 +267,7 @@
       }
     dest: /etc/docker/daemon.json
     mode: "0644"
+  become: true
   notify: Reload Docker daemon
 
 - name: Write .npmrc pointing to Nexus npm proxy
