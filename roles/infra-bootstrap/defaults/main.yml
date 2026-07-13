@@ -1,0 +1,13 @@
+infra_directories:
+  - "{{ remote_dir }}"
+  - "{{ remote_dir }}/infra"
+  - "{{ remote_dir }}/infra/litellm"
+  - "{{ remote_dir }}/infra/clickhouse"
+  - "{{ remote_dir }}/infra/searxng"
+  - "{{ remote_dir }}/data"
+  - "{{ remote_dir }}/data/minio"
+  - "{{ remote_dir }}/data/fleet-gateway"
+  - "{{ remote_dir }}/data/fleet-gateway/uploads"
+  - "{{ remote_dir }}/backups"
+  - "{{ remote_dir }}/deploy"
+  - "{{ remote_dir }}/deploy/instances"
