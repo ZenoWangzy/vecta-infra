@@ -9,7 +9,7 @@
     name: openclaw-wechat-contact-sync
     image: "{{ wechat_contact_sync_image }}"
     state: started
-    restart_policy: unless-stopped
+    restart_policy: "no"
     pull: true
     image_name_mismatch: recreate
     env:

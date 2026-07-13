@@ -33,7 +33,7 @@
       AUTH_MODE: "{{ auth_mode | default('prod') }}"
       DATABASE_URL: "postgresql://{{ postgres_user | default('openclaw_poc') }}:{{ postgres_password | default('poc-db-password-change-me') }}@openclaw-postgres:5432/{{ postgres_db | default('openclaw_poc') }}"
       REDIS_URL: "redis://:{{ redis_password | default('changeme-redis-pw') }}@openclaw-redis:6379"
-      LITELLM_BASE_URL: "{{ lookup('env', 'LITELLM_BASE_URL') | default('http://litellm-proxy:4000', true) }}"
+      LITELLM_BASE_URL: "{{ litellm_internal_base_url | default('http://openclaw-litellm:4000') }}"
       LITELLM_MASTER_KEY: "{{ lookup('env', 'LITELLM_MASTER_KEY') }}"
       LITELLM_CONFIG_PATH: "{{ lookup('env', 'LITELLM_CONFIG_PATH') | default('../../infra/litellm/config.yaml', true) }}"
       LLM_KEY_ENCRYPTION_KEY: "{{ lookup('env', 'LLM_KEY_ENCRYPTION_KEY') }}"

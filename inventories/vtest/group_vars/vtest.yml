@@ -67,6 +67,7 @@ minio_internal_endpoint: "openclaw-minio"
 minio_internal_port: "9000"
 minio_bucket: "files"
 minio_use_ssl: "false"
+litellm_internal_base_url: "http://openclaw-litellm:4000"
 
 # Runtime DB/cache credentials are host-local vtest state, not Git repo state.
 # The self-hosted runner sources /data/ocee/.env before invoking Ansible.
