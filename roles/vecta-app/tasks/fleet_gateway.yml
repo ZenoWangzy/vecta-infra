@@ -18,6 +18,16 @@
     group: "1000"
     mode: "0755"
 
+- name: Inspect host Docker socket for fleet-gateway runtime manager
+  stat:
+    path: /var/run/docker.sock
+  register: fleet_gateway_docker_socket
+
+- name: Fail if host Docker socket is unavailable for fleet-gateway
+  fail:
+    msg: "PER_USER_CONTAINERS=true requires /var/run/docker.sock on the vtest host"
+  when: not fleet_gateway_docker_socket.stat.exists
+
 - name: Deploy fleet-gateway
   community.docker.docker_container:
     name: openclaw-fleet-gateway
@@ -70,6 +80,8 @@
       - "{{ remote_dir }}/deploy:/app/data/instances"
       - "{{ remote_dir }}/data/fleet-gateway/uploads:/app/data/uploads"
       - "/var/run/docker.sock:/var/run/docker.sock"
+    groups:
+      - "{{ fleet_gateway_docker_socket.stat.gid | string }}"
     networks:
       - name: "{{ docker_network }}"
     memory: "2g"
