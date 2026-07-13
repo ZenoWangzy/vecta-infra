@@ -16,7 +16,7 @@ openclaw_image: "alpine/openclaw:2026.5.18"
 nexus_base_url: "http://127.0.0.1:8081"
 nexus_npm_proxy_repo: vecta-npm-proxy
 nexus_pypi_proxy_repo: vecta-pypi-proxy
-nexus_alpine_proxy_repo: vecta-alpine-proxy
+nexus_alpine_proxy_repo: vecta-alpine-vtest-proxy
 nexus_debian_proxy_repo: vecta-debian-proxy
 nexus_debian_security_proxy_repo: vecta-debian-security-proxy
 nexus_alpine_remote_url: "https://mirrors.aliyun.com/alpine"
