@@ -91,7 +91,11 @@
           },
           'httpClient': {
             'blocked': false,
-            'autoBlock': true
+            'autoBlock': true,
+            'connection': {
+              'retries': 2,
+              'timeout': 300
+            }
           }
         }
         | combine(({'raw': item.item.raw} if item.item.format == 'raw' else {}), recursive=True)
