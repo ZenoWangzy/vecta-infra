@@ -107,7 +107,7 @@ jobs:
             . /data/ocee/.env
             set +a
           fi
-          export SERVICE_KEY="${SERVICE_KEY:-${OPENWEBUI_SERVICE_KEY:-}}"
+          export SERVICE_KEY="${OPENWEBUI_SERVICE_KEY:-${SERVICE_KEY:-}}"
           [ -n "$ci_wecom_corp_id" ] && export WECOM_CORP_ID="$ci_wecom_corp_id"
           [ -n "$ci_wecom_contacts_secret" ] && export WECOM_CONTACTS_SECRET="$ci_wecom_contacts_secret"
           ansible-playbook playbooks/deploy.yml \

@@ -11,5 +11,5 @@
     RAG_BASE: "http://127.0.0.1:8000"
     OPENWEBUI_BASE: "http://127.0.0.1:3002"
     INTERNAL_BASE: "http://127.0.0.1"
-    SERVICE_KEY: "{{ lookup('env', 'SERVICE_KEY') }}"
+    SERVICE_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') | default(lookup('env', 'SERVICE_KEY'), true) }}"
   changed_when: false

@@ -7,7 +7,7 @@
     volumes:
       - openclaw-open-webui-data:/app/backend/data
     env:
-      OPENAI_API_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') }}"
+      OPENAI_API_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') | default(lookup('env', 'SERVICE_KEY'), true) }}"
       WEBUI_SECRET_KEY: "{{ lookup('env', 'WEBUI_SECRET_KEY') }}"
       WEBUI_URL: "{{ base_url }}/chat"
     networks:
