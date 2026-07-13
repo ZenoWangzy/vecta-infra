@@ -108,9 +108,9 @@
 
 # ── Docker registry repositories ──────────────────────────────────────────────
 
-- name: Check Nexus Docker connector on port {{ nexus_docker_connector_port }}
+- name: Check Nexus Docker hosted connector on port {{ nexus_docker_hosted_connector_port }}
   uri:
-    url: "http://127.0.0.1:{{ nexus_docker_connector_port }}/v2/"
+    url: "http://127.0.0.1:{{ nexus_docker_hosted_connector_port }}/v2/"
     method: GET
     status_code: [200, 401]
     timeout: 5
@@ -151,7 +151,7 @@
       docker:
         v1Enabled: false
         forceBasicAuth: true
-        httpPort: "{{ nexus_docker_connector_port }}"
+        httpPort: "{{ nexus_docker_hosted_connector_port }}"
     status_code: [200, 201, 204]
     timeout: 30
   no_log: true
@@ -240,10 +240,22 @@
       docker:
         v1Enabled: false
         forceBasicAuth: true
-        httpPort: "{{ nexus_docker_connector_port }}"
+        httpPort: "{{ nexus_docker_group_connector_port }}"
     status_code: [200, 201, 204]
     timeout: 30
   no_log: true
+
+- name: Check Nexus Docker group connector on port {{ nexus_docker_group_connector_port }}
+  uri:
+    url: "http://127.0.0.1:{{ nexus_docker_group_connector_port }}/v2/"
+    method: GET
+    status_code: [200, 401]
+    timeout: 5
+  register: nexus_docker_group_connector_health
+  retries: 3
+  delay: 2
+  until: nexus_docker_group_connector_health.status in [200, 401]
+  failed_when: nexus_docker_group_connector_health.status not in [200, 401]
 
 # ── Docker daemon mirror + npmrc ──────────────────────────────────────────────
 
@@ -251,7 +263,7 @@
   copy:
     content: |
       {
-        "registry-mirrors": ["http://127.0.0.1:{{ nexus_docker_connector_port }}"]
+        "registry-mirrors": ["http://127.0.0.1:{{ nexus_docker_group_connector_port }}"]
       }
     dest: /etc/docker/daemon.json
     mode: "0644"

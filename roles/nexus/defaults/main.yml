@@ -16,8 +16,10 @@ nexus_debian_remote_url: "http://deb.debian.org/debian"
 nexus_debian_security_proxy_repo: vecta-debian-security-proxy
 nexus_debian_security_remote_url: "http://deb.debian.org/debian-security"
 
-# Docker registry — Nexus Docker-hosted connector on a dedicated port.
+# Docker registry — app images use hosted on 8082; daemon mirror uses group on 8083.
 nexus_docker_connector_port: 8082
+nexus_docker_hosted_connector_port: "{{ nexus_docker_connector_port }}"
+nexus_docker_group_connector_port: 8083
 nexus_docker_hosted_repo: vecta-docker-local
 nexus_docker_proxy_repo: vecta-docker-remote
 nexus_docker_group_repo: vecta-docker-virtual
