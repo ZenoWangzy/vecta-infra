@@ -9,6 +9,7 @@ OPENWEBUI_BASE="${OPENWEBUI_BASE:-$BASE}"
 SERVICE_KEY="${SERVICE_KEY:?SERVICE_KEY required}"
 AUTH_EMAIL="${AUTH_EMAIL:-IT001@openclaw.internal}"
 SMOKE_MODEL="${SMOKE_MODEL:-openclaw-agent}"
+SMOKE_CHANNEL_REQUIRED="${SMOKE_CHANNEL_REQUIRED:-auto}"
 code="$(curl -s -o /dev/null -w '%{http_code}' "${FLEET_BASE}/healthz" || echo 000)"
 [ "$code" = "200" ] || { echo "FAIL Fleet ${FLEET_BASE}/healthz -> $code" >&2; exit 1; }
 echo "OK   Fleet /healthz"
@@ -22,12 +23,28 @@ chat="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${SERVI
 [ "${chat#2}" != "$chat" ] || { echo "FAIL /v1/chat/completions -> $chat" >&2; exit 1; }
 echo "OK   /v1/chat/completions (chat_code=$chat)"
 if [ -n "${INTERNAL_BASE:-}" ]; then
-  for spec in "8000/healthz:RAG" "9000/healthz:Channel"; do
-    url="${spec%%:*}"; name="${spec##*:}"
-    c="$(curl -s -o /dev/null -w '%{http_code}' "${INTERNAL_BASE}:${url}" || echo 000)"
-    [ "$c" = "200" ] || { echo "FAIL $name (internal) -> $c" >&2; exit 1; }
-    echo "OK   $name (internal)"
-  done
+  c="$(curl -s -o /dev/null -w '%{http_code}' "${INTERNAL_BASE}:8000/healthz" || echo 000)"
+  [ "$c" = "200" ] || { echo "FAIL RAG (internal) -> $c" >&2; exit 1; }
+  echo "OK   RAG (internal)"
+
+  channel_required="$SMOKE_CHANNEL_REQUIRED"
+  if [ "$channel_required" = "auto" ]; then
+    channel_required=false
+    if [ -n "${WECOM_BOT_ID:-}" ] && [ -n "${WECOM_BOT_SECRET:-}" ]; then
+      channel_required=true
+    fi
+  fi
+
+  case "$channel_required" in
+    true|TRUE|1|yes|YES)
+      c="$(curl -s -o /dev/null -w '%{http_code}' "${INTERNAL_BASE}:9000/healthz" || echo 000)"
+      [ "$c" = "200" ] || { echo "FAIL Channel (internal) -> $c" >&2; exit 1; }
+      echo "OK   Channel (internal)"
+      ;;
+    *)
+      echo "SKIP Channel (internal; SMOKE_CHANNEL_REQUIRED=$channel_required)"
+      ;;
+  esac
 else
   echo "SKIP RAG/Channel (internal; set INTERNAL_BASE=http://127.0.0.1)"
 fi
