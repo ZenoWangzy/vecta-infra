@@ -34,6 +34,10 @@ on:
         required: false
       WECOM_CONTACTS_SECRET:
         required: false
+      WECOM_BOT_ID:
+        required: false
+      WECOM_BOT_SECRET:
+        required: false
       PROXY_USERNAME:
         required: false
       PROXY_PASSWORD:
@@ -51,6 +55,8 @@ jobs:
       NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
       WECOM_CORP_ID: ${{ secrets.WECOM_CORP_ID }}
       WECOM_CONTACTS_SECRET: ${{ secrets.WECOM_CONTACTS_SECRET }}
+      WECOM_BOT_ID: ${{ secrets.WECOM_BOT_ID }}
+      WECOM_BOT_SECRET: ${{ secrets.WECOM_BOT_SECRET }}
       DEPLOY_SHA: ${{ inputs.image_tag }}
       VTEST_ALLOW_MIGRATE: ${{ inputs.run_migrations && '1' || '0' }}
       DEPLOY_TAGS: ${{ inputs.tags || 'vecta-app' }}
@@ -102,6 +108,8 @@ jobs:
           set -euo pipefail
           ci_wecom_corp_id="${WECOM_CORP_ID:-}"
           ci_wecom_contacts_secret="${WECOM_CONTACTS_SECRET:-}"
+          ci_wecom_bot_id="${WECOM_BOT_ID:-}"
+          ci_wecom_bot_secret="${WECOM_BOT_SECRET:-}"
           if [ -f /data/ocee/.env ]; then
             set -a
             . /data/ocee/.env
@@ -110,6 +118,8 @@ jobs:
           export SERVICE_KEY="${OPENWEBUI_SERVICE_KEY:-${SERVICE_KEY:-}}"
           [ -n "$ci_wecom_corp_id" ] && export WECOM_CORP_ID="$ci_wecom_corp_id"
           [ -n "$ci_wecom_contacts_secret" ] && export WECOM_CONTACTS_SECRET="$ci_wecom_contacts_secret"
+          [ -n "$ci_wecom_bot_id" ] && export WECOM_BOT_ID="$ci_wecom_bot_id"
+          [ -n "$ci_wecom_bot_secret" ] && export WECOM_BOT_SECRET="$ci_wecom_bot_secret"
           ansible-playbook playbooks/deploy.yml \
             -i inventories/vtest/hosts.ini \
             -e "deploy_sha=$DEPLOY_SHA" \
