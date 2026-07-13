@@ -1,3 +1,11 @@
+- name: Ensure Open WebUI Docker networks exist
+  community.docker.docker_network:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - "{{ docker_network }}"
+    - "{{ open_webui_network }}"
+
 - name: Ensure Open WebUI nginx config directory
   ansible.builtin.file:
     path: "{{ open_webui_nginx_config_dir }}"
@@ -25,7 +33,7 @@
       WEBUI_URL: "{{ base_url }}/chat"
     networks:
       - name: "{{ docker_network }}"
-      - name: openclaw-open-webui-net
+      - name: "{{ open_webui_network }}"
     memory: "512m"
 
 - name: Start Open WebUI proxy (nginx)
@@ -40,7 +48,7 @@
       - "{{ open_webui_nginx_config_path }}:/etc/nginx/conf.d/default.conf:ro"
     networks:
       - name: "{{ docker_network }}"
-      - name: openclaw-open-webui-net
+      - name: "{{ open_webui_network }}"
     restart: "{{ open_webui_nginx_config.changed | default(false) }}"
 
 - name: Start KK File View
@@ -51,7 +59,7 @@
     restart_policy: unless-stopped
     networks:
       - name: "{{ docker_network }}"
-      - name: openclaw-open-webui-net
+      - name: "{{ open_webui_network }}"
     memory: "512m"
 
 - name: Start OnlyOffice Document Server
@@ -65,4 +73,4 @@
       - onlyoffice_data:/var/www/onlyoffice/Data
     networks:
       - name: "{{ docker_network }}"
-      - name: openclaw-open-webui-net
+      - name: "{{ open_webui_network }}"
