@@ -36,12 +36,9 @@
   until: clickhouse_ready.rc == 0
 
 - name: Apply ClickHouse schema idempotently
-  community.docker.docker_container_exec:
-    container: openclaw-clickhouse
-    argv:
-      - /bin/sh
-      - -c
-      - clickhouse-client --multiquery < /docker-entrypoint-initdb.d/schema.sql
+  shell: >
+    docker exec -i openclaw-clickhouse clickhouse-client --multiquery
+    < {{ (remote_dir + '/infra/clickhouse/schema.sql') | quote }}
   register: ch_schema
   changed_when: false
   failed_when: ch_schema.rc != 0
