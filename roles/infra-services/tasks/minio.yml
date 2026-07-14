@@ -1,3 +1,10 @@
+- name: Resolve MinIO root credentials
+  set_fact:
+    minio_root_user_effective: "{{ minio_root_user | default(lookup('env', 'MINIO_ACCESS_KEY') | default('openclaw', true), true) }}"
+    minio_root_password_effective: "{{ minio_root_password | default(lookup('env', 'MINIO_SECRET_KEY') | default('openclaw-minio-password', true), true) }}"
+  changed_when: false
+  no_log: true
+
 - name: Start MinIO
   community.docker.docker_container:
     name: openclaw-minio
@@ -11,8 +18,8 @@
     volumes:
       - "{{ remote_dir }}/data/minio:/data"
     env:
-      MINIO_ROOT_USER: "{{ minio_root_user | default('openclaw') }}"
-      MINIO_ROOT_PASSWORD: "{{ minio_root_password | default('openclaw-minio-password') }}"
+      MINIO_ROOT_USER: "{{ minio_root_user_effective }}"
+      MINIO_ROOT_PASSWORD: "{{ minio_root_password_effective }}"
     networks:
       - name: "{{ docker_network }}"
 
@@ -31,7 +38,7 @@
     restart_policy: "no"
     command: >
       /bin/sh -c "
-      mc alias set local http://openclaw-minio:9000 {{ minio_root_user | default('openclaw') }} {{ minio_root_password | default('openclaw-minio-password') }} &&
+      mc alias set local http://openclaw-minio:9000 {{ minio_root_user_effective | quote }} {{ minio_root_password_effective | quote }} &&
       mc mb --ignore-existing local/openclaw-files &&
       mc mb --ignore-existing local/openclaw-artifacts &&
       echo done"

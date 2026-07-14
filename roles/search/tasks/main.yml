@@ -44,3 +44,4 @@
     ports: "{{ wren_engine_published_ports | default([]) }}"
     networks:
       - name: "{{ docker_network }}"
+  when: wren_engine_enabled | default(true) | bool
