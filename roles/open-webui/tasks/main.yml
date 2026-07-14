@@ -42,6 +42,7 @@
       - name: "{{ docker_network }}"
       - name: "{{ open_webui_network }}"
     memory: "512m"
+  register: open_webui_container
 
 - name: Start Open WebUI proxy (nginx)
   community.docker.docker_container:
@@ -56,7 +57,7 @@
     networks:
       - name: "{{ docker_network }}"
       - name: "{{ open_webui_network }}"
-    restart: "{{ open_webui_nginx_config.changed | default(false) }}"
+    restart: "{{ (open_webui_nginx_config.changed | default(false)) or (open_webui_container.changed | default(false)) }}"
 
 - name: Render host nginx vtest site
   become: true
