@@ -63,8 +63,7 @@ chat="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${SERVI
 [ "${chat#2}" != "$chat" ] || { echo "FAIL /v1/chat/completions -> $chat" >&2; exit 1; }
 echo "OK   /v1/chat/completions (chat_code=$chat)"
 if [ -n "${INTERNAL_BASE:-}" ]; then
-  c="$(curl -s -o /dev/null -w '%{http_code}' "${INTERNAL_BASE}:8000/healthz" || echo 000)"
-  [ "$c" = "200" ] || { echo "FAIL RAG (internal) -> $c" >&2; exit 1; }
+  wait_code "RAG (internal)" "${INTERNAL_BASE}:8000/healthz" 200
   echo "OK   RAG (internal)"
 
   channel_required="$SMOKE_CHANNEL_REQUIRED"
@@ -77,8 +76,7 @@ if [ -n "${INTERNAL_BASE:-}" ]; then
 
   case "$channel_required" in
     true|TRUE|1|yes|YES)
-      c="$(curl -s -o /dev/null -w '%{http_code}' "${INTERNAL_BASE}:9000/healthz" || echo 000)"
-      [ "$c" = "200" ] || { echo "FAIL Channel (internal) -> $c" >&2; exit 1; }
+      wait_code "Channel (internal)" "${INTERNAL_BASE}:9000/healthz" 200
       echo "OK   Channel (internal)"
       ;;
     *)
