@@ -18,7 +18,11 @@
       DEEPSEEK_API_KEY: "{{ lookup('env', 'DEEPSEEK_API_KEY') }}"
       MOONSHOT_API_KEY: "{{ lookup('env', 'MOONSHOT_API_KEY') }}"
     healthcheck:
-      test: ["CMD", "curl", "-fsSL", "http://localhost:4000/health/readiness"]
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness', timeout=3).read()"
       interval: "10s"
       timeout: "5s"
       retries: 5
