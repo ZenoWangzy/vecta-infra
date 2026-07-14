@@ -80,6 +80,11 @@ minio_bucket: "files"
 minio_use_ssl: "false"
 litellm_internal_base_url: "http://openclaw-litellm:4000"
 
+# vtest exposes the public SaaS registration page. Keep these explicit so the
+# deployed gateway matches the UI and does not depend on container defaults.
+allow_self_signup: true
+email_verification_required: false
+
 # Runtime DB/cache credentials are host-local vtest state, not Git repo state.
 # The self-hosted runner sources /data/ocee/.env before invoking Ansible.
 postgres_user: "{{ lookup('env', 'POSTGRES_USER') | default('openclaw_poc', true) }}"

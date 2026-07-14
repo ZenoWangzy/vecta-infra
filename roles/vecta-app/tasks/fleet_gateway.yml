@@ -41,6 +41,8 @@
     env:
       TZ: Asia/Shanghai
       AUTH_MODE: "{{ auth_mode | default('prod') }}"
+      ALLOW_SELF_SIGNUP: "{{ allow_self_signup | default(false) | bool | ternary('true', 'false') }}"
+      EMAIL_VERIFICATION_REQUIRED: "{{ email_verification_required | default(true) | bool | ternary('true', 'false') }}"
       DATABASE_URL: "postgresql://{{ postgres_user | default('openclaw_poc') }}:{{ postgres_password | default('poc-db-password-change-me') }}@openclaw-postgres:5432/{{ postgres_db | default('openclaw_poc') }}"
       REDIS_URL: "redis://:{{ redis_password | default('changeme-redis-pw') }}@openclaw-redis:6379"
       LITELLM_BASE_URL: "{{ litellm_internal_base_url | default('http://openclaw-litellm:4000') }}"
