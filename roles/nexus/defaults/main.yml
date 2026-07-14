@@ -23,5 +23,6 @@ nexus_docker_group_connector_port: 8083
 nexus_docker_hosted_repo: vecta-docker-local
 nexus_docker_proxy_repo: vecta-docker-remote
 nexus_docker_group_repo: vecta-docker-virtual
-nexus_docker_remote_url: "https://swr.cn-north-4.myhuaweicloud.com"
+# Official Docker Hub registry API endpoint for the Nexus Docker proxy.
 nexus_docker_remote_index_url: "https://index.docker.io/"
+nexus_docker_remote_url: "https://registry-1.docker.io"
