@@ -59,6 +59,41 @@
       - name: "{{ open_webui_network }}"
     restart: "{{ (open_webui_nginx_config.changed | default(false)) or (open_webui_container.changed | default(false)) }}"
 
+- name: Probe Open WebUI proxy health
+  ansible.builtin.uri:
+    url: "{{ open_webui_proxy_health_url }}"
+    method: GET
+    status_code: 200
+    return_content: true
+  register: open_webui_proxy_health
+  failed_when: false
+  changed_when: false
+
+- name: Reload Open WebUI proxy after unhealthy probe
+  community.docker.docker_container_exec:
+    container: openclaw-webui-proxy
+    argv:
+      - nginx
+      - -s
+      - reload
+  when: >
+    (open_webui_proxy_health.status | default(0) != 200) or
+    not (open_webui_proxy_health.json.status | default(false) | bool)
+
+- name: Wait for Open WebUI proxy health
+  ansible.builtin.uri:
+    url: "{{ open_webui_proxy_health_url }}"
+    method: GET
+    status_code: 200
+    return_content: true
+  register: open_webui_proxy_health_ready
+  retries: "{{ open_webui_proxy_health_retries }}"
+  delay: "{{ open_webui_proxy_health_delay }}"
+  until:
+    - open_webui_proxy_health_ready.status | default(0) == 200
+    - open_webui_proxy_health_ready.json.status | default(false) | bool
+  changed_when: false
+
 - name: Render host nginx vtest site
   become: true
   ansible.builtin.template:
