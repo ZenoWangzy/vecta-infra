@@ -41,7 +41,6 @@
     pull: true
     image_name_mismatch: recreate
     restart_policy: unless-stopped
-    ports:
-      - "8000:8000"
+    ports: "{{ wren_engine_published_ports | default([]) }}"
     networks:
       - name: "{{ docker_network }}"

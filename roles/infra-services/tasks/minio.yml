@@ -7,9 +7,7 @@
     image_name_mismatch: recreate
     restart_policy: unless-stopped
     command: server /data --console-address ':9001'
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+    ports: "{{ minio_published_ports | default([]) }}"
     volumes:
       - "{{ remote_dir }}/data/minio:/data"
     env:
