@@ -1,17 +1,18 @@
 # Third-party infra images (pinned, not affected by deploy_sha)
-postgres_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/pgvector/pgvector:pg16"
-redis_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/redis:7-alpine"
-minio_image: "minio/minio:RELEASE.2024-01-31T20-20-33Z"
-minio_mc_image: "minio/mc:latest"
-clickhouse_image: "clickhouse/clickhouse-server:24.3.4.147"
-litellm_image: "ghcr.io/berriai/litellm:main-v1.83.14-stable"
-searxng_image: "searxng/searxng:latest"
-wren_engine_image: "ghcr.io/canner/wren-engine-ibis:0.24.6"
-open_webui_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/ghcr.io/open-webui/open-webui:v0.9.2"
-open_webui_nginx_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/nginx:alpine"
-kk_file_view_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/keking/kkfileview:latest"
-onlyoffice_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/onlyoffice/documentserver:8.2"
-openclaw_image: "alpine/openclaw:2026.5.18"
+# All pulled through Nexus OSS virtual Docker repo on vtest host (proxies SWR upstream)
+postgres_image: "127.0.0.1:8082/pgvector/pgvector:pg16"
+redis_image: "127.0.0.1:8082/library/redis:7-alpine"
+minio_image: "127.0.0.1:8082/minio/minio:RELEASE.2024-01-31T20-20-33Z"
+minio_mc_image: "127.0.0.1:8082/minio/mc:latest"
+clickhouse_image: "127.0.0.1:8082/clickhouse/clickhouse-server:24.3.4.147"
+litellm_image: "127.0.0.1:8082/berriai/litellm:main-v1.83.14-stable"
+searxng_image: "127.0.0.1:8082/searxng/searxng:latest"
+wren_engine_image: "127.0.0.1:8082/canner/wren-engine-ibis:0.24.6"
+open_webui_image: "127.0.0.1:8082/open-webui/open-webui:v0.9.2"
+open_webui_nginx_image: "127.0.0.1:8082/library/nginx:alpine"
+kk_file_view_image: "127.0.0.1:8082/keking/kkfileview:latest"
+onlyoffice_image: "127.0.0.1:8082/onlyoffice/documentserver:8.2"
+openclaw_image: "127.0.0.1:8082/alpine/openclaw:2026.5.18"
 
 # Public vtest nginx vhost. The host nginx config must route browser paths into
 # the infra-owned Open WebUI proxy on :3002, not directly to app containers.
