@@ -31,6 +31,13 @@
       OPENAI_API_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') | default(lookup('env', 'SERVICE_KEY'), true) }}"
       WEBUI_SECRET_KEY: "{{ lookup('env', 'WEBUI_SECRET_KEY') }}"
       WEBUI_URL: "{{ base_url }}/chat"
+      WEBUI_AUTH_TRUSTED_EMAIL_HEADER: X-Auth-Email
+      WEBUI_AUTH_TRUSTED_NAME_HEADER: X-Auth-Name
+      WEBUI_AUTH_TRUSTED_ROLE_HEADER: X-Auth-Role
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+      FORWARD_USER_INFO_HEADER_USER_EMAIL: X-Auth-Email
+      FORWARD_USER_INFO_HEADER_USER_NAME: X-Auth-Name
+      FORWARD_USER_INFO_HEADER_USER_ROLE: X-Auth-Role
     networks:
       - name: "{{ docker_network }}"
       - name: "{{ open_webui_network }}"
