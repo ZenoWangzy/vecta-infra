@@ -3,6 +3,8 @@
     name: openclaw-minio
     image: "{{ minio_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: unless-stopped
     command: server /data --console-address ':9001'
     ports:
@@ -26,6 +28,8 @@
     name: openclaw-minio-init
     image: "{{ minio_mc_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: "no"
     command: >
       /bin/sh -c "

@@ -3,6 +3,8 @@
     name: openclaw-searxng
     image: "{{ searxng_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: unless-stopped
     volumes:
       - "{{ remote_dir }}/infra/searxng/settings.yml:/etc/searxng/settings.yml:ro"
@@ -15,8 +17,10 @@
 - name: Start Baidu Search Service
   community.docker.docker_container:
     name: openclaw-baidu-search-service
-    image: "{{ baidu_search_image | default('openclaw-enterprise-baidu-search-service:latest') }}"
+    image: "{{ baidu_search_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: unless-stopped
     env:
       TZ: Asia/Shanghai
@@ -34,6 +38,8 @@
     name: openclaw-wren-engine
     image: "{{ wren_engine_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: unless-stopped
     ports:
       - "8000:8000"

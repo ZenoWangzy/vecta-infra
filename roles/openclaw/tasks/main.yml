@@ -3,6 +3,8 @@
     name: openclaw-employee
     image: "{{ openclaw_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: always
     ports:
       - "18793:18789"
@@ -32,6 +34,8 @@
     name: openclaw-ceo
     image: "{{ openclaw_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: always
     ports:
       - "18791:18789"

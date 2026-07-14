@@ -3,6 +3,8 @@
     name: openclaw-redis
     image: "{{ redis_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: unless-stopped
     ports:
       - "{{ redis_port | default('6379') }}:6379"

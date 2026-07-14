@@ -68,7 +68,7 @@
       MINIO_USE_SSL: "{{ minio_use_ssl | default('false') | string }}"
       HERMES_API_SERVER_KEY: "{{ lookup('env', 'HERMES_API_SERVER_KEY') }}"
       HERMES_RUNTIME_ENABLED: "true"
-      HERMES_RUNTIME_IMAGE_VERSION: "{{ lookup('env', 'HERMES_RUNTIME_IMAGE_VERSION') | default(hermes_runtime_image_version | default('vecta-hermes-withopenclaw:v0.18.0-nospan-rc1'), true) }}"
+      HERMES_RUNTIME_IMAGE_VERSION: "{{ hermes_runtime_image_version | default(lookup('env', 'HERMES_RUNTIME_IMAGE_VERSION') | default('vecta-hermes-withopenclaw:v0.18.0-nospan-rc1', true), true) }}"
       PER_USER_CONTAINERS: "true"
       DOCKER_NETWORK: "{{ docker_network }}"
       DOCKER_SOCKET_PATH: /var/run/docker.sock

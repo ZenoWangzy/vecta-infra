@@ -24,6 +24,8 @@
     name: openclaw-open-webui
     image: "{{ open_webui_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: unless-stopped
     volumes:
       - openclaw-open-webui-data:/app/backend/data
@@ -49,6 +51,8 @@
     name: openclaw-webui-proxy
     image: "{{ open_webui_nginx_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: unless-stopped
     ports:
       - "3002:80"
@@ -141,6 +145,8 @@
     name: kkfileview
     image: "{{ kk_file_view_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: unless-stopped
     networks:
       - name: "{{ docker_network }}"
@@ -152,6 +158,8 @@
     name: onlyoffice
     image: "{{ onlyoffice_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: unless-stopped
     volumes:
       - onlyoffice_logs:/var/log/onlyoffice

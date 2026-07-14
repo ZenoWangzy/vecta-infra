@@ -3,6 +3,8 @@
     name: openclaw-clickhouse
     image: "{{ clickhouse_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: unless-stopped
     ports:
       - "{{ clickhouse_http_port | default('8123') }}:8123"

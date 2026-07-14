@@ -3,6 +3,8 @@
     name: openclaw-postgres
     image: "{{ postgres_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: unless-stopped
     ports:
       - "{{ postgres_port | default('5432') }}:5432"

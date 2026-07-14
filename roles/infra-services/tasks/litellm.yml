@@ -3,6 +3,8 @@
     name: openclaw-litellm
     image: "{{ litellm_image }}"
     state: started
+    pull: true
+    image_name_mismatch: recreate
     restart_policy: always
     ports:
       - "4000:4000"

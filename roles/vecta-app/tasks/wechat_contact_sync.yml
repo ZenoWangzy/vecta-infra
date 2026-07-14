@@ -4,6 +4,11 @@
     port: "{{ fleet_port | default(3000) }}"
     timeout: 30
 
+- name: Remove legacy non-Nexus WeCom contact sync container
+  community.docker.docker_container:
+    name: openclaw-wecom-contact-sync
+    state: absent
+
 - name: Deploy wechat-contact-sync
   community.docker.docker_container:
     name: openclaw-wechat-contact-sync
