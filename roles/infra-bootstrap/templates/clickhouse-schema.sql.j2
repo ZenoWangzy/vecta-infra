@@ -15,13 +15,13 @@ CREATE TABLE IF NOT EXISTS audit_events (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (tenant_id, created_at, event_type)
-TTL created_at + INTERVAL 2 YEAR;
+TTL toDateTime(created_at) + INTERVAL 2 YEAR;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS audit_alerts_mv
 ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(created_at)
 ORDER BY (tenant_id, created_at)
-TTL created_at + INTERVAL 90 DAY
+TTL toDateTime(created_at) + INTERVAL 90 DAY
 AS SELECT *
 FROM audit_events
 WHERE severity IN ('warn', 'critical');
