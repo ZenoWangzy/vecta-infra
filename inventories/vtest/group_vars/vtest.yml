@@ -85,6 +85,7 @@ minio_internal_port: "9000"
 minio_bucket: "files"
 minio_use_ssl: "false"
 litellm_internal_base_url: "http://openclaw-litellm:4000"
+fleet_gateway_internal_url: "http://openclaw-fleet-gateway:3000"
 
 # vtest exposes the public SaaS registration page. Keep these explicit so the
 # deployed gateway matches the UI and does not depend on container defaults.
