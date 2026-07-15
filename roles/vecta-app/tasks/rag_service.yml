@@ -10,10 +10,13 @@
       - "8000:8000"
     volumes:
       - rag_model_cache:/app/model_cache
+      - "{{ remote_dir }}/data/fleet-gateway/uploads:/app/data/uploads"
     env:
       DATABASE_URL: "postgresql://{{ postgres_user | default('openclaw_poc') }}:{{ postgres_password | default('poc-db-password-change-me') }}@openclaw-postgres:5432/{{ postgres_db | default('openclaw_poc') }}"
       RAG_INTERNAL_TOKEN: "{{ lookup('env', 'RAG_INTERNAL_TOKEN') }}"
-      RAG_ADMIN_TOKEN: "{{ lookup('env', 'RAG_ADMIN_TOKEN') }}"
+      RAG_ADMIN_TOKEN: "{{ lookup('env', 'RAG_ADMIN_TOKEN') | default(lookup('env', 'ADMIN_TOKEN'), true) }}"
+      ADMIN_TOKEN: "{{ lookup('env', 'RAG_ADMIN_TOKEN') | default(lookup('env', 'ADMIN_TOKEN'), true) }}"
+      KNOWLEDGE_DIR: /app/data/uploads
       TZ: Asia/Shanghai
     networks:
       - name: "{{ docker_network }}"

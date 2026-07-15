@@ -48,6 +48,41 @@ wait_reachable() {
   return 1
 }
 
+check_container_env() {
+  container="$1"
+  env_name="$2"
+  if ! docker exec "$container" sh -lc "test -n \"\$(printenv ${env_name})\""; then
+    echo "FAIL ${container} missing non-empty ${env_name}" >&2
+    return 1
+  fi
+  echo "OK   ${container} ${env_name} is set"
+}
+
+check_rag_admin_boundary() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "SKIP RAG admin boundary (docker unavailable)"
+    return 0
+  fi
+  if ! docker inspect openclaw-fleet-gateway openclaw-rag-service >/dev/null 2>&1; then
+    echo "SKIP RAG admin boundary (containers unavailable)"
+    return 0
+  fi
+
+  check_container_env openclaw-fleet-gateway RAG_ADMIN_TOKEN
+  check_container_env openclaw-rag-service ADMIN_TOKEN
+  check_container_env openclaw-rag-service KNOWLEDGE_DIR
+
+  rag_admin_token="$(docker exec openclaw-fleet-gateway printenv RAG_ADMIN_TOKEN)"
+  rag_internal_token="$(docker exec openclaw-fleet-gateway printenv RAG_INTERNAL_TOKEN || true)"
+  rag_admin_url="${RAG_BASE:-${INTERNAL_BASE}:8000}/admin/status"
+  rag_admin_code="$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "x-admin-token: ${rag_admin_token}" \
+    -H "x-internal-token: ${rag_internal_token}" \
+    "$rag_admin_url" || echo 000)"
+  [ "$rag_admin_code" = "200" ] || { echo "FAIL RAG admin boundary -> $rag_admin_code" >&2; exit 1; }
+  echo "OK   RAG admin boundary"
+}
+
 wait_code Fleet "${FLEET_BASE}/healthz" 200
 echo "OK   Fleet /healthz"
 wait_code OpenWebUI "${OPENWEBUI_BASE}/health" 200
@@ -65,6 +100,7 @@ echo "OK   /v1/chat/completions (chat_code=$chat)"
 if [ -n "${INTERNAL_BASE:-}" ]; then
   wait_code "RAG (internal)" "${INTERNAL_BASE}:8000/healthz" 200
   echo "OK   RAG (internal)"
+  check_rag_admin_boundary
 
   channel_required="$SMOKE_CHANNEL_REQUIRED"
   if [ "$channel_required" = "auto" ]; then
