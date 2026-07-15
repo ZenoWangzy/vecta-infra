@@ -39,6 +39,8 @@
       TZ: Asia/Shanghai
       DATABASE_URL: "postgresql://{{ fruit_runtime_db_role }}:{{ fruit_runtime_db_password }}@openclaw-postgres:5432/{{ postgres_db }}"
       FRUIT_SERVICE_SECRET: "{{ fruit_service_secret }}"
+      FRUIT_ALLOWED_TENANT_IDS: "{{ fruit_allowed_tenant_ids | join(',') }}"
+      FRUIT_ALLOWED_EMPLOYEE_IDS: "{{ fruit_allowed_employee_ids | join(',') }}"
       FRUIT_MODEL_PATH: /app/packages/fruit-industry-pack/model/fruit-model.yaml
       FRUIT_ROLE_MATRIX_PATH: /app/packages/fruit-industry-pack/model/fruit-live-test-resource-policy.yaml
       FRUIT_PORT: "8002"
@@ -73,7 +75,6 @@
       FLEET_GATEWAY_URL: http://openclaw-fleet-gateway:3000
       SERVICE_SECRET: "{{ lookup('env', 'SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
       FRUIT_SKILL_ADMIN_EMPLOYEE_ID: "{{ fruit_skill_admin_employee_id }}"
-      FRUIT_SKILL_ROLE_LEVELS: "{{ fruit_skill_role_levels | join(',') }}"
       FRUIT_LIVE_EMPLOYEE_IDS: "{{ fruit_live_employee_ids | join(',') }}"
     networks:
       - name: "{{ docker_network }}"

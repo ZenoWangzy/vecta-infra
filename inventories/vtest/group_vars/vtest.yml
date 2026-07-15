@@ -76,14 +76,10 @@ vecta_migrator_image: "{{ nexus_docker_registry }}/{{ vtest_migrator_image_repo 
 fruit_runtime_db_role: fruit_runtime
 fruit_runtime_db_password: "{{ lookup('env', 'FRUIT_RUNTIME_DB_PASSWORD') | default(postgres_password, true) }}"
 fruit_service_secret: "{{ lookup('env', 'FRUIT_SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
-fruit_skill_admin_employee_id: IT001
-fruit_live_employee_ids:
-  - IT001
-fruit_skill_role_levels:
-  - 10
-  - 20
-  - 30
-  - 40
+fruit_allowed_tenant_ids: "{{ lookup('env', 'FRUIT_ALLOWED_TENANT_IDS').split(',') | map('trim') | reject('equalto', '') | list }}"
+fruit_allowed_employee_ids: "{{ lookup('env', 'FRUIT_ALLOWED_EMPLOYEE_IDS').split(',') | map('trim') | reject('equalto', '') | list }}"
+fruit_skill_admin_employee_id: "{{ lookup('env', 'FRUIT_SKILL_ADMIN_EMPLOYEE_ID') | default('', true) }}"
+fruit_live_employee_ids: "{{ lookup('env', 'FRUIT_LIVE_EMPLOYEE_IDS').split(',') | map('trim') | reject('equalto', '') | list }}"
 
 # npm/apk/apt: build containers consume Nexus proxies only.
 npm_registry_url: "{{ nexus_base_url }}/repository/{{ nexus_npm_proxy_repo }}/"
