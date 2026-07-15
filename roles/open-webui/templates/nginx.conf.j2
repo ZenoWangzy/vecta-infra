@@ -13,16 +13,6 @@ map $http_cookie $has_fleet_auth_cookie {
     "~*(^|;\s*)auth=" 1;
 }
 
-upstream fleet_gateway {
-    server openclaw-fleet-gateway:3000;
-    keepalive 32;
-}
-
-upstream open_webui {
-    server openclaw-open-webui:8080;
-    keepalive 32;
-}
-
 server {
     listen 80;
     server_name _;
@@ -41,18 +31,15 @@ server {
         application/manifest+json
         image/svg+xml;
 
-    # ponytail: resolve admin-console via docker's embedded DNS every 30s so
-    # neighbor container recreation (IP drift) no longer returns 502.
-    # On 2026-06-19 nginx cached admin-console's pre-recreation IP
-    # 172.20.0.2 for the whole worker lifetime until webui-proxy restarted.
-    # Note: only works for proxy_pass with a variable host; upstream{} blocks
-    # (fleet_gateway / open_webui) still resolve once at startup; restart
-    # webui-proxy after those containers are recreated.
+    # Resolve Docker peers through embedded DNS so neighbor container
+    # recreation does not leave nginx pinned to stale container IPs.
     resolver 127.0.0.11 valid=30s ipv6=off;
     set $admin_console "openclaw-admin-console";
+    set $fleet_gateway "openclaw-fleet-gateway";
+    set $open_webui "openclaw-open-webui";
 
     location = /health {
-        proxy_pass http://open_webui/health;
+        proxy_pass http://$open_webui:8080/health;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_read_timeout 10s;
@@ -69,7 +56,7 @@ server {
     }
 
     location = /auth/login-web {
-        proxy_pass http://fleet_gateway;
+        proxy_pass http://$fleet_gateway:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -78,7 +65,7 @@ server {
     }
 
     location ^~ /api/ {
-        proxy_pass http://fleet_gateway;
+        proxy_pass http://$fleet_gateway:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -88,7 +75,7 @@ server {
     }
 
     location ^~ /auth/ {
-        proxy_pass http://fleet_gateway;
+        proxy_pass http://$fleet_gateway:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -98,7 +85,7 @@ server {
     }
 
     location = /auth/logout {
-        proxy_pass http://fleet_gateway;
+        proxy_pass http://$fleet_gateway:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -107,7 +94,7 @@ server {
     }
 
     location ^~ /s/ {
-        proxy_pass http://fleet_gateway;
+        proxy_pass http://$fleet_gateway:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -117,7 +104,7 @@ server {
     }
 
     location = /agent {
-        proxy_pass http://fleet_gateway/agent;
+        proxy_pass http://$fleet_gateway:3000/agent;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -131,7 +118,7 @@ server {
 
     location = /agent/ws/socket.io {
         if ($has_fleet_auth_cookie = 0) { return 401; }
-        proxy_pass http://fleet_gateway/agent/ws/socket.io;
+        proxy_pass http://$fleet_gateway:3000/agent/ws/socket.io;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -146,7 +133,7 @@ server {
 
     location = /agent/ws/socket.io/ {
         if ($has_fleet_auth_cookie = 0) { return 401; }
-        proxy_pass http://fleet_gateway/agent/ws/socket.io/;
+        proxy_pass http://$fleet_gateway:3000/agent/ws/socket.io/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -160,7 +147,7 @@ server {
     }
 
     location ^~ /agent/ {
-        proxy_pass http://fleet_gateway;
+        proxy_pass http://$fleet_gateway:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -208,7 +195,7 @@ server {
 
     location = /chat/ws/socket.io {
         if ($has_fleet_auth_cookie = 0) { return 401; }
-        proxy_pass http://fleet_gateway/agent/ws/socket.io;
+        proxy_pass http://$fleet_gateway:3000/agent/ws/socket.io;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -223,7 +210,7 @@ server {
 
     location = /chat/ws/socket.io/ {
         if ($has_fleet_auth_cookie = 0) { return 401; }
-        proxy_pass http://fleet_gateway/agent/ws/socket.io/;
+        proxy_pass http://$fleet_gateway:3000/agent/ws/socket.io/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -237,7 +224,8 @@ server {
     }
 
     location ^~ /chat/ {
-        proxy_pass http://fleet_gateway/agent/;
+        rewrite ^/chat/(.*)$ /agent/$1 break;
+        proxy_pass http://$fleet_gateway:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
