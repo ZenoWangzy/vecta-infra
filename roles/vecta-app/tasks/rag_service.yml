@@ -17,6 +17,9 @@
       RAG_ADMIN_TOKEN: "{{ lookup('env', 'RAG_ADMIN_TOKEN') | default(lookup('env', 'ADMIN_TOKEN'), true) }}"
       ADMIN_TOKEN: "{{ lookup('env', 'RAG_ADMIN_TOKEN') | default(lookup('env', 'ADMIN_TOKEN'), true) }}"
       KNOWLEDGE_DIR: /app/data/uploads
+      HF_HOME: /app/model_cache
+      TRANSFORMERS_CACHE: /app/model_cache
+      HF_ENDPOINT: "{{ lookup('env', 'HF_ENDPOINT') | default('https://hf-mirror.com', true) }}"
       TZ: Asia/Shanghai
     networks:
       - name: "{{ docker_network }}"

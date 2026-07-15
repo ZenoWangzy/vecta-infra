@@ -71,6 +71,9 @@ check_rag_admin_boundary() {
   check_container_env openclaw-fleet-gateway RAG_ADMIN_TOKEN
   check_container_env openclaw-rag-service ADMIN_TOKEN
   check_container_env openclaw-rag-service KNOWLEDGE_DIR
+  check_container_env openclaw-rag-service HF_HOME
+  check_container_env openclaw-rag-service TRANSFORMERS_CACHE
+  check_container_env openclaw-rag-service HF_ENDPOINT
 
   rag_admin_token="$(docker exec openclaw-fleet-gateway printenv RAG_ADMIN_TOKEN)"
   rag_internal_token="$(docker exec openclaw-fleet-gateway printenv RAG_INTERNAL_TOKEN || true)"
