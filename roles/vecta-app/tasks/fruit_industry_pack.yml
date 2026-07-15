@@ -1,0 +1,79 @@
+- name: Wait for Fleet before fruit industry setup
+  uri:
+    url: http://127.0.0.1:3000/healthz
+    status_code: 200
+  register: fruit_fleet_health
+  retries: 20
+  delay: 3
+  until: fruit_fleet_health.status == 200
+
+- name: Initialize fruit schema and read-only runtime role
+  community.docker.docker_container:
+    name: openclaw-fruit-industry-setup
+    image: "{{ fruit_industry_pack_image }}"
+    state: started
+    detach: false
+    cleanup: true
+    pull: always
+    command: node packages/fruit-industry-pack/dist/db/setup.js
+    env:
+      TZ: Asia/Shanghai
+      DATABASE_URL: "postgresql://{{ postgres_user }}:{{ postgres_password }}@openclaw-postgres:5432/{{ postgres_db }}"
+      FRUIT_RUNTIME_DB_ROLE: "{{ fruit_runtime_db_role }}"
+      FRUIT_RUNTIME_DB_PASSWORD: "{{ fruit_runtime_db_password }}"
+      FRUIT_SETUP_WAIT_MS: "60000"
+    networks:
+      - name: "{{ docker_network }}"
+
+- name: Deploy fruit industry read-only MCP service
+  community.docker.docker_container:
+    name: openclaw-fruit-industry-pack
+    image: "{{ fruit_industry_pack_image }}"
+    state: started
+    restart_policy: unless-stopped
+    pull: true
+    image_name_mismatch: recreate
+    ports:
+      - "127.0.0.1:8002:8002"
+    env:
+      TZ: Asia/Shanghai
+      DATABASE_URL: "postgresql://{{ fruit_runtime_db_role }}:{{ fruit_runtime_db_password }}@openclaw-postgres:5432/{{ postgres_db }}"
+      FRUIT_SERVICE_SECRET: "{{ fruit_service_secret }}"
+      FRUIT_MODEL_PATH: /app/packages/fruit-industry-pack/model/fruit-model.yaml
+      FRUIT_ROLE_MATRIX_PATH: /app/packages/fruit-industry-pack/model/fruit-live-test-resource-policy.yaml
+      FRUIT_PORT: "8002"
+      FRUIT_DEFAULT_RESULT_LIMIT: "100"
+      FRUIT_MAX_RESULT_LIMIT: "500"
+      FRUIT_STATEMENT_TIMEOUT_MS: "5000"
+      FRUIT_MAX_ESTIMATED_ROWS: "100000"
+    networks:
+      - name: "{{ docker_network }}"
+    memory: "1g"
+
+- name: Wait for fruit industry MCP readiness
+  uri:
+    url: http://127.0.0.1:8002/healthz
+    status_code: 200
+  register: fruit_pack_health
+  retries: 20
+  delay: 3
+  until: fruit_pack_health.status == 200
+
+- name: Publish, authorize and install the fruit industry Skill
+  community.docker.docker_container:
+    name: openclaw-fruit-industry-skill-sync
+    image: "{{ fruit_industry_pack_image }}"
+    state: started
+    detach: false
+    cleanup: true
+    pull: false
+    command: node packages/fruit-industry-pack/dist/platform/sync-platform-skill.js
+    env:
+      TZ: Asia/Shanghai
+      FLEET_GATEWAY_URL: http://openclaw-fleet-gateway:3000
+      SERVICE_SECRET: "{{ lookup('env', 'SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
+      FRUIT_SKILL_ADMIN_EMPLOYEE_ID: "{{ fruit_skill_admin_employee_id }}"
+      FRUIT_SKILL_ROLE_LEVELS: "{{ fruit_skill_role_levels | join(',') }}"
+      FRUIT_LIVE_EMPLOYEE_IDS: "{{ fruit_live_employee_ids | join(',') }}"
+    networks:
+      - name: "{{ docker_network }}"

@@ -77,6 +77,9 @@
       DOCKER_SOCKET_PATH: /var/run/docker.sock
       CEO_GATEWAY_TOKEN: "{{ lookup('env', 'CEO_GATEWAY_TOKEN') }}"
       EMPLOYEE_GATEWAY_TOKEN: "{{ lookup('env', 'EMPLOYEE_GATEWAY_TOKEN') }}"
+      INDUSTRY_PACK_RUNTIME_ROOTS: /app/industry-packs/fruit
+      FRUIT_PACK_MCP_URL: http://openclaw-fruit-industry-pack:8002/mcp
+      FRUIT_SERVICE_SECRET: "{{ fruit_service_secret }}"
       CONTAINER_DATA_DIR: /app/data/instances
       PORT_RANGE_MIN: "18800"
       PORT_RANGE_MAX: "18900"
