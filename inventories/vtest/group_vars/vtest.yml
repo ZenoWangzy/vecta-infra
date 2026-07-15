@@ -91,6 +91,12 @@ litellm_internal_base_url: "http://openclaw-litellm:4000"
 allow_self_signup: true
 email_verification_required: false
 
+# Platform-only diagnostics and security settings require an L4 user whose
+# employee_id is listed here. Keep tenant L4 users out of this list.
+platform_root_employee_ids:
+  - IT001
+  - admin@matrix.com
+
 # Runtime DB/cache credentials are host-local vtest state, not Git repo state.
 # The self-hosted runner sources /data/ocee/.env before invoking Ansible.
 postgres_user: "{{ lookup('env', 'POSTGRES_USER') | default('openclaw_poc', true) }}"

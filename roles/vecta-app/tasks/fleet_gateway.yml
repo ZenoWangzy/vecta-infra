@@ -51,6 +51,7 @@
       LLM_KEY_ENCRYPTION_KEY: "{{ lookup('env', 'LLM_KEY_ENCRYPTION_KEY') }}"
       SERVICE_SECRET: "{{ lookup('env', 'SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
       JWT_SECRET: "{{ lookup('env', 'JWT_SECRET') }}"
+      PLATFORM_ROOT_EMPLOYEE_IDS: "{{ platform_root_employee_ids | default(['IT001']) | join(',') }}"
       DEFAULT_MODEL: "{{ lookup('env', 'DEFAULT_MODEL') | default('deepseek-chat', true) }}"
       CORS_ORIGINS: "{{ base_url }}"
       APP_BASE_URL: "{{ base_url }}"
