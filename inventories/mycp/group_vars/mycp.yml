@@ -1,0 +1,40 @@
+# mycp (prod) inventory — mirrors vtest structure. Set TODO values before first deploy.
+# Third-party infra images (pinned, not affected by deploy_sha).
+# Keep these pointed at the local Nexus Docker registry; sync upstream sources
+# into Nexus before running infra/open-webui/openclaw/search roles.
+postgres_image: "{{ nexus_docker_registry }}/pgvector/pgvector:pg16"
+redis_image: "{{ nexus_docker_registry }}/library/redis:7-alpine"
+minio_image: "{{ nexus_docker_registry }}/minio/minio:RELEASE.2024-01-31T20-20-33Z"
+minio_mc_image: "{{ nexus_docker_registry }}/minio/mc:latest"
+clickhouse_image: "{{ nexus_docker_registry }}/clickhouse/clickhouse-server:24.3.4.147"
+litellm_image: "{{ nexus_docker_registry }}/berriai/litellm:main-latest"
+searxng_image: "{{ nexus_docker_registry }}/searxng/searxng:latest"
+wren_engine_image: "{{ nexus_docker_registry }}/canner/wren-engine-ibis:0.24.6"
+wren_engine_enabled: false
+open_webui_image: "{{ nexus_docker_registry }}/open-webui/open-webui:v0.9.2"
+open_webui_nginx_image: "{{ nexus_docker_registry }}/library/nginx:alpine"
+kk_file_view_image: "{{ nexus_docker_registry }}/keking/kkfileview:latest"
+onlyoffice_image: "{{ nexus_docker_registry }}/onlyoffice/documentserver:8.2"
+openclaw_image: "{{ nexus_docker_registry }}/alpine/openclaw:2026.5.18"
+baidu_search_image: "{{ nexus_docker_registry }}/baidu-search-service:{{ deploy_sha }}"
+hermes_runtime_image_version: "{{ nexus_docker_registry }}/vecta-hermes-withopenclaw:v2026.5.16"
+
+# Docker network
+docker_network: "openclaw-enterprise_openclaw-net"
+
+# Nexus / registry endpoints — TODO: set prod values
+nexus_base_url: "http://127.0.0.1:8081"
+nexus_docker_registry: "127.0.0.1:8082"
+
+# Internal service endpoints
+minio_internal_endpoint: "openclaw-minio"
+minio_internal_port: "9000"
+minio_bucket: "files"
+minio_use_ssl: "false"
+litellm_internal_base_url: "http://openclaw-litellm:4000"
+
+# Runtime credentials from host .env
+postgres_user: "{{ lookup('env', 'POSTGRES_USER') | default('openclaw_poc', true) }}"
+postgres_password: "{{ lookup('env', 'POSTGRES_PASSWORD') | default('poc-db-password-change-me', true) }}"
+postgres_db: "{{ lookup('env', 'POSTGRES_DB') | default('openclaw_poc', true) }}"
+redis_password: "{{ lookup('env', 'REDIS_PASSWORD') | default('changeme-redis-pw', true) }}"
