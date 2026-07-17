@@ -24,6 +24,20 @@
   register: nexus_manifest_checks
   no_log: true
 
+- name: Preflight — validate fruit industry Live Test credentials
+  assert:
+    that:
+      - fruit_service_secret | length >= 16
+      - fruit_runtime_db_password | length >= 16
+      - fruit_skill_admin_employee_id | length > 0
+      - fruit_allowed_tenant_ids | length > 0
+      - fruit_allowed_employee_ids | length == 1
+      - fruit_live_employee_ids | length == 1
+      - fruit_allowed_employee_ids[0] == fruit_skill_admin_employee_id
+      - fruit_live_employee_ids[0] == fruit_skill_admin_employee_id
+    fail_msg: "fruit industry vtest credentials and employee bindings must be configured"
+  no_log: true
+
 - name: Preflight — read migration ledger count
   shell: |
     set -euo pipefail

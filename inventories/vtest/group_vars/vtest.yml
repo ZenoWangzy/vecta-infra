@@ -52,6 +52,7 @@ vtest_required_image_repos:
   - admin-console
   - wechat-contact-sync
   - baidu-search-service
+  - fruit-industry-pack
 
 vtest_migrator_image_repo: vecta-migrator
 
@@ -67,7 +68,18 @@ rag_service_image: "{{ nexus_docker_registry }}/rag-service:{{ deploy_sha }}"
 directory_service_image: "{{ nexus_docker_registry }}/directory-service:{{ deploy_sha }}"
 admin_console_image: "{{ nexus_docker_registry }}/admin-console:{{ deploy_sha }}"
 wechat_contact_sync_image: "{{ nexus_docker_registry }}/wechat-contact-sync:{{ deploy_sha }}"
+fruit_industry_pack_image: "{{ nexus_docker_registry }}/fruit-industry-pack:{{ deploy_sha }}"
 vecta_migrator_image: "{{ nexus_docker_registry }}/{{ vtest_migrator_image_repo }}:{{ deploy_sha }}"
+
+# Fruit industry pack Live Test policy and service-to-service credentials.
+# Dedicated secrets can override these host-local vtest fallbacks later.
+fruit_runtime_db_role: fruit_runtime
+fruit_runtime_db_password: "{{ lookup('env', 'FRUIT_RUNTIME_DB_PASSWORD') | default(postgres_password, true) }}"
+fruit_service_secret: "{{ lookup('env', 'FRUIT_SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
+fruit_allowed_tenant_ids: "{{ lookup('env', 'FRUIT_ALLOWED_TENANT_IDS').split(',') | map('trim') | reject('equalto', '') | list }}"
+fruit_allowed_employee_ids: "{{ lookup('env', 'FRUIT_ALLOWED_EMPLOYEE_IDS').split(',') | map('trim') | reject('equalto', '') | list }}"
+fruit_skill_admin_employee_id: "{{ lookup('env', 'FRUIT_SKILL_ADMIN_EMPLOYEE_ID') | default('', true) }}"
+fruit_live_employee_ids: "{{ lookup('env', 'FRUIT_LIVE_EMPLOYEE_IDS').split(',') | map('trim') | reject('equalto', '') | list }}"
 
 # npm/apk/apt: build containers consume Nexus proxies only.
 npm_registry_url: "{{ nexus_base_url }}/repository/{{ nexus_npm_proxy_repo }}/"

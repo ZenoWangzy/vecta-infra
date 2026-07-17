@@ -103,6 +103,8 @@ echo "OK   /v1/chat/completions (chat_code=$chat)"
 if [ -n "${INTERNAL_BASE:-}" ]; then
   wait_code "RAG (internal)" "${INTERNAL_BASE}:8000/healthz" 200
   echo "OK   RAG (internal)"
+  wait_code "Fruit industry pack" "${INTERNAL_BASE}:8002/healthz" 200
+  echo "OK   Fruit industry pack"
   check_rag_admin_boundary
 
   channel_required="$SMOKE_CHANNEL_REQUIRED"

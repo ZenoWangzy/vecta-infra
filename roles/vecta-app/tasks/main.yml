@@ -3,6 +3,7 @@
 - import_tasks: directory_service.yml
 - import_tasks: admin_console.yml
 - import_tasks: fleet_gateway.yml
+- import_tasks: fruit_industry_pack.yml
 - import_tasks: rag_service.yml
 - import_tasks: channel_gateway.yml
 - import_tasks: wechat_contact_sync.yml
