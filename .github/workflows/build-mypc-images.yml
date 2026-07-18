@@ -118,10 +118,15 @@ jobs:
             exit 1
           fi
           mkdir -p vecta
-          curl -fL \
-            --config "$curl_config" \
-            -o /tmp/vecta-source.tar.gz \
-            "https://api.github.com/repos/ZenoWangzy/vecta/tarball/${SOURCE_SHA}"
+          source_cache="/home/github-runner/source-cache/vecta-${SOURCE_SHA}.tar.gz"
+          if [ -s "$source_cache" ]; then
+            cp "$source_cache" /tmp/vecta-source.tar.gz
+          else
+            curl -fL \
+              --config "$curl_config" \
+              -o /tmp/vecta-source.tar.gz \
+              "https://api.github.com/repos/ZenoWangzy/vecta/tarball/${SOURCE_SHA}"
+          fi
           tar -xzf /tmp/vecta-source.tar.gz --strip-components=1 -C vecta
         env:
           VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
