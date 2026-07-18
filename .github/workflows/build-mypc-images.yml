@@ -196,11 +196,23 @@ jobs:
           curl -fsS \
             -u "admin:${NEXUS_ADMIN_PASSWORD}" \
             http://127.0.0.1:8081/service/rest/v1/status >/dev/null
+          eula_payload="$(curl -fsS \
+            -u "admin:${NEXUS_ADMIN_PASSWORD}" \
+            http://127.0.0.1:8081/service/rest/v1/system/eula \
+            | node -e '
+              let input = "";
+              process.stdin.on("data", chunk => input += chunk);
+              process.stdin.on("end", () => {
+                const status = JSON.parse(input);
+                status.accepted = true;
+                process.stdout.write(JSON.stringify(status));
+              });
+            ')"
           curl -fsS \
             -u "admin:${NEXUS_ADMIN_PASSWORD}" \
             -X POST \
             -H 'Content-Type: application/json' \
-            --data-binary '{"accepted":true}' \
+            --data-binary "$eula_payload" \
             http://127.0.0.1:8081/service/rest/v1/system/eula >/dev/null
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}

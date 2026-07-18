@@ -49,6 +49,18 @@
           contentDisposition: ATTACHMENT
           forwardQueryParameters: true
 
+- name: Read Nexus Community Edition EULA status
+  uri:
+    url: "{{ nexus_base_url }}/service/rest/v1/system/eula"
+    method: GET
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
+    status_code: 200
+    timeout: 10
+  register: nexus_eula_status
+  no_log: true
+
 - name: Accept Nexus Community Edition EULA
   uri:
     url: "{{ nexus_base_url }}/service/rest/v1/system/eula"
@@ -57,8 +69,7 @@
     password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
     force_basic_auth: true
     body_format: json
-    body:
-      accepted: true
+    body: "{{ nexus_eula_status.json | combine({'accepted': true}) }}"
     status_code: 204
     timeout: 10
   no_log: true
