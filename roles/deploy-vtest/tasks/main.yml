@@ -1,23 +1,35 @@
 - import_tasks: preflight.yml
-  tags: vecta-app
+  tags:
+    - vecta-app
+    - fruit-vtest
 - block:
     - import_tasks: audit_start.yml
-      tags: vecta-app
+      tags:
+        - vecta-app
+        - fruit-vtest
     - import_tasks: quiesce.yml
       when: vtest_allow_migrate | string == '1'
       tags: vecta-app
     - import_tasks: backup.yml
-      when: vtest_allow_migrate | string == '1'
-      tags: vecta-app
+      when: >-
+        (vtest_allow_migrate | string == '1')
+        or (fruit_vtest_bootstrap | default(false) | bool)
+      tags:
+        - vecta-app
+        - fruit-vtest
     - import_tasks: migrate.yml
       when: vtest_allow_migrate | string == '1'
       tags: vecta-app
     - import_tasks: deploy.yml
       tags: always
     - import_tasks: smoke.yml
-      tags: vecta-app
+      tags:
+        - vecta-app
+        - fruit-vtest
     - import_tasks: audit_success.yml
-      tags: vecta-app
+      tags:
+        - vecta-app
+        - fruit-vtest
   rescue:
     - import_tasks: audit_failure.yml
       tags: always

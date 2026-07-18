@@ -53,6 +53,23 @@ vtest_required_image_repos:
   - wechat-contact-sync
   - baidu-search-service
 
+# Fruit remains an explicitly scoped vtest-only service. Its canary identity is
+# discovered from the platform database so no tenant ID or credential is stored
+# in Git. A schema/runtime-role bootstrap stays opt-in at workflow dispatch.
+fruit_vtest_enabled: true
+fruit_vtest_image_repo: fruit-industry-pack
+fruit_vtest_image: "{{ nexus_docker_registry }}/{{ fruit_vtest_image_repo }}:{{ deploy_sha }}"
+fruit_vtest_container_name: openclaw-fruit-industry-pack
+fruit_vtest_port: 8002
+fruit_vtest_runtime_db_role: fruit_runtime_vtest
+fruit_vtest_canary_organization: "水果行业验证组织"
+fruit_vtest_canary_employee_id: fruit-canary-admin@example.com
+fruit_vtest_platform_service_secret: "{{ lookup('env', 'SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
+fruit_vtest_service_secret: "{{ ('vtest:fruit:service:' ~ fruit_vtest_platform_service_secret) | hash('sha256') }}"
+fruit_vtest_runtime_db_password: "{{ ('vtest:fruit:database:' ~ fruit_vtest_platform_service_secret) | hash('sha256') }}"
+fruit_vtest_sync_platform_skills: true
+fruit_vtest_bootstrap: false
+
 vtest_migrator_image_repo: vecta-migrator
 
 vtest_write_quiesce_services:
