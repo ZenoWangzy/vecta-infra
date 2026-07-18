@@ -57,7 +57,7 @@ jobs:
       DEBIAN_MIRROR: http://127.0.0.1:8081/repository/vecta-debian-proxy
       DEBIAN_SECURITY_MIRROR: >-
         http://127.0.0.1:8081/repository/vecta-debian-security-proxy
-      DOCKER_BUILDKIT: "1"
+      DOCKER_BUILDKIT: "0"
     steps:
       - name: Configure git proxy
         run: |
