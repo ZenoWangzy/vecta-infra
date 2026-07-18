@@ -240,6 +240,10 @@ contract.
 - Before and after inventory: buckets `files` and `openclaw-files`, 383 objects,
   199 MiB. The role does not run `minio-init` or write its marker on mypc when
   the mounted volume already contains `.minio.sys` and data.
+- A bounded S3 regression wrote, read, checksummed, and removed one unique
+  object under `local/files/.vecta-regression/`; the final inventory returned to
+  383 objects. Confirm the final `mc du local` count after cleanup rather than
+  relying only on the `mc rm` exit status.
 - Preserved runtime contract: `29000:9000`, `29090:9090`, console `9090`,
   restart policy `unless-stopped`, memory `512m`, CPU `0.5`, Docker healthcheck,
   and aliases `openclaw-minio` and `minio` on
