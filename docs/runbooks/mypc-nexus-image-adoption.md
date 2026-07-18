@@ -299,6 +299,28 @@ environment, both retained during the image-source replacement.
   passed for PostgreSQL, Redis, MinIO, LiteLLM, Fleet, Admin, Directory, RAG,
   Channel, and Open WebUI proxy.
 
+### PostgreSQL Adoption Gate - 2026-07-18
+
+PostgreSQL is deliberately **not adopted** in this phase. The Nexus image and
+direct image share image ID
+`sha256:8d34961969a85159aea1376b91f521084e13e28e87f6f1f3ec17f240924e35c8`,
+and the existing volume is `openclaw-enterprise_postgres_data`, but the data
+governance gates are incomplete.
+
+- Read-only baseline: database `openclaw_poc`, PostgreSQL 16.3, 103 public
+  tables, four extensions, schemas `drizzle`, `fruit`, `fruit_meta`, and
+  `public`; the Drizzle ledger contains only three entries.
+- No current PostgreSQL dump or isolated restore rehearsal was found under
+  `/data/ocee/backups` during the gate review.
+- The role now preserves production restart policy `always`, aliases
+  `openclaw-postgres` and `postgres-db`, resource limits, existing
+  `openclaw-enterprise_postgres_data` volume, and the live credentials captured
+  with `no_log`.
+- A PostgreSQL allowlist run now fails before touching the container unless all
+  five reviewed evidence artifacts exist on mypc: schema inventory,
+  migration-ledger baseline, fresh backup, isolated restore rehearsal, and
+  additive-delta approval. Do not bypass this with a manual container command.
+
 ## Hard Stops
 
 - Do not run `playbooks/infra.yml` against mypc for stateful services while

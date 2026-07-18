@@ -1,3 +1,28 @@
+- name: Inspect existing PostgreSQL environment
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - "{{ '{{' }}range .Config.Env{{ '}}' }}{{ '{{' }}println .{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
+      - openclaw-postgres
+  register: postgres_existing_env
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve PostgreSQL effective credentials
+  ansible.builtin.set_fact:
+    postgres_user_effective: >-
+      {{ postgres_adoption_user | default((postgres_existing_env.stdout_lines | default([]) | select('match', '^POSTGRES_USER=') | map('regex_replace', '^POSTGRES_USER=', '') | list | first | default(postgres_user | default('openclaw_poc', true), true)), true) }}
+    postgres_password_effective: >-
+      {{ postgres_adoption_password | default((postgres_existing_env.stdout_lines | default([]) | select('match', '^POSTGRES_PASSWORD=') | map('regex_replace', '^POSTGRES_PASSWORD=', '') | list | first | default(postgres_password | default('poc-db-password-change-me', true), true)), true) }}
+    postgres_db_effective: >-
+      {{ postgres_adoption_db | default((postgres_existing_env.stdout_lines | default([]) | select('match', '^POSTGRES_DB=') | map('regex_replace', '^POSTGRES_DB=', '') | list | first | default(postgres_db | default('openclaw_poc', true), true)), true) }}
+  changed_when: false
+  no_log: true
+
 - name: Start PostgreSQL
   community.docker.docker_container:
     name: openclaw-postgres
@@ -5,21 +30,22 @@
     state: started
     pull: true
     image_name_mismatch: recreate
-    restart_policy: unless-stopped
+    restart_policy: "{{ postgres_restart_policy | default('unless-stopped') }}"
     ports:
       - "{{ postgres_port | default('5432') }}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - "{{ postgres_data_volume | default('postgres_data') }}:/var/lib/postgresql/data"
     env:
-      POSTGRES_USER: "{{ postgres_user | default('openclaw_poc') }}"
-      POSTGRES_PASSWORD: "{{ postgres_password | default('poc-db-password-change-me') }}"
-      POSTGRES_DB: "{{ postgres_db | default('openclaw_poc') }}"
+      POSTGRES_USER: "{{ postgres_user_effective }}"
+      POSTGRES_PASSWORD: "{{ postgres_password_effective }}"
+      POSTGRES_DB: "{{ postgres_db_effective }}"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U {{ postgres_user | default('openclaw_poc') }}"]
+      test: ["CMD-SHELL", "pg_isready -U {{ postgres_user_effective }}"]
       interval: "10s"
       timeout: "5s"
       retries: 5
     networks:
       - name: "{{ docker_network }}"
-    memory: "1g"
-    cpus: "1.0"
+        aliases: "{{ postgres_network_aliases | default(['openclaw-postgres']) }}"
+    memory: "{{ postgres_memory | default('1g') }}"
+    cpus: "{{ postgres_cpus | default('1.0') }}"

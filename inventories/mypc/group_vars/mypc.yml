@@ -28,6 +28,21 @@ mypc_stateful_service_allowlist: []
 # Data-layer adoption must reuse these names exactly; creating replacement
 # volumes would strand production data.
 postgres_data_volume: openclaw-enterprise_postgres_data
+postgres_restart_policy: always
+postgres_network_aliases:
+  - openclaw-postgres
+  - postgres-db
+postgres_memory: 1g
+postgres_cpus: "1.0"
+# PostgreSQL remains fail-closed until each evidence artifact exists on mypc.
+# Do not set approval alone: the role verifies every configured path before it
+# can recreate the existing production container with the Nexus image.
+mypc_postgres_adoption_approved: false
+mypc_postgres_schema_inventory_path: ""
+mypc_postgres_ledger_baseline_path: ""
+mypc_postgres_backup_path: ""
+mypc_postgres_restore_rehearsal_path: ""
+mypc_postgres_additive_delta_approval_path: ""
 redis_data_volume: 140f0b143751894f82ec1b1ea8e9401051d45bf8fe031bfdffbb5e8557162151
 redis_restart_policy: always
 redis_network_aliases:

@@ -22,6 +22,53 @@
     - mypc_stateful_services_enabled | default(false) | bool
     - (mypc_stateful_service_allowlist | default([]) | length) != 1
 
+- name: Require PostgreSQL adoption evidence configuration
+  ansible.builtin.fail:
+    msg: >-
+      PostgreSQL adoption is blocked until schema inventory, migration-ledger
+      baseline, current backup, isolated restore rehearsal, and reviewed
+      additive-delta approval are recorded. Set the five mypc_postgres_*_path
+      variables and mypc_postgres_adoption_approved=true only after each
+      evidence artifact has been reviewed.
+  when:
+    - "'mypc' in group_names"
+    - "'postgres' in (mypc_stateful_service_allowlist | default([]))"
+    - >-
+      not (mypc_postgres_adoption_approved | default(false) | bool) or
+      (mypc_postgres_schema_inventory_path | default('') | length == 0) or
+      (mypc_postgres_ledger_baseline_path | default('') | length == 0) or
+      (mypc_postgres_backup_path | default('') | length == 0) or
+      (mypc_postgres_restore_rehearsal_path | default('') | length == 0) or
+      (mypc_postgres_additive_delta_approval_path | default('') | length == 0)
+
+- name: Verify PostgreSQL adoption evidence artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ mypc_postgres_schema_inventory_path }}"
+    - "{{ mypc_postgres_ledger_baseline_path }}"
+    - "{{ mypc_postgres_backup_path }}"
+    - "{{ mypc_postgres_restore_rehearsal_path }}"
+    - "{{ mypc_postgres_additive_delta_approval_path }}"
+  register: mypc_postgres_adoption_evidence
+  changed_when: false
+  when:
+    - "'mypc' in group_names"
+    - "'postgres' in (mypc_stateful_service_allowlist | default([]))"
+
+- name: Require verified PostgreSQL adoption evidence artifacts
+  ansible.builtin.fail:
+    msg: >-
+      PostgreSQL adoption evidence is incomplete. Every configured
+      mypc_postgres_*_path must exist on mypc before the existing
+      openclaw-enterprise_postgres_data volume can be remounted.
+  when:
+    - "'mypc' in group_names"
+    - "'postgres' in (mypc_stateful_service_allowlist | default([]))"
+    - >-
+      mypc_postgres_adoption_evidence.results |
+      selectattr('stat.exists', 'equalto', false) | list | length > 0
+
 - name: Run mypc data-layer regression before one-service adoption
   ansible.builtin.script:
     cmd: >-
