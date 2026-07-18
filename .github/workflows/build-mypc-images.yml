@@ -196,6 +196,12 @@ jobs:
           curl -fsS \
             -u "admin:${NEXUS_ADMIN_PASSWORD}" \
             http://127.0.0.1:8081/service/rest/v1/status >/dev/null
+          curl -fsS \
+            -u "admin:${NEXUS_ADMIN_PASSWORD}" \
+            -X POST \
+            -H 'Content-Type: application/json' \
+            --data-binary '{"accepted":true}' \
+            http://127.0.0.1:8081/service/rest/v1/system/eula >/dev/null
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
 

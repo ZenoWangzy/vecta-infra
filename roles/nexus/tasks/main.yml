@@ -49,6 +49,20 @@
           contentDisposition: ATTACHMENT
           forwardQueryParameters: true
 
+- name: Accept Nexus Community Edition EULA
+  uri:
+    url: "{{ nexus_base_url }}/service/rest/v1/system/eula"
+    method: POST
+    user: admin
+    password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      accepted: true
+    status_code: 204
+    timeout: 10
+  no_log: true
+
 - name: Check existing Nexus proxy repositories
   uri:
     url: "{{ nexus_base_url }}/service/rest/v1/repositories/{{ item.name }}"
