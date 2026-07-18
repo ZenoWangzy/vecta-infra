@@ -4,17 +4,45 @@
     state: present
   loop:
     - "{{ docker_network }}"
-    - openclaw-open-webui-net
+    - "{{ open_webui_network | default('openclaw-open-webui-net') }}"
+
+- name: Compose stateful Docker volume names
+  ansible.builtin.set_fact:
+    stateful_docker_volumes:
+      - service: postgres
+        name: "{{ postgres_data_volume | default('postgres_data') }}"
+      - service: redis
+        name: "{{ redis_data_volume | default('redis_data') }}"
+      - service: clickhouse
+        name: "{{ clickhouse_data_volume | default('clickhouse_data') }}"
+      - service: open-webui
+        name: "{{ open_webui_data_volume | default('openclaw-open-webui-data') }}"
+      - service: onlyoffice
+        name: "{{ onlyoffice_data_volume | default('onlyoffice_data') }}"
+      - service: onlyoffice
+        name: "{{ onlyoffice_logs_volume | default('onlyoffice_logs') }}"
+      - service: rag-model-cache
+        name: "{{ rag_model_cache_volume | default('rag_model_cache') }}"
+
+- name: Verify existing mypc stateful Docker volumes
+  ansible.builtin.command:
+    argv:
+      - docker
+      - volume
+      - inspect
+      - "{{ item.name }}"
+  loop: "{{ stateful_docker_volumes | rejectattr('name', 'equalto', '') | list }}"
+  check_mode: false
+  changed_when: false
+  when:
+    - "'mypc' in group_names"
+    - mypc_stateful_services_enabled | default(false) | bool
+    - item.service in (mypc_stateful_service_allowlist | default([]))
 
 - name: Ensure Docker volumes exist
   community.docker.docker_volume:
-    name: "{{ item }}"
+    name: "{{ item.name }}"
     state: present
-  loop:
-    - postgres_data
-    - redis_data
-    - clickhouse_data
-    - openclaw-open-webui-data
-    - onlyoffice_data
-    - onlyoffice_logs
-    - rag_model_cache
+  loop: "{{ stateful_docker_volumes | rejectattr('name', 'equalto', '') | list }}"
+  when: >-
+    'mypc' not in group_names

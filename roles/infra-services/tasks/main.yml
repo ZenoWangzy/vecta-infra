@@ -1,5 +1,48 @@
+- name: Guard mypc stateful-service adoption
+  ansible.builtin.fail:
+    msg: >-
+      mypc stateful-service adoption is disabled. Keep PostgreSQL, Redis,
+      MinIO, ClickHouse, LiteLLM, Open WebUI, OnlyOffice, and related volumes
+      under their current owner until the service-specific backup, restore,
+      mount-map, rollback, and observation gates are approved. Set
+      mypc_stateful_services_enabled=true only for an approved stateful phase.
+  when:
+    - "'mypc' in group_names"
+    - not (mypc_stateful_services_enabled | default(false) | bool)
+
+- name: Guard mypc stateful-service allowlist
+  ansible.builtin.fail:
+    msg: >-
+      mypc stateful-service adoption requires an explicit
+      mypc_stateful_service_allowlist. Run one reviewed service at a time, for
+      example ['postgres'], after backup, restore, regression, rollback, and
+      observation gates are ready.
+  when:
+    - "'mypc' in group_names"
+    - mypc_stateful_services_enabled | default(false) | bool
+    - (mypc_stateful_service_allowlist | default([]) | length) == 0
+
 - import_tasks: postgres.yml
+  when: >-
+    'mypc' not in group_names or
+    'postgres' in (mypc_stateful_service_allowlist | default([]))
+
 - import_tasks: redis.yml
+  when: >-
+    'mypc' not in group_names or
+    'redis' in (mypc_stateful_service_allowlist | default([]))
+
 - import_tasks: minio.yml
+  when: >-
+    'mypc' not in group_names or
+    'minio' in (mypc_stateful_service_allowlist | default([]))
+
 - import_tasks: clickhouse.yml
+  when: >-
+    'mypc' not in group_names or
+    'clickhouse' in (mypc_stateful_service_allowlist | default([]))
+
 - import_tasks: litellm.yml
+  when: >-
+    'mypc' not in group_names or
+    'litellm' in (mypc_stateful_service_allowlist | default([]))

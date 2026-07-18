@@ -5,11 +5,11 @@
     state: started
     pull: true
     image_name_mismatch: recreate
-    restart_policy: unless-stopped
+    restart_policy: "{{ redis_restart_policy | default('unless-stopped') }}"
     ports:
       - "{{ redis_port | default('6379') }}:6379"
     volumes:
-      - redis_data:/data
+      - "{{ redis_data_volume | default('redis_data') }}:/data"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: "10s"
@@ -17,5 +17,6 @@
       retries: 5
     networks:
       - name: "{{ docker_network }}"
+        aliases: "{{ redis_network_aliases | default(['openclaw-redis']) }}"
     memory: "128m"
     cpus: "0.25"

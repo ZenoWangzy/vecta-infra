@@ -1,3 +1,8 @@
 - import_tasks: directories.yml
+  tags: [infra-dirs, infra-bootstrap, infra]
+
 - import_tasks: docker.yml
+  tags: [infra-docker, infra-bootstrap, infra]
+
 - import_tasks: configs.yml
+  tags: [infra-configs, infra-bootstrap, infra]

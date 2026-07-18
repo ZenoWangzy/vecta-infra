@@ -1,38 +1,141 @@
 # mypc (prod) inventory - mirrors vtest structure. Set TODO values before first deploy.
-# Third-party infra images (pinned, not affected by deploy_sha)
-postgres_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/pgvector/pgvector:pg16"
-redis_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/redis:7-alpine"
-minio_image: "minio/minio:RELEASE.2024-01-31T20-20-33Z"
-minio_mc_image: "minio/mc:latest"
-clickhouse_image: "clickhouse/clickhouse-server:24.3.4.147"
-litellm_image: "ghcr.io/berriai/litellm:main-v1.83.14-stable"
-searxng_image: "searxng/searxng:latest"
-wren_engine_image: "ghcr.io/canner/wren-engine-ibis:0.24.6"
-open_webui_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/ghcr.io/open-webui/open-webui:v0.9.2"
-open_webui_nginx_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/nginx:alpine"
-kk_file_view_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/keking/kkfileview:latest"
-onlyoffice_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/onlyoffice/documentserver:8.2"
-openclaw_image: "alpine/openclaw:2026.5.18"
+# Third-party infra images (pinned, not affected by deploy_sha).
+# Keep these pointed at the production-local Nexus Docker registry. Sync the
+# upstream source images into Nexus before any approved role adopts a service.
+postgres_image: "{{ nexus_docker_registry }}/pgvector/pgvector:pg16"
+redis_image: "{{ nexus_docker_registry }}/library/redis:7-alpine"
+minio_image: "{{ nexus_docker_registry }}/minio/minio:RELEASE.2024-01-31T20-20-33Z"
+minio_mc_image: "{{ nexus_docker_registry }}/minio/mc:latest"
+clickhouse_image: "{{ nexus_docker_registry }}/clickhouse/clickhouse-server:24.3.4.147"
+litellm_image: "{{ nexus_docker_registry }}/berriai/litellm:main-latest"
+searxng_image: "{{ nexus_docker_registry }}/searxng/searxng:latest"
+wren_engine_image: "{{ nexus_docker_registry }}/canner/wren-engine-ibis:0.24.6"
+wren_engine_enabled: false
+open_webui_image: "{{ nexus_docker_registry }}/open-webui/open-webui:v0.9.2"
+open_webui_nginx_image: "{{ nexus_docker_registry }}/library/nginx:alpine"
+kk_file_view_image: "{{ nexus_docker_registry }}/keking/kkfileview:latest"
+onlyoffice_image: "{{ nexus_docker_registry }}/onlyoffice/documentserver:8.2"
+openclaw_image: "{{ nexus_docker_registry }}/alpine/openclaw:2026.5.18"
+hermes_runtime_image_version: "{{ nexus_docker_registry }}/vecta-hermes-withopenclaw:v2026.5.16"
+
+# Stateful adoption remains disabled for the first production increments. Do not
+# let Ansible create, mount, or replace database/cache/document-service volumes
+# until each service has a reviewed backup, restore, mount map, and rollback.
+mypc_stateful_services_enabled: false
+mypc_stateful_service_allowlist: []
+
+# Existing production stateful volumes discovered from the live containers.
+# Data-layer adoption must reuse these names exactly; creating replacement
+# volumes would strand production data.
+postgres_data_volume: openclaw-enterprise_postgres_data
+redis_data_volume: 140f0b143751894f82ec1b1ea8e9401051d45bf8fe031bfdffbb5e8557162151
+redis_restart_policy: always
+redis_network_aliases:
+  - redis
+  - openclaw-redis
+minio_data_volume: openclaw-enterprise_minio-data
+minio_published_ports:
+  - "29000:9000"
+  - "29090:9090"
+minio_console_port: "9090"
+minio_network_aliases:
+  - openclaw-minio
+  - minio
+minio_memory: 512m
+minio_cpus: "0.5"
+minio_healthcheck:
+  test:
+    - CMD-SHELL
+    - "mc alias set local http://localhost:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD >/dev/null 2>&1 && mc ready local"
+  interval: 5s
+  timeout: 3s
+  start_period: 10s
+  retries: 6
+minio_webhook_enabled: "on"
+minio_webhook_endpoint: "http://fleet-gateway:3000/api/webhooks/minio"
+open_webui_data_volume: openclaw-enterprise_open-webui-data
+onlyoffice_logs_volume: openclaw-enterprise_onlyoffice-logs
+onlyoffice_data_volume: openclaw-enterprise_onlyoffice-data
+# No live mypc ClickHouse container/volume was found in the current production
+# inspection. Keep stateful adoption disabled until the audit decides whether
+# ClickHouse is a new service or has an existing external data owner.
+clickhouse_data_volume: ""
+rag_model_cache_volume: openclaw-enterprise_rag_model_cache
+
+# Existing production bind paths. These are compatibility inputs for gradual
+# Ansible recreation; do not replace them with vtest defaults during cutover.
+fleet_gateway_instances_host_path: /data/ocee/data/instances
+fleet_gateway_instances_container_path: /app/data/instances
+fleet_gateway_container_data_dir: /app/data/instances
+fleet_gateway_uploads_host_path: /data/ocee/data/fleet-gateway/uploads
+fleet_gateway_knowledge_host_path: /data/ocee/packages/rag-service/knowledge
+fleet_gateway_templates_host_path: /data/ocee/templates
+fleet_gateway_shared_plugins_host_path: /data/ocee/deploy/instances/shared/plugins
+fleet_gateway_litellm_config_host_path: /data/ocee/infra/litellm/config.yaml
+fleet_gateway_fruit_pack_host_path: /data/ocee/packages/fruit-industry-pack
+rag_uploads_host_path: /data/ocee/data/fleet-gateway/uploads
+rag_knowledge_host_path: /data/ocee/packages/rag-service/knowledge
+rag_model_cache_container_path: /home/node/.cache/huggingface
+channel_gateway_data_host_path: /data/ocee/packages/channel-gateway/data
+open_webui_entrypoint_wrapper_host_path: /data/ocee/infra/open-webui/entrypoint-wrapper.sh
+open_webui_patches_host_path: /data/ocee/infra/open-webui/patches
+open_webui_nginx_config_dir: /data/ocee/infra/open-webui
+open_webui_nginx_config_path: /data/ocee/infra/open-webui/nginx.conf
 
 # Docker network
 docker_network: "openclaw-enterprise_openclaw-net"
+open_webui_network: "openclaw-enterprise_open-webui-net"
 
 # Nexus / registry endpoints - production-local only. Do not point mypc at vtest Nexus.
 nexus_base_url: "http://127.0.0.1:8081"
 nexus_docker_registry: "127.0.0.1:8082"
 
-# Application images built by the protected mypc production-image workflow.
-# These variables are app-cutover inputs only; stateful-service adoption remains
-# disabled and service-by-service until a later approved increment.
-fleet_gateway_image: "{{ nexus_docker_registry }}/fleet-gateway:{{ deploy_sha }}"
-channel_gateway_image: "{{ nexus_docker_registry }}/channel-gateway:{{ deploy_sha }}"
-a2a_router_image: "{{ nexus_docker_registry }}/a2a-router:{{ deploy_sha }}"
-rag_service_image: "{{ nexus_docker_registry }}/rag-service:{{ deploy_sha }}"
-directory_service_image: "{{ nexus_docker_registry }}/directory-service:{{ deploy_sha }}"
-admin_console_image: "{{ nexus_docker_registry }}/admin-console:{{ deploy_sha }}"
-wechat_contact_sync_image: "{{ nexus_docker_registry }}/wechat-contact-sync:{{ deploy_sha }}"
-baidu_search_image: "{{ nexus_docker_registry }}/baidu-search-service:{{ deploy_sha }}"
+# Application images for the first mypc compatibility recreation.
+# The initial cutover intentionally uses exact cache-<image-id> tags mirrored
+# from the current production local image cache. Later protected production
+# builds can replace these with a full source SHA by overriding deploy_image_tag
+# and deploy_image_tags from the workflow.
+deploy_image_tag: local-cache-20260718
+deploy_image_tag_requires_full_sha: false
+deploy_audit_ref: local-cache-20260718
+deploy_audit_target: mypc
+deploy_audit_enabled: false
+deploy_smoke_enabled: false
+nexus_manifest_check_enabled: false
+nexus_docker_login_enabled: false
+deploy_image_tags:
+  a2a-router: cache-3134bcb4484a
+  admin-console: cache-19ca33c7e758
+  baidu-search-service: cache-fdfbc005133b
+  channel-gateway: cache-94a5357394f9
+  directory-service: cache-d38d9f4d3636
+  fleet-gateway: cache-c78398cfe144
+  rag-service: cache-761b14870cf1
+  wechat-contact-sync: cache-73d27641f5e9
+fleet_gateway_image: "{{ nexus_docker_registry }}/fleet-gateway:{{ deploy_image_tags['fleet-gateway'] }}"
+channel_gateway_image: "{{ nexus_docker_registry }}/channel-gateway:{{ deploy_image_tags['channel-gateway'] }}"
+a2a_router_image: "{{ nexus_docker_registry }}/a2a-router:{{ deploy_image_tags['a2a-router'] }}"
+rag_service_image: "{{ nexus_docker_registry }}/rag-service:{{ deploy_image_tags['rag-service'] }}"
+directory_service_image: "{{ nexus_docker_registry }}/directory-service:{{ deploy_image_tags['directory-service'] }}"
+admin_console_image: "{{ nexus_docker_registry }}/admin-console:{{ deploy_image_tags['admin-console'] }}"
+wechat_contact_sync_image: "{{ nexus_docker_registry }}/wechat-contact-sync:{{ deploy_image_tags['wechat-contact-sync'] }}"
+baidu_search_image: "{{ nexus_docker_registry }}/baidu-search-service:{{ deploy_image_tags['baidu-search-service'] }}"
 fruit_vtest_enabled: false
+
+# First app-only recreation stage estimated from live mypc risk. These services
+# have no production data mounts and can be tested before Fleet/RAG/Channel/WeCom.
+# Keep mypc_deploy_enabled=false until an explicit cutover run.
+vecta_app_enabled_services:
+  - a2a-router
+  - directory-service
+  - admin-console
+search_enabled_services:
+  - baidu-search-service
+admin_console_published_ports:
+  - "5173:5173"
+admin_console_join_open_webui_network: true
+directory_service_published_ports:
+  - "8001:8001"
 
 # The shared deploy role still uses the historical vtest_* variable names for
 # image preflight and write quiesce lists. Keep mypc values app-only here.
