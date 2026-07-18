@@ -323,8 +323,8 @@ governance gates are incomplete.
 
 ### PostgreSQL Evidence Package - 2026-07-18
 
-The database is now **safe for the reviewed Ansible recreation**, but the
-actual PostgreSQL container replacement has not been run in this phase.
+The database was verified safe for the reviewed Ansible recreation and was then
+adopted through the one-service PostgreSQL run.
 
 - Evidence directory:
   `/data/ocee/backups/postgres-adoption/postgres-adoption-20260718T103713Z`.
@@ -347,12 +347,24 @@ actual PostgreSQL container replacement has not been run in this phase.
 - Guarded dry run: the PostgreSQL-only Ansible check verified all evidence
   paths, preserved the existing volume/ports/aliases/credentials, ran automatic
   pre/post regression, and proposed exactly one change: recreate
-  `openclaw-postgres` from the Nexus image. It did not change production.
+  `openclaw-postgres` from the Nexus image.
+- Final adoption: the actual PostgreSQL-only Ansible run recreated exactly
+  `openclaw-postgres` as
+  `127.0.0.1:8082/pgvector/pgvector:pg16` while retaining
+  `openclaw-enterprise_postgres_data:/var/lib/postgresql/data`, aliases
+  `openclaw-postgres` and `postgres-db`, port `5432`, restart policy `always`,
+  memory `1g`, and CPU `1.0`. The image ID remains
+  `sha256:8d34961969a85159aea1376b91f521084e13e28e87f6f1f3ec17f240924e35c8`.
+- Final verification: PostgreSQL is healthy at version 16.3 with 103 public
+  tables and three Drizzle ledger records. Full regression passed for
+  PostgreSQL, Redis, MinIO, LiteLLM, Fleet, Admin, Directory, RAG, Channel, and
+  Open WebUI proxy; ClickHouse remains skipped because there is no production
+  container.
 
 Use `scripts/mypc-postgres-adoption-evidence.sh --execute` on mypc to produce a
-fresh evidence package before an actual future recreation. The actual Ansible
-run must pass its new artifact paths and explicit approval as extra variables;
-do not persist approval in the default inventory.
+fresh evidence package before any future recreation. The Ansible run must pass
+its reviewed artifact paths and explicit approval as extra variables; do not
+persist approval in the default inventory.
 
 ## Hard Stops
 
