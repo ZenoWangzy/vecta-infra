@@ -338,8 +338,9 @@ jobs:
           NODE
           for port in 8082 8083; do
             for _ in $(seq 1 30); do
-              if curl -fsS -o /dev/null -w '%{http_code}' \
-                "http://127.0.0.1:${port}/v2/" | grep -Eq '^(200|401)$'; then
+              code="$(curl -sS -o /dev/null -w '%{http_code}' \
+                "http://127.0.0.1:${port}/v2/" || true)"
+              if printf '%s' "$code" | grep -Eq '^(200|401)$'; then
                 break
               fi
               sleep 2
