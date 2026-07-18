@@ -204,16 +204,19 @@ jobs:
               process.stdin.on("data", chunk => input += chunk);
               process.stdin.on("end", () => {
                 const status = JSON.parse(input);
+                if (status.accepted === true) process.exit(0);
                 status.accepted = true;
                 process.stdout.write(JSON.stringify(status));
               });
             ')"
-          curl -fsS \
-            -u "admin:${NEXUS_ADMIN_PASSWORD}" \
-            -X POST \
-            -H 'Content-Type: application/json' \
-            --data-binary "$eula_payload" \
-            http://127.0.0.1:8081/service/rest/v1/system/eula >/dev/null
+          if [ -n "$eula_payload" ]; then
+            curl -fsS \
+              -u "admin:${NEXUS_ADMIN_PASSWORD}" \
+              -X POST \
+              -H 'Content-Type: application/json' \
+              --data-binary "$eula_payload" \
+              http://127.0.0.1:8081/service/rest/v1/system/eula >/dev/null
+          fi
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
 

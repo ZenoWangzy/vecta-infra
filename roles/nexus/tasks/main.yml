@@ -73,6 +73,7 @@
     status_code: 204
     timeout: 10
   no_log: true
+  when: not (nexus_eula_status.json.accepted | default(false) | bool)
 
 - name: Check existing Nexus proxy repositories
   uri:
