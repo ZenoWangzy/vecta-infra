@@ -12,13 +12,18 @@
 
 ## Branch Delivery Convention
 
-- VectA `develop` is the vtest integration lane. It runs vtest validation,
-  image build, deployment, and post-deploy regression only.
-- VectA `main` is the production release lane. It runs the same vtest lane and
-  the protected mypc image-build lane. A production deploy remains a separately
+- Normal VectA changes start on a topic branch and merge to `develop` first.
+  That merged SHA must complete vtest postsubmit, Nexus image/deploy, and
+  post-deploy regression before it can promote through `develop -> main`.
+- A production repair starts on `hotfix/<name>` from VectA `main` and merges to
+  `main`. Once the main SHA is verified, the exact change returns through
+  `main -> develop` before later promotion.
+- VectA `main` is the production release lane. It runs the vtest lane and the
+  protected mypc image-build lane. A production deploy remains a separately
   approved action.
 - Infrastructure workflows and reusable jobs must preserve those branch and
-  runner boundaries; do not broaden a vtest trigger into a production deploy.
+  runner boundaries, policy checks, and promotion evidence. Do not broaden a
+  vtest trigger or a main image build into a production deploy.
 - Images use immutable full Git SHA tags for normal delivery. Production cache
   adoption uses immutable `cache-<image-id>` tags only when preserving a live
   container image is required.
