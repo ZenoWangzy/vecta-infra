@@ -83,28 +83,46 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
-        with:
-          repository: ZenoWangzy/vecta
-          ref: ${{ inputs.source_branch }}
-          fetch-depth: 1
-          token: ${{ secrets.VECTA_READ_TOKEN || github.token }}
-          path: vecta
-
-      - name: Verify selected branch HEAD matches SHA
-        working-directory: vecta
+      - name: Download selected VectA source
         run: |
           set -euo pipefail
+          [ -n "${VECTA_READ_TOKEN:-}" ] || {
+            echo "VECTA_READ_TOKEN secret is required" >&2
+            exit 1
+          }
           case "$SOURCE_BRANCH" in
             main|develop) ;;
             *) echo "unsupported source_branch: $SOURCE_BRANCH" >&2; exit 1 ;;
           esac
-          actual_sha="$(git rev-parse HEAD)"
-          if [ "$actual_sha" != "$SOURCE_SHA" ]; then
+          auth_header="Authorization: Bearer ${VECTA_READ_TOKEN}"
+          api_header="Accept: application/vnd.github+json"
+          branch_json="$(curl -fsSL \
+            -H "$auth_header" \
+            -H "$api_header" \
+            "https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/${SOURCE_BRANCH}")"
+          branch_sha="$(printf '%s' "$branch_json" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const ref = JSON.parse(input);
+              process.stdout.write(ref.object.sha);
+            });
+          ')"
+          if [ "$branch_sha" != "$SOURCE_SHA" ]; then
             echo "source_sha must be the selected branch HEAD" >&2
-            echo "expected=$SOURCE_SHA actual=$actual_sha" >&2
+            echo "expected=$SOURCE_SHA actual=$branch_sha" >&2
             exit 1
           fi
+          mkdir -p vecta
+          curl -fL \
+            -H "$auth_header" \
+            -H "$api_header" \
+            -o /tmp/vecta-source.tar.gz \
+            "https://api.github.com/repos/ZenoWangzy/vecta/tarball/${SOURCE_SHA}"
+          tar -xzf /tmp/vecta-source.tar.gz --strip-components=1 -C vecta
+          rm -f /tmp/vecta-source.tar.gz
+        env:
+          VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
 
       - name: Preflight production build runner
         run: |
