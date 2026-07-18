@@ -1,6 +1,6 @@
 ---
 # Manual production build entry point. It builds an explicitly selected VectA
-# main-branch SHA into the production-local Nexus on the mypc runner only.
+# SHA into the production-local Nexus on the mypc runner only.
 name: Build mypc production images
 
 "on":
@@ -10,7 +10,17 @@ name: Build mypc production images
         type: string
         required: true
         description: >-
-          Full 40-character VectA main SHA to build into mypc Nexus
+          Full 40-character VectA SHA to build into mypc Nexus
+      source_branch:
+        type: choice
+        required: true
+        default: develop
+        description: >-
+          Branch that must contain source_sha. develop is temporary for the
+          incremental production build lane.
+        options:
+          - develop
+          - main
       docker_cache_prune_until:
         type: string
         default: 48h
@@ -35,6 +45,7 @@ jobs:
     timeout-minutes: 240
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_BRANCH: ${{ inputs.source_branch }}
       NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082
       DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082
       DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8082
@@ -80,13 +91,18 @@ jobs:
           token: ${{ secrets.VECTA_READ_TOKEN || github.token }}
           path: vecta
 
-      - name: Verify SHA belongs to VectA main
+      - name: Verify SHA belongs to selected VectA branch
         working-directory: vecta
         run: |
           set -euo pipefail
-          git fetch origin main
-          git merge-base --is-ancestor "$SOURCE_SHA" origin/main || {
-            echo "source_sha must be reachable from ZenoWangzy/vecta main" \
+          case "$SOURCE_BRANCH" in
+            main|develop) ;;
+            *) echo "unsupported source_branch: $SOURCE_BRANCH" >&2; exit 1 ;;
+          esac
+          git fetch origin "$SOURCE_BRANCH"
+          git merge-base --is-ancestor \
+            "$SOURCE_SHA" "origin/$SOURCE_BRANCH" || {
+            echo "source_sha must be reachable from selected VectA branch" \
               >&2
             exit 1
           }
