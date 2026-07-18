@@ -142,6 +142,187 @@ jobs:
             exit 1
           fi
 
+      - name: Ensure production Nexus is running
+        run: |
+          set -euo pipefail
+          [ -n "${NEXUS_ADMIN_PASSWORD:-}" ] || {
+            echo "NEXUS_ADMIN_PASSWORD secret is required" >&2
+            exit 1
+          }
+          if ! docker ps -a --format '{{.Names}}' | grep -qx vecta-nexus; then
+            docker volume create vecta-nexus-data
+            docker run -d \
+              --name vecta-nexus \
+              --restart unless-stopped \
+              -p 127.0.0.1:8081:8081 \
+              -p 127.0.0.1:8082:8082 \
+              -p 127.0.0.1:8083:8083 \
+              -v vecta-nexus-data:/nexus-data \
+              sonatype/nexus3:3.79.1
+          else
+            docker start vecta-nexus >/dev/null
+          fi
+          for _ in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8081/service/rest/v1/status \
+              >/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          if ! curl -fsS http://127.0.0.1:8081/service/rest/v1/status \
+            >/dev/null; then
+            echo "Nexus did not become ready" >&2
+            docker logs --tail 100 vecta-nexus >&2 || true
+            exit 1
+          fi
+          if docker exec vecta-nexus test -s /nexus-data/admin.password; then
+            initial_password="$(docker exec vecta-nexus \
+              cat /nexus-data/admin.password | tr -d '\r\n')"
+            curl -fsS \
+              -u "admin:${initial_password}" \
+              -X PUT \
+              -H 'Content-Type: text/plain' \
+              --data-binary "$NEXUS_ADMIN_PASSWORD" \
+              http://127.0.0.1:8081/service/rest/v1/security/users/admin/change-password
+            docker exec vecta-nexus rm -f /nexus-data/admin.password || true
+          fi
+          curl -fsS \
+            -u "admin:${NEXUS_ADMIN_PASSWORD}" \
+            http://127.0.0.1:8081/service/rest/v1/status >/dev/null
+        env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
+
+      - name: Provision production Nexus repositories
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = 'http://127.0.0.1:8081/service/rest/v1';
+          const password = process.env.NEXUS_ADMIN_PASSWORD;
+          if (!password) throw new Error('NEXUS_ADMIN_PASSWORD is required');
+          const auth = 'Basic ' + Buffer
+            .from(`admin:${password}`)
+            .toString('base64');
+
+          async function request(method, path, body, ok = [200, 201, 204]) {
+            const res = await fetch(`${base}${path}`, {
+              method,
+              headers: {
+                Authorization: auth,
+                Accept: 'application/json',
+                ...(body ? { 'Content-Type': 'application/json' } : {}),
+              },
+              body: body ? JSON.stringify(body) : undefined,
+            });
+            if (!ok.includes(res.status)) {
+              const text = await res.text();
+              throw new Error(`${method} ${path} -> ${res.status}: ${text}`);
+            }
+            return res;
+          }
+
+          async function exists(name) {
+            const res = await request(
+              'GET',
+              `/repositories/${name}`,
+              null,
+              [200, 404],
+            );
+            return res.status === 200;
+          }
+
+          async function upsert(format, type, name, body) {
+            const present = await exists(name);
+            const suffix = present ? `/${name}` : '';
+            await request(
+              present ? 'PUT' : 'POST',
+              `/repositories/${format}/${type}${suffix}`,
+              body,
+            );
+          }
+
+          const storage = {
+            blobStoreName: 'default',
+            strictContentTypeValidation: true,
+          };
+          const proxyDefaults = remoteUrl => ({
+            online: true,
+            storage,
+            proxy: { remoteUrl, contentMaxAge: 1440, metadataMaxAge: 1440 },
+            negativeCache: { enabled: true, timeToLive: 1440 },
+            httpClient: {
+              blocked: false,
+              autoBlock: true,
+              connection: { retries: 2, timeout: 300 },
+            },
+          });
+
+          await upsert('npm', 'proxy', 'vecta-npm-proxy', {
+            name: 'vecta-npm-proxy',
+            ...proxyDefaults('https://registry.npmjs.org'),
+          });
+          await upsert('pypi', 'proxy', 'vecta-pypi-proxy', {
+            name: 'vecta-pypi-proxy',
+            ...proxyDefaults('https://pypi.org'),
+            pypi: { indexPath: '/simple' },
+          });
+          for (const repo of [
+            ['vecta-alpine-proxy', 'https://dl-cdn.alpinelinux.org/alpine'],
+            ['vecta-debian-proxy', 'http://deb.debian.org/debian'],
+            [
+              'vecta-debian-security-proxy',
+              'http://deb.debian.org/debian-security',
+            ],
+          ]) {
+            await upsert('raw', 'proxy', repo[0], {
+              name: repo[0],
+              ...proxyDefaults(repo[1]),
+              storage: {
+                blobStoreName: 'default',
+                strictContentTypeValidation: false,
+              },
+              raw: {
+                contentDisposition: 'ATTACHMENT',
+                forwardQueryParameters: true,
+              },
+            });
+          }
+          await upsert('docker', 'hosted', 'vecta-docker-local', {
+            name: 'vecta-docker-local',
+            online: true,
+            storage: { ...storage, writePolicy: 'ALLOW' },
+            docker: { v1Enabled: false, forceBasicAuth: true, httpPort: 8082 },
+          });
+          await upsert('docker', 'proxy', 'vecta-docker-remote', {
+            name: 'vecta-docker-remote',
+            ...proxyDefaults('https://registry-1.docker.io'),
+            docker: { v1Enabled: false, forceBasicAuth: true },
+            dockerProxy: {
+              indexType: 'REGISTRY',
+              indexUrl: 'https://index.docker.io/',
+            },
+          });
+          await upsert('docker', 'group', 'vecta-docker-virtual', {
+            name: 'vecta-docker-virtual',
+            online: true,
+            storage,
+            group: {
+              memberNames: ['vecta-docker-remote', 'vecta-docker-local'],
+            },
+            docker: { v1Enabled: false, forceBasicAuth: true, httpPort: 8083 },
+          });
+          NODE
+          for port in 8082 8083; do
+            for _ in $(seq 1 30); do
+              if curl -fsS -o /dev/null -w '%{http_code}' \
+                "http://127.0.0.1:${port}/v2/" | grep -Eq '^(200|401)$'; then
+                break
+              fi
+              sleep 2
+            done
+          done
+        env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
+
       - name: Login to production Nexus Docker registry
         run: >-
           echo "$NEXUS_ADMIN_PASSWORD" |
