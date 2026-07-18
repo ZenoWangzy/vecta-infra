@@ -86,12 +86,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ZenoWangzy/vecta
-          ref: ${{ inputs.source_sha }}
-          fetch-depth: 0
+          ref: ${{ inputs.source_branch }}
+          fetch-depth: 1
           token: ${{ secrets.VECTA_READ_TOKEN || github.token }}
           path: vecta
 
-      - name: Verify SHA belongs to selected VectA branch
+      - name: Verify selected branch HEAD matches SHA
         working-directory: vecta
         run: |
           set -euo pipefail
@@ -99,13 +99,12 @@ jobs:
             main|develop) ;;
             *) echo "unsupported source_branch: $SOURCE_BRANCH" >&2; exit 1 ;;
           esac
-          git fetch origin "$SOURCE_BRANCH"
-          git merge-base --is-ancestor \
-            "$SOURCE_SHA" "origin/$SOURCE_BRANCH" || {
-            echo "source_sha must be reachable from selected VectA branch" \
-              >&2
+          actual_sha="$(git rev-parse HEAD)"
+          if [ "$actual_sha" != "$SOURCE_SHA" ]; then
+            echo "source_sha must be the selected branch HEAD" >&2
+            echo "expected=$SOURCE_SHA actual=$actual_sha" >&2
             exit 1
-          }
+          fi
 
       - name: Preflight production build runner
         run: |
