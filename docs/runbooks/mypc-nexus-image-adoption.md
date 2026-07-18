@@ -321,6 +321,39 @@ governance gates are incomplete.
   migration-ledger baseline, fresh backup, isolated restore rehearsal, and
   additive-delta approval. Do not bypass this with a manual container command.
 
+### PostgreSQL Evidence Package - 2026-07-18
+
+The database is now **safe for the reviewed Ansible recreation**, but the
+actual PostgreSQL container replacement has not been run in this phase.
+
+- Evidence directory:
+  `/data/ocee/backups/postgres-adoption/postgres-adoption-20260718T103713Z`.
+  It contains a 28 MiB custom-format dump with `postgres.dump.sha256`, source
+  schema/inventory/row-count artifacts, a migration-ledger baseline, schema
+  review, additive-delta approval, and restore rehearsal record.
+- Isolated restore: `pg_restore` completed in a temporary network-disabled
+  container using only an evidence-directory bind; it never mounted or modified
+  `openclaw-enterprise_postgres_data`. Temporary restore data was removed after
+  verification.
+- Restore proof: source and restored database inventories, extension list,
+  three-record Drizzle ledger, and invariants for `tenants` (11), `employees`
+  (56), `files` (377), `fleet_instances` (53), and `knowledge_documents` (17)
+  are identical.
+- Schema review: the only five raw `pg_dump` differences are equivalent CHECK
+  constraint renderings for `customers_status_chk`,
+  `inventory_movements_type_chk`, `products_status_chk`,
+  `suppliers_status_chk`, and `employee_skill_installs_status_check`; no
+  additive database SQL is required for the identical-image registry change.
+- Guarded dry run: the PostgreSQL-only Ansible check verified all evidence
+  paths, preserved the existing volume/ports/aliases/credentials, ran automatic
+  pre/post regression, and proposed exactly one change: recreate
+  `openclaw-postgres` from the Nexus image. It did not change production.
+
+Use `scripts/mypc-postgres-adoption-evidence.sh --execute` on mypc to produce a
+fresh evidence package before an actual future recreation. The actual Ansible
+run must pass its new artifact paths and explicit approval as extra variables;
+do not persist approval in the default inventory.
+
 ## Hard Stops
 
 - Do not run `playbooks/infra.yml` against mypc for stateful services while
