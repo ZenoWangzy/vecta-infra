@@ -94,11 +94,15 @@ jobs:
             main|develop) ;;
             *) echo "unsupported source_branch: $SOURCE_BRANCH" >&2; exit 1 ;;
           esac
-          auth_header="Authorization: Bearer ${VECTA_READ_TOKEN}"
-          api_header="Accept: application/vnd.github+json"
-          branch_json="$(curl -fsSL \
-            -H "$auth_header" \
-            -H "$api_header" \
+          curl_config="$(mktemp)"
+          trap 'rm -f "$curl_config" /tmp/vecta-source.tar.gz' EXIT
+          chmod 600 "$curl_config"
+          {
+            printf 'header = "Authorization: Bearer %s"\n' "$VECTA_READ_TOKEN"
+            printf 'header = "Accept: application/vnd.github+json"\n'
+            printf 'retry = 5\nretry-delay = 5\nconnect-timeout = 30\n'
+          } > "$curl_config"
+          branch_json="$(curl -fsSL --config "$curl_config" \
             "https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/${SOURCE_BRANCH}")"
           branch_sha="$(printf '%s' "$branch_json" | node -e '
             let input = "";
@@ -115,12 +119,10 @@ jobs:
           fi
           mkdir -p vecta
           curl -fL \
-            -H "$auth_header" \
-            -H "$api_header" \
+            --config "$curl_config" \
             -o /tmp/vecta-source.tar.gz \
             "https://api.github.com/repos/ZenoWangzy/vecta/tarball/${SOURCE_SHA}"
           tar -xzf /tmp/vecta-source.tar.gz --strip-components=1 -C vecta
-          rm -f /tmp/vecta-source.tar.gz
         env:
           VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
 
