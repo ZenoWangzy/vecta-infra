@@ -4,6 +4,27 @@
 name: Build mypc production images
 
 "on":
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      source_branch:
+        type: string
+        required: true
+      docker_cache_prune_until:
+        type: string
+        required: false
+        default: 48h
+    secrets:
+      VECTA_READ_TOKEN:
+        required: true
+      MYPC_NEXUS_ADMIN_PASSWORD:
+        required: true
+      PROXY_USERNAME:
+        required: false
+      PROXY_PASSWORD:
+        required: false
   workflow_dispatch:
     inputs:
       source_sha:
@@ -38,7 +59,7 @@ concurrency:
 jobs:
   build:
     if: >-
-      github.event_name == 'workflow_dispatch' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call') &&
       github.repository == 'ZenoWangzy/vecta-infra'
     runs-on: [self-hosted, mypc, prod-build]
     environment: production
@@ -58,6 +79,7 @@ jobs:
       DEBIAN_SECURITY_MIRROR: >-
         http://127.0.0.1:8081/repository/vecta-debian-security-proxy
       DOCKER_BUILDKIT: "0"
+      NEXUS_ADMIN_PASSWORD_SECRET_NAME: MYPC_NEXUS_ADMIN_PASSWORD
     steps:
       - name: Configure git proxy
         run: |
@@ -153,7 +175,7 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "${NEXUS_ADMIN_PASSWORD:-}" ] || {
-            echo "NEXUS_ADMIN_PASSWORD secret is required" >&2
+            echo "${NEXUS_ADMIN_PASSWORD_SECRET_NAME} secret is required" >&2
             exit 1
           }
           if ! docker ps -a --format '{{.Names}}' | grep -qx vecta-nexus; then
@@ -218,7 +240,7 @@ jobs:
               http://127.0.0.1:8081/service/rest/v1/system/eula >/dev/null
           fi
         env:
-          NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
       - name: Provision production Nexus repositories
         run: |
@@ -226,7 +248,9 @@ jobs:
           node <<'NODE'
           const base = 'http://127.0.0.1:8081/service/rest/v1';
           const password = process.env.NEXUS_ADMIN_PASSWORD;
-          if (!password) throw new Error('NEXUS_ADMIN_PASSWORD is required');
+          const secretName = process.env.NEXUS_ADMIN_PASSWORD_SECRET_NAME
+            || 'MYPC_NEXUS_ADMIN_PASSWORD';
+          if (!password) throw new Error(`${secretName} is required`);
           const auth = 'Basic ' + Buffer
             .from(`admin:${password}`)
             .toString('base64');
@@ -350,14 +374,14 @@ jobs:
             done
           done
         env:
-          NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
       - name: Login to production Nexus Docker registry
         run: >-
           echo "$NEXUS_ADMIN_PASSWORD" |
           docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
         env:
-          NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
       - name: Validate image contract
         working-directory: vecta
