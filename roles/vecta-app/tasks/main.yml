@@ -1,8 +1,39 @@
 - import_tasks: login.yml
 - import_tasks: a2a_router.yml
+  when: "'a2a-router' in (vecta_app_enabled_services | default(['a2a-router', 'directory-service', 'admin-console', 'fleet-gateway', 'rag-service', 'channel-gateway', 'wechat-contact-sync']))"
 - import_tasks: directory_service.yml
+  when: "'directory-service' in (vecta_app_enabled_services | default(['a2a-router', 'directory-service', 'admin-console', 'fleet-gateway', 'rag-service', 'channel-gateway', 'wechat-contact-sync']))"
 - import_tasks: admin_console.yml
+  when: "'admin-console' in (vecta_app_enabled_services | default(['a2a-router', 'directory-service', 'admin-console', 'fleet-gateway', 'rag-service', 'channel-gateway', 'wechat-contact-sync']))"
+- import_tasks: fleet_gateway_mypc.yml
+  when:
+    - "'mypc' in group_names"
+    - "'fleet-gateway' in (vecta_app_enabled_services | default(['a2a-router', 'directory-service', 'admin-console', 'fleet-gateway', 'rag-service', 'channel-gateway', 'wechat-contact-sync']))"
 - import_tasks: fleet_gateway.yml
+  when:
+    - "'mypc' not in group_names"
+    - "'fleet-gateway' in (vecta_app_enabled_services | default(['a2a-router', 'directory-service', 'admin-console', 'fleet-gateway', 'rag-service', 'channel-gateway', 'wechat-contact-sync']))"
+- import_tasks: rag_service_mypc.yml
+  when:
+    - "'mypc' in group_names"
+    - "'rag-service' in (vecta_app_enabled_services | default(['a2a-router', 'directory-service', 'admin-console', 'fleet-gateway', 'rag-service', 'channel-gateway', 'wechat-contact-sync']))"
 - import_tasks: rag_service.yml
+  when:
+    - "'mypc' not in group_names"
+    - "'rag-service' in (vecta_app_enabled_services | default(['a2a-router', 'directory-service', 'admin-console', 'fleet-gateway', 'rag-service', 'channel-gateway', 'wechat-contact-sync']))"
+- import_tasks: channel_gateway_mypc.yml
+  when:
+    - "'mypc' in group_names"
+    - "'channel-gateway' in (vecta_app_enabled_services | default(['a2a-router', 'directory-service', 'admin-console', 'fleet-gateway', 'rag-service', 'channel-gateway', 'wechat-contact-sync']))"
 - import_tasks: channel_gateway.yml
+  when:
+    - "'mypc' not in group_names"
+    - "'channel-gateway' in (vecta_app_enabled_services | default(['a2a-router', 'directory-service', 'admin-console', 'fleet-gateway', 'rag-service', 'channel-gateway', 'wechat-contact-sync']))"
+- import_tasks: wechat_contact_sync_mypc.yml
+  when:
+    - "'mypc' in group_names"
+    - "'wechat-contact-sync' in (vecta_app_enabled_services | default(['a2a-router', 'directory-service', 'admin-console', 'fleet-gateway', 'rag-service', 'channel-gateway', 'wechat-contact-sync']))"
 - import_tasks: wechat_contact_sync.yml
+  when:
+    - "'mypc' not in group_names"
+    - "'wechat-contact-sync' in (vecta_app_enabled_services | default(['a2a-router', 'directory-service', 'admin-console', 'fleet-gateway', 'rag-service', 'channel-gateway', 'wechat-contact-sync']))"

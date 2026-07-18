@@ -65,8 +65,11 @@ replacement is approved.
    with the recovered spec and Nexus bridge tags. Do not include PostgreSQL,
    Redis, MinIO, Open WebUI, OnlyOffice, ClickHouse, or per-user runtimes.
 5. **Stateless recreation**: recreate one non-stateful app container at a time,
-   starting with A2A/Directory/Admin/Baidu and leaving Fleet, RAG, Channel, and
-   WeCom for later because they carry bind-path or channel ownership risk.
+   starting with A2A/Directory/Admin/Baidu. WeCom contact sync is the first
+   later app candidate because it has no mounts, but its legacy container name,
+   aliases, command, resource limits, log rotation, and live channel environment
+   must be captured before recreation. Leave Fleet, RAG, and Channel for their
+   dedicated bind-path/channel ownership phases.
 6. **Fleet/RAG/Channel/WeCom recreation**: replace only after health probes,
    channel ownership checks, runtime-start checks, and rollback commands are
    prepared. Channel remains last and must keep `owner=mypc`, `primary`, and
@@ -123,6 +126,87 @@ The mypc inventory intentionally keeps:
 - `mypc_stateful_services_enabled: false`
 - `wren_engine_enabled: false`
 - `fruit_vtest_enabled: false`
+
+## Application Adoption Evidence
+
+### WeCom Contact Sync - 2026-07-18
+
+`openclaw-wecom-contact-sync` was recreated from
+`127.0.0.1:8082/wechat-contact-sync:cache-73d27641f5e9`. The source and Nexus
+images had the identical Docker image ID. The cutover retained the legacy
+container name, command, environment, aliases, restart policy, resource limits,
+and JSON log rotation. Pre/post checks verified the contact-sync process plus
+PostgreSQL, Redis, and Fleet Gateway health. No writable mount or Docker volume
+is attached to this service.
+
+### RAG Service - 2026-07-18
+
+`openclaw-rag-service` was recreated from
+`127.0.0.1:8082/rag-service:cache-761b14870cf1` after the source and Nexus
+images were proved identical. The exact production mounts were retained:
+`openclaw-enterprise_rag_model_cache:/home/node/.cache/huggingface` and
+`/data/ocee/packages/rag-service/knowledge:/app/knowledge`.
+
+Before replacement, compressed backups and checksum evidence were written under
+`/data/ocee/backups/app-adoption/rag-service-nexus-adoption-20260718T110311Z`.
+The RAG health endpoint, PostgreSQL, Redis, Fleet Gateway, and the full
+post-deploy regression passed after replacement.
+
+### Fleet Gateway - 2026-07-18
+
+`openclaw-fleet-gateway` now uses
+`127.0.0.1:8082/fleet-gateway:cache-c78398cfe144`. The instance bind was backed
+up under `/data/ocee/backups/app-adoption/fleet-gateway-nexus-adoption-20260718T110711Z`.
+Both production networks, all mount modes, user `100:110`, and the live runtime
+environment were retained. The managed runtime count was unchanged and full
+regression passed.
+
+### Channel Gateway - 2026-07-18
+
+`openclaw-channel-gateway` now uses
+`127.0.0.1:8082/channel-gateway:cache-94a5357394f9`. Its production data bind
+was backed up under `/data/ocee/backups/app-adoption/` before replacement. The
+post-cutover check confirmed active `mypc` ownership, authenticated WeCom, and
+an open Feishu websocket, followed by the platform regression.
+
+### Stateful and Document Services - 2026-07-18
+
+Open WebUI, its nginx proxy, kkFileView, SearXNG, OnlyOffice, Fruit LiteLLM,
+and the Fruit Feishu gateway were mirrored from the running local cache into
+immutable `cache-<image-id>` Nexus tags, then adopted one container at a time.
+Before each recreation, the adoption role archived every existing named volume
+and bind mount to `/data/ocee/backups/app-adoption/`, recorded the live inspect
+contract, compared Linux filesystem layers, and remounted the original source
+strings. OnlyOffice retained all six existing named volumes; Open WebUI retained
+its data volume plus wrapper and patch binds. Full post-adoption regression
+passed.
+
+### Fleet-managed Hermes Runtime Adoption - 2026-07-18
+
+All 41 running Hermes runtime containers were adopted sequentially. Each runtime
+was stopped individually, its original mounts were archived, and it was
+recreated with the same ports, command, environment, network, and volume names.
+The normal runtime image now uses
+`127.0.0.1:8082/vecta-hermes-withopenclaw:v2026.5.16`.
+
+`openclaw-CODXPERM195543` used a distinct legacy image ID. It was mirrored and
+adopted from the immutable
+`127.0.0.1:8082/vecta-hermes-withopenclaw:cache-26a09247ebe6` tag rather than
+being substituted with the newer runtime image. The Fruit industry-pack canary
+was similarly mirrored to
+`127.0.0.1:8082/fruit-industry-pack:cache-64d0a7c24944` before recreation.
+
+The migration remains data-first: do not bulk restart runtimes in future runs.
+Use `playbooks/mypc-adopt.yml` for exactly one runtime, retain its backup under
+`/data/ocee/backups/app-adoption/`, and run the platform regression afterward.
+
+## Completed Regression Evidence
+
+The final `scripts/mypc-data-layer-regression.sh --service all --phase after`
+run passed PostgreSQL, Redis, MinIO, LiteLLM, Fleet Gateway, Admin Console,
+Directory Service, RAG, Channel Gateway, and Open WebUI proxy checks. ClickHouse
+was skipped because no production ClickHouse container exists. This is the
+mandatory post-adoption regression for every mypc service step.
 
 ## Safe Increment Order
 

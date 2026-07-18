@@ -1,0 +1,74 @@
+---
+# This is intentionally separate from the vtest task. mypc runs the legacy
+# container name and has production-only channel credentials that must be
+# retained from the live container rather than reconstructed from controller env.
+- name: Capture mypc WeCom contact-sync container contract
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - "{{ wechat_contact_sync_container_name }}"
+  register: mypc_wechat_contact_sync_inspect
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Parse mypc WeCom contact-sync container contract
+  ansible.builtin.set_fact:
+    mypc_wechat_contact_sync_live: "{{ (mypc_wechat_contact_sync_inspect.stdout | from_json) | first }}"
+  no_log: true
+
+- name: Require a running mypc WeCom contact-sync source container
+  ansible.builtin.assert:
+    that:
+      - mypc_wechat_contact_sync_live.State.Running | bool
+      - mypc_wechat_contact_sync_live.Config.Env | length > 0
+    fail_msg: "The existing WeCom contact-sync container is not a valid migration source."
+  no_log: true
+
+- name: Verify current and Nexus WeCom contact-sync image identities match
+  ansible.builtin.shell: >-
+    test "$(docker image inspect {{ mypc_wechat_contact_sync_live.Config.Image | quote }} --format '{{ '{{' }}.Id{{ '}}' }}')"
+    = "$(docker image inspect {{ wechat_contact_sync_image | quote }} --format '{{ '{{' }}.Id{{ '}}' }}')"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Run WeCom contact-sync regression before Nexus adoption
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/../../scripts/mypc-app-regression.sh --service wecom-contact-sync --phase before"
+  changed_when: false
+  check_mode: false
+
+- name: Recreate mypc WeCom contact-sync from the identical Nexus image
+  community.docker.docker_container:
+    name: "{{ wechat_contact_sync_container_name }}"
+    image: "{{ wechat_contact_sync_image }}"
+    state: started
+    pull: true
+    image_name_mismatch: recreate
+    restart_policy: "{{ wechat_contact_sync_restart_policy }}"
+    command: "{{ mypc_wechat_contact_sync_live.Config.Cmd }}"
+    entrypoint: "{{ mypc_wechat_contact_sync_live.Config.Entrypoint }}"
+    env: "{{ dict(mypc_wechat_contact_sync_live.Config.Env | map('split', '=', 1)) }}"
+    networks:
+      - name: "{{ docker_network }}"
+        aliases: "{{ wechat_contact_sync_network_aliases }}"
+    networks_cli_compatible: true
+    comparisons:
+      networks: strict
+    log_driver: "{{ wechat_contact_sync_log_driver }}"
+    log_options: "{{ wechat_contact_sync_log_options }}"
+    memory: "{{ wechat_contact_sync_memory }}"
+    cpus: "{{ wechat_contact_sync_cpus }}"
+  no_log: true
+
+- name: Run WeCom contact-sync regression after Nexus adoption
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/../../scripts/mypc-app-regression.sh --service wecom-contact-sync --phase after"
+  environment:
+    EXPECTED_IMAGE: "{{ wechat_contact_sync_image }}"
+  changed_when: false
+  when: not ansible_check_mode

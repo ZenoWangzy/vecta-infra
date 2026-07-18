@@ -1,0 +1,116 @@
+---
+# mypc has a production RAG cache volume, knowledge bind, and OCR/provider
+# configuration that do not match the vtest role. Capture the live contract and
+# recreate only from an image proven to have the same Docker image ID.
+- name: Capture mypc RAG container contract
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - "{{ rag_service_container_name }}"
+  register: mypc_rag_service_inspect
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Parse mypc RAG container contract
+  ansible.builtin.set_fact:
+    mypc_rag_service_live: "{{ (mypc_rag_service_inspect.stdout | from_json) | first }}"
+  no_log: true
+
+- name: Require a running mypc RAG source container
+  ansible.builtin.assert:
+    that:
+      - mypc_rag_service_live.State.Running | bool
+      - mypc_rag_service_live.Config.Env | length > 0
+    fail_msg: "The existing RAG container is not a valid migration source."
+  no_log: true
+
+- name: Require the reviewed mypc RAG state mounts
+  ansible.builtin.shell: >-
+    docker inspect {{ rag_service_container_name | quote }} |
+    jq -e --arg volume {{ rag_model_cache_volume | quote }}
+    --arg cache_path {{ rag_model_cache_container_path | quote }}
+    --arg knowledge {{ rag_knowledge_host_path | quote }}
+    '([.[0].Mounts[] | select(.Type == "volume" and .Name == $volume and .Destination == $cache_path and .RW)] | length == 1)
+    and ([.[0].Mounts[] | select(.Type == "bind" and .Source == $knowledge and .Destination == "/app/knowledge" and .RW)] | length == 1)'
+  args:
+    executable: /bin/bash
+  changed_when: false
+  check_mode: false
+
+- name: Verify current and Nexus RAG image identities match
+  ansible.builtin.shell: >-
+    test "$(docker image inspect {{ mypc_rag_service_live.Config.Image | quote }} --format '{{ '{{' }}.Id{{ '}}' }}')"
+    = "$(docker image inspect {{ rag_service_image | quote }} --format '{{ '{{' }}.Id{{ '}}' }}')"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Back up mypc RAG state before Nexus adoption
+  ansible.builtin.shell: |
+    set -euo pipefail
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    backup_dir="{{ rag_service_backup_root }}/rag-service-nexus-adoption-${stamp}"
+    mkdir -p "$backup_dir"
+    docker exec {{ rag_service_container_name | quote }} tar \
+      -C {{ rag_model_cache_container_path | dirname | quote }} \
+      -czf - {{ rag_model_cache_container_path | basename | quote }} \
+      > "$backup_dir/rag-model-cache.tgz"
+    tar -C {{ rag_knowledge_host_path | quote }} -czf "$backup_dir/rag-knowledge.tgz" .
+    {
+      echo "source_image=$(docker inspect -f '{{ '{{' }}.Config.Image{{ '}}' }}' {{ rag_service_container_name | quote }})"
+      echo "cache_volume={{ rag_model_cache_volume }}"
+      echo "cache_path={{ rag_model_cache_container_path }}"
+      echo "knowledge_path={{ rag_knowledge_host_path }}"
+    } > "$backup_dir/manifest.txt"
+    sha256sum "$backup_dir/rag-model-cache.tgz" "$backup_dir/rag-knowledge.tgz" > "$backup_dir/checksums.sha256"
+    printf '%s\n' "$backup_dir"
+  args:
+    executable: /bin/bash
+  register: mypc_rag_service_backup
+  changed_when: true
+  when: not ansible_check_mode
+
+- name: Run RAG regression before Nexus adoption
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/../../scripts/mypc-app-regression.sh --service rag-service --phase before"
+  changed_when: false
+  check_mode: false
+
+- name: Recreate mypc RAG service from the identical Nexus image
+  community.docker.docker_container:
+    name: "{{ rag_service_container_name }}"
+    image: "{{ rag_service_image }}"
+    state: started
+    pull: true
+    image_name_mismatch: recreate
+    restart_policy: "{{ rag_service_restart_policy }}"
+    command: "{{ mypc_rag_service_live.Config.Cmd }}"
+    entrypoint: "{{ mypc_rag_service_live.Config.Entrypoint }}"
+    env: "{{ dict(mypc_rag_service_live.Config.Env | map('split', '=', 1)) }}"
+    ports: "{{ rag_service_published_ports }}"
+    volumes:
+      - "{{ rag_model_cache_volume }}:{{ rag_model_cache_container_path }}:rw"
+      - "{{ rag_knowledge_host_path }}:/app/knowledge:rw"
+    networks:
+      - name: "{{ docker_network }}"
+        aliases: "{{ rag_service_network_aliases }}"
+    networks_cli_compatible: true
+    comparisons:
+      networks: strict
+    log_driver: "{{ rag_service_log_driver }}"
+    log_options: "{{ rag_service_log_options }}"
+    memory: "{{ rag_service_memory }}"
+    cpus: "{{ rag_service_cpus }}"
+  no_log: true
+
+- name: Run RAG regression after Nexus adoption
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/../../scripts/mypc-app-regression.sh --service rag-service --phase after"
+  environment:
+    EXPECTED_IMAGE: "{{ rag_service_image }}"
+  changed_when: false
+  when: not ansible_check_mode

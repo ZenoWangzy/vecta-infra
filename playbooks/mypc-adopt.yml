@@ -1,0 +1,9 @@
+---
+- name: Adopt one mypc service from Nexus
+  hosts: mypc
+  gather_facts: false
+  pre_tasks:
+    - ansible.builtin.assert:
+        that: [mypc_deploy_enabled | bool, mypc_adoption_container is defined, mypc_adoption_image is defined]
+  roles:
+    - role: mypc-nexus-adoption

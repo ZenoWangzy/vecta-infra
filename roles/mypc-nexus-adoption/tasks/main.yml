@@ -1,0 +1,98 @@
+---
+# Generic data-first adoption for containers whose full runtime contract is
+# supplied from the currently running container. This intentionally keeps
+# production secrets in Ansible memory only.
+- name: Capture live container contract
+  ansible.builtin.command:
+    argv: [docker, inspect, "{{ mypc_adoption_container }}"]
+  register: mypc_adoption_inspect
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Parse live container contract
+  ansible.builtin.set_fact:
+    mypc_adoption_live: "{{ (mypc_adoption_inspect.stdout | from_json) | first }}"
+  no_log: true
+
+- name: Require a running adoption source
+  ansible.builtin.assert:
+    that:
+      - mypc_adoption_live.State.Running | bool
+      - mypc_adoption_live.Config.Env | length > 0
+    fail_msg: "{{ mypc_adoption_container }} is not a running migration source"
+  no_log: true
+
+- name: Require matching Linux filesystem layers in Nexus
+  ansible.builtin.shell: >-
+    test "$(docker image inspect {{ mypc_adoption_live.Image | quote }} | jq -c '.[0].RootFS.Layers')"
+    = "$(docker image inspect {{ mypc_adoption_image | quote }} | jq -c '.[0].RootFS.Layers')"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Quiesce a stateful adoption source before its backup
+  community.docker.docker_container:
+    name: "{{ mypc_adoption_container }}"
+    state: stopped
+  when: mypc_adoption_quiesce | default(false) | bool
+  no_log: true
+
+- name: Back up all existing adoption mounts
+  ansible.builtin.shell: |
+    set -euo pipefail
+    backup_dir="/data/ocee/backups/app-adoption/{{ mypc_adoption_container }}-nexus-adoption-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$backup_dir"
+    docker inspect {{ mypc_adoption_container | quote }} | jq -r '.[0].Mounts[] | [.Type, (.Name // .Source), .Destination] | @tsv' |
+    while IFS=$'\t' read -r type source destination; do
+      safe="$(printf '%s' "$destination" | tr '/' '_')"
+      if [ "$type" = volume ]; then
+        path="$(docker volume inspect "$source" | jq -r '.[0].Mountpoint')"
+      else
+        path="$source"
+      fi
+      if [ -d "$path" ]; then
+        tar -C "$path" -czf "$backup_dir/${type}-${safe}.tgz" .
+      else
+        tar -C "$(dirname "$path")" -czf "$backup_dir/${type}-${safe}.tgz" "$(basename "$path")"
+      fi
+    done
+    if compgen -G "$backup_dir/*.tgz" > /dev/null; then
+      sha256sum "$backup_dir"/*.tgz > "$backup_dir/checksums.sha256"
+    else
+      : > "$backup_dir/checksums.sha256"
+    fi
+    docker inspect {{ mypc_adoption_container | quote }} > "$backup_dir/container-inspect.json"
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Recreate container from Nexus retaining live contract
+  community.docker.docker_container:
+    name: "{{ mypc_adoption_container }}"
+    image: "{{ mypc_adoption_image }}"
+    state: started
+    pull: true
+    image_name_mismatch: recreate
+    restart_policy: "{{ mypc_adoption_restart_policy }}"
+    entrypoint: "{{ mypc_adoption_live.Config.Entrypoint }}"
+    command: "{{ mypc_adoption_live.Config.Cmd }}"
+    env: "{{ dict(mypc_adoption_live.Config.Env | map('split', '=', 1)) }}"
+    volumes: "{{ mypc_adoption_live.HostConfig.Binds | default([]) }}"
+    ports: "{{ mypc_adoption_ports }}"
+    networks: "{{ mypc_adoption_networks }}"
+    networks_cli_compatible: true
+    comparisons:
+      networks: strict
+    user: "{{ mypc_adoption_live.Config.User | default(omit, true) }}"
+    memory: "{{ (mypc_adoption_memory | string == '0') | ternary(omit, mypc_adoption_memory) }}"
+    cpus: "{{ (mypc_adoption_cpus | string == '0') | ternary(omit, mypc_adoption_cpus) }}"
+    log_driver: json-file
+    log_options:
+      max-size: 50m
+      max-file: "5"
+  no_log: true

@@ -88,6 +88,20 @@ onlyoffice_data_volume: openclaw-enterprise_onlyoffice-data
 # ClickHouse is a new service or has an existing external data owner.
 clickhouse_data_volume: ""
 rag_model_cache_volume: openclaw-enterprise_rag_model_cache
+rag_service_container_name: openclaw-rag-service
+rag_service_restart_policy: unless-stopped
+rag_service_published_ports:
+  - "8000:8000"
+rag_service_network_aliases:
+  - openclaw-rag-service
+  - rag-service
+rag_service_log_driver: json-file
+rag_service_log_options:
+  max-size: 50m
+  max-file: "5"
+rag_service_memory: 1g
+rag_service_cpus: "1.0"
+rag_service_backup_root: /data/ocee/backups/app-adoption
 
 # Existing production bind paths. These are compatibility inputs for gradual
 # Ansible recreation; do not replace them with vtest defaults during cutover.
@@ -100,10 +114,40 @@ fleet_gateway_templates_host_path: /data/ocee/templates
 fleet_gateway_shared_plugins_host_path: /data/ocee/deploy/instances/shared/plugins
 fleet_gateway_litellm_config_host_path: /data/ocee/infra/litellm/config.yaml
 fleet_gateway_fruit_pack_host_path: /data/ocee/packages/fruit-industry-pack
+fleet_gateway_container_name: openclaw-fleet-gateway
+fleet_gateway_restart_policy: unless-stopped
+fleet_gateway_user: "100:110"
+fleet_gateway_published_ports:
+  - "3000:3000"
+fleet_gateway_network_aliases:
+  - openclaw-fleet-gateway
+  - fleet-gateway
+fleet_gateway_log_driver: json-file
+fleet_gateway_log_options:
+  max-size: 50m
+  max-file: "5"
+fleet_gateway_memory: 2g
+fleet_gateway_cpus: "1.5"
+fleet_gateway_backup_root: /data/ocee/backups/app-adoption
 rag_uploads_host_path: /data/ocee/data/fleet-gateway/uploads
 rag_knowledge_host_path: /data/ocee/packages/rag-service/knowledge
 rag_model_cache_container_path: /home/node/.cache/huggingface
 channel_gateway_data_host_path: /data/ocee/packages/channel-gateway/data
+channel_gateway_container_name: openclaw-channel-gateway
+channel_gateway_restart_policy: unless-stopped
+channel_gateway_user: appuser
+channel_gateway_published_ports:
+  - "9000:9000"
+channel_gateway_network_aliases:
+  - openclaw-channel-gateway
+  - channel-gateway
+channel_gateway_log_driver: json-file
+channel_gateway_log_options:
+  max-size: 50m
+  max-file: "5"
+channel_gateway_memory: 256m
+channel_gateway_cpus: "0.5"
+channel_gateway_backup_root: /data/ocee/backups/app-adoption
 open_webui_entrypoint_wrapper_host_path: /data/ocee/infra/open-webui/entrypoint-wrapper.sh
 open_webui_patches_host_path: /data/ocee/infra/open-webui/patches
 open_webui_nginx_config_dir: /data/ocee/infra/open-webui
@@ -130,6 +174,10 @@ deploy_audit_enabled: false
 deploy_smoke_enabled: false
 nexus_manifest_check_enabled: false
 nexus_docker_login_enabled: false
+# The shared deploy role evaluates this even for app-only production cutovers.
+# Keep migration writes disabled unless an explicitly approved migration run
+# overrides it.
+vtest_allow_migrate: "0"
 deploy_image_tags:
   a2a-router: cache-3134bcb4484a
   admin-console: cache-19ca33c7e758
@@ -146,6 +194,20 @@ rag_service_image: "{{ nexus_docker_registry }}/rag-service:{{ deploy_image_tags
 directory_service_image: "{{ nexus_docker_registry }}/directory-service:{{ deploy_image_tags['directory-service'] }}"
 admin_console_image: "{{ nexus_docker_registry }}/admin-console:{{ deploy_image_tags['admin-console'] }}"
 wechat_contact_sync_image: "{{ nexus_docker_registry }}/wechat-contact-sync:{{ deploy_image_tags['wechat-contact-sync'] }}"
+# WeCom contact sync has no writable mounts, but must retain its legacy
+# production name, aliases, runtime command, limits, log rotation, and live
+# channel credentials during the one-service Nexus adoption.
+wechat_contact_sync_container_name: openclaw-wecom-contact-sync
+wechat_contact_sync_restart_policy: unless-stopped
+wechat_contact_sync_network_aliases:
+  - openclaw-wecom-contact-sync
+  - wecom-contact-sync
+wechat_contact_sync_log_driver: json-file
+wechat_contact_sync_log_options:
+  max-size: 50m
+  max-file: "5"
+wechat_contact_sync_memory: 128m
+wechat_contact_sync_cpus: "0.25"
 baidu_search_image: "{{ nexus_docker_registry }}/baidu-search-service:{{ deploy_image_tags['baidu-search-service'] }}"
 fruit_vtest_enabled: false
 
