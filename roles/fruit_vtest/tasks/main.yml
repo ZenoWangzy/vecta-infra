@@ -1,0 +1,147 @@
+---
+- name: Fruit vtest — validate deployment contract
+  ansible.builtin.assert:
+    that:
+      - deploy_sha is match('^[0-9a-f]{40}$')
+      - fruit_vtest_image | length > 0
+      - fruit_vtest_platform_service_secret | length >= 16
+      - fruit_vtest_canary_employee_id is match('^[A-Za-z0-9._@+-]{1,191}$')
+      - fruit_vtest_runtime_db_role is match('^[a-z_][a-z0-9_]{0,62}$')
+    fail_msg: "Fruit vtest deployment contract is incomplete; refusing to change the canary service"
+  no_log: true
+
+- name: Fruit vtest — resolve the existing isolated canary tenant
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - openclaw-postgres
+      - psql
+      - -U
+      - "{{ postgres_user }}"
+      - -d
+      - "{{ postgres_db }}"
+      - -tAc
+      - >-
+        SELECT t.id
+        FROM public.tenants t
+        JOIN public.employees e ON e.tenant_id = t.id
+        JOIN public.employee_roles er ON er.employee_id = e.employee_id AND er.tenant_id = e.tenant_id
+        JOIN public.roles r ON r.id = er.role_id AND r.tenant_id = er.tenant_id
+        WHERE t.name = '{{ fruit_vtest_canary_organization | replace("'", "''") }}'
+          AND e.employee_id = '{{ fruit_vtest_canary_employee_id | replace("'", "''") }}'
+          AND t.status::text IN ('active', 'trial')
+          AND lower(t.id) <> 'bgy'
+          AND upper(e.employee_id) <> 'IT001'
+        GROUP BY t.id
+        HAVING max(r.level) = 40
+        ORDER BY t.id
+  register: fruit_vtest_canary_tenant_query
+  changed_when: false
+
+- name: Fruit vtest — reject missing or ambiguous canary tenants
+  ansible.builtin.assert:
+    that:
+      - fruit_vtest_canary_tenant_query.stdout_lines | length == 1
+      - fruit_vtest_canary_tenant_query.stdout | trim | length > 0
+    fail_msg: "Fruit canary tenant must already exist exactly once; use a separately reviewed bootstrap instead"
+
+- name: Fruit vtest — record isolated canary tenant
+  ansible.builtin.set_fact:
+    fruit_vtest_canary_tenant_id: "{{ fruit_vtest_canary_tenant_query.stdout | trim }}"
+
+- name: Fruit vtest — run explicit schema and runtime-role bootstrap
+  community.docker.docker_container:
+    name: "openclaw-fruit-vtest-setup-{{ deploy_sha[:12] }}"
+    image: "{{ fruit_vtest_image }}"
+    command: ["node", "packages/fruit-industry-pack/dist/db/setup.js"]
+    state: started
+    detach: false
+    cleanup: true
+    pull: true
+    env:
+      DATABASE_URL: "postgresql://{{ postgres_user }}:{{ postgres_password }}@openclaw-postgres:5432/{{ postgres_db }}"
+      FRUIT_RUNTIME_DB_ROLE: "{{ fruit_vtest_runtime_db_role }}"
+      FRUIT_RUNTIME_DB_PASSWORD: "{{ fruit_vtest_runtime_db_password }}"
+      FRUIT_SETUP_WAIT_MS: "60000"
+    networks:
+      - name: "{{ docker_network }}"
+  when: fruit_vtest_bootstrap | bool
+  no_log: true
+
+- name: Fruit vtest — deploy scoped Fruit MCP service
+  community.docker.docker_container:
+    name: "{{ fruit_vtest_container_name }}"
+    image: "{{ fruit_vtest_image }}"
+    state: started
+    restart_policy: unless-stopped
+    pull: true
+    image_name_mismatch: recreate
+    ports:
+      - "127.0.0.1:{{ fruit_vtest_port }}:8002"
+    env:
+      DATABASE_URL: "postgresql://{{ fruit_vtest_runtime_db_role }}:{{ fruit_vtest_runtime_db_password }}@openclaw-postgres:5432/{{ postgres_db }}"
+      FRUIT_SERVICE_SECRET: "{{ fruit_vtest_service_secret }}"
+      FRUIT_ALLOWED_TENANT_IDS: "{{ fruit_vtest_canary_tenant_id }}"
+      FRUIT_ALLOWED_EMPLOYEE_IDS: "{{ fruit_vtest_canary_employee_id }}"
+      FRUIT_PROCESSING_ENTRY_ENABLED: "false"
+      FRUIT_PROCESSING_ALLOWED_TENANT_IDS: ""
+      FRUIT_PROCESSING_IMAGE_MODE: "disabled"
+      FRUIT_PLATFORM_BASE_URL: "http://openclaw-fleet-gateway:3000"
+      FRUIT_PLATFORM_SERVICE_TOKEN: "{{ fruit_vtest_platform_service_secret }}"
+      FRUIT_PORT: "8002"
+      FRUIT_MODEL_PATH: "/app/packages/fruit-industry-pack/model/fruit-model.yaml"
+      FRUIT_DEFAULT_RESULT_LIMIT: "100"
+      FRUIT_MAX_RESULT_LIMIT: "500"
+      FRUIT_STATEMENT_TIMEOUT_MS: "5000"
+      FRUIT_MAX_ESTIMATED_ROWS: "100000"
+      TZ: Asia/Shanghai
+    networks:
+      - name: "{{ docker_network }}"
+    memory: "1g"
+    cpus: "1.0"
+  no_log: true
+
+- name: Fruit vtest — wait for MCP health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ fruit_vtest_port }}/healthz"
+    method: GET
+    status_code: 200
+    return_content: true
+  register: fruit_vtest_health
+  until: fruit_vtest_health.status == 200
+  retries: 18
+  delay: 5
+  changed_when: false
+
+- name: Fruit vtest — synchronize scoped platform Skills
+  community.docker.docker_container:
+    name: "openclaw-fruit-vtest-skill-sync-{{ deploy_sha[:12] }}"
+    image: "{{ fruit_vtest_image }}"
+    command: ["node", "packages/fruit-industry-pack/dist/platform/sync-platform-skill.js"]
+    state: started
+    detach: false
+    cleanup: true
+    pull: true
+    env:
+      FLEET_GATEWAY_URL: "http://openclaw-fleet-gateway:3000"
+      SERVICE_SECRET: "{{ fruit_vtest_platform_service_secret }}"
+      FRUIT_SKILL_ADMIN_EMPLOYEE_ID: "{{ fruit_vtest_canary_employee_id }}"
+      FRUIT_SKILL_TENANT_ID: "{{ fruit_vtest_canary_tenant_id }}"
+      FRUIT_LIVE_EMPLOYEE_IDS: "{{ fruit_vtest_canary_employee_id }}"
+      FRUIT_PROCESSING_ENTRY_EMPLOYEE_IDS: "{{ fruit_vtest_canary_employee_id }}"
+    networks:
+      - name: "{{ docker_network }}"
+  when: fruit_vtest_sync_platform_skills | bool
+  no_log: true
+
+- name: Fruit vtest — verify protected employee remains unauthorized
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ fruit_vtest_port }}/mcp"
+    method: GET
+    headers:
+      x-service-token: "{{ fruit_vtest_service_secret }}"
+      x-employee-id: IT001
+    status_code: 401
+  changed_when: false
+  no_log: true

@@ -7,7 +7,14 @@
 - name: Preflight — compose required Nexus image repo list
   set_fact:
     vtest_required_image_repos_effective: >-
-      {{ vtest_required_image_repos + ([vtest_migrator_image_repo] if (vtest_allow_migrate | string) == '1' else []) }}
+      {{
+        vtest_required_image_repos
+        + ([vtest_migrator_image_repo] if (vtest_allow_migrate | string) == '1' else [])
+        + ([fruit_vtest_image_repo]
+           if (fruit_vtest_enabled | default(false) | bool
+               and ('fruit-vtest' in ansible_run_tags or 'all' in ansible_run_tags))
+           else [])
+      }}
 
 - name: Preflight — check required Nexus image manifests
   uri:

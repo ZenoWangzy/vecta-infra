@@ -81,6 +81,9 @@
       PORT_RANGE_MIN: "18800"
       PORT_RANGE_MAX: "18900"
       FLEET_PORT: "3000"
+      INDUSTRY_PACK_RUNTIME_ROOTS: "{{ (fruit_vtest_enabled | default(false) | bool) | ternary('/app/industry-packs/fruit', '') }}"
+      FRUIT_PACK_MCP_URL: "{{ (fruit_vtest_enabled | default(false) | bool) | ternary('http://openclaw-fruit-industry-pack:8002/mcp', '') }}"
+      FRUIT_SERVICE_SECRET: "{{ (fruit_vtest_enabled | default(false) | bool) | ternary(fruit_vtest_service_secret, '') }}"
     volumes:
       - "{{ remote_dir }}/deploy:/app/data/instances"
       - "{{ remote_dir }}/data/fleet-gateway/uploads:/app/data/uploads"

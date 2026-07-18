@@ -19,8 +19,12 @@ on:
         default: ''
       tags:
         type: string
-        description: "Ansible tags: nexus / jfrog / infra / search / open-webui / openclaw / vecta-app / all"
-        default: open-webui,vecta-app
+        description: "Ansible tags: nexus / infra / search / open-webui / openclaw / vecta-app / fruit-vtest / all"
+        default: open-webui,vecta-app,fruit-vtest
+      fruit_bootstrap:
+        type: boolean
+        default: false
+        description: "Explicitly run Fruit schema/runtime-role bootstrap before the service deploy"
       docker_cache_prune_until:
         type: string
         description: "Docker cache retention on the vtest runner after deploy; set to 'never' to skip"
@@ -85,4 +89,5 @@ jobs:
       tags: ${{ inputs.tags }}
       migration_artifact_run_id: ${{ needs.upload-migrations.result == 'success' && github.run_id || '' }}
       docker_cache_prune_until: ${{ inputs.docker_cache_prune_until }}
+      fruit_bootstrap: ${{ inputs.fruit_bootstrap }}
     secrets: inherit

@@ -23,6 +23,10 @@ on:
         type: string
         default: 48h
         description: "Docker cache retention on the vtest runner after deploy; set to 'never' to skip"
+      fruit_bootstrap:
+        type: boolean
+        default: false
+        description: "Run the reviewed Fruit schema and runtime-role bootstrap before service deployment"
     secrets:
       VTEST_DATABASE_URL:
         required: true
@@ -59,7 +63,8 @@ jobs:
       WECOM_BOT_SECRET: ${{ secrets.WECOM_BOT_SECRET }}
       DEPLOY_SHA: ${{ inputs.image_tag }}
       VTEST_ALLOW_MIGRATE: ${{ inputs.run_migrations && '1' || '0' }}
-      DEPLOY_TAGS: ${{ inputs.tags || 'open-webui,vecta-app' }}
+      DEPLOY_TAGS: ${{ inputs.tags || 'open-webui,vecta-app,fruit-vtest' }}
+      VTEST_FRUIT_BOOTSTRAP: ${{ inputs.fruit_bootstrap && '1' || '0' }}
     steps:
       - name: Configure git proxy
         run: |
@@ -120,12 +125,14 @@ jobs:
           [ -n "$ci_wecom_contacts_secret" ] && export WECOM_CONTACTS_SECRET="$ci_wecom_contacts_secret"
           [ -n "$ci_wecom_bot_id" ] && export WECOM_BOT_ID="$ci_wecom_bot_id"
           [ -n "$ci_wecom_bot_secret" ] && export WECOM_BOT_SECRET="$ci_wecom_bot_secret"
+          echo "$NEXUS_ADMIN_PASSWORD" | docker login 127.0.0.1:8082 -u admin --password-stdin
           ansible-playbook playbooks/deploy.yml \
             -i inventories/vtest/hosts.ini \
             -e "deploy_sha=$DEPLOY_SHA" \
             -e "vtest_allow_migrate=$VTEST_ALLOW_MIGRATE" \
+            -e "fruit_vtest_bootstrap=$VTEST_FRUIT_BOOTSTRAP" \
             -e "vtest_migration_files=$(ls /tmp/migration-sqls/*.sql 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo '')" \
-            --tags "${DEPLOY_TAGS:-open-webui,vecta-app}"
+            --tags "${DEPLOY_TAGS:-open-webui,vecta-app,fruit-vtest}"
 
       - name: Prune vtest Docker build state
         if: always()

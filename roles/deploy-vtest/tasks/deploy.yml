@@ -51,3 +51,14 @@
     apply:
       tags: vecta-app
   when: "'vecta-app' in ansible_run_tags or 'all' in ansible_run_tags"
+
+- name: Include Fruit vtest role
+  ansible.builtin.include_role:
+    name: fruit_vtest
+    apply:
+      tags: fruit-vtest
+  tags:
+    - fruit-vtest
+  when:
+    - "'fruit-vtest' in ansible_run_tags or 'all' in ansible_run_tags"
+    - fruit_vtest_enabled | default(false) | bool

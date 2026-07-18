@@ -14,4 +14,5 @@
     AUTH_EMAIL: "{{ openwebui_smoke_auth_email | default('IT001@openclaw.internal') }}"
     SERVICE_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') | default(lookup('env', 'SERVICE_KEY'), true) }}"
     SMOKE_CHANNEL_REQUIRED: "{{ ((((lookup('env', 'WECOM_BOT_ID') | trim | length) > 0) and ((lookup('env', 'WECOM_BOT_SECRET') | trim | length) > 0)) | ternary('true', 'false')) }}"
+    SMOKE_FRUIT_REQUIRED: "{{ fruit_vtest_enabled | default(false) | bool | ternary('true', 'false') }}"
   changed_when: false

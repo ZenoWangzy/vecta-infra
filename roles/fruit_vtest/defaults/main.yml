@@ -1,0 +1,9 @@
+---
+fruit_vtest_enabled: false
+fruit_vtest_bootstrap: false
+fruit_vtest_sync_platform_skills: false
+fruit_vtest_port: 8002
+fruit_vtest_container_name: openclaw-fruit-industry-pack
+fruit_vtest_runtime_db_role: fruit_runtime_vtest
+fruit_vtest_canary_organization: "水果行业验证组织"
+fruit_vtest_canary_employee_id: fruit-canary-admin@example.com
