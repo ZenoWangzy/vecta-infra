@@ -267,6 +267,38 @@ contract.
   healthy checks. ClickHouse remains skipped because no production container
   exists.
 
+### LiteLLM Adoption Evidence - 2026-07-18
+
+Completed the next eligible infra-service step after ClickHouse was skipped:
+LiteLLM now uses the mypc-local Nexus image. LiteLLM has no stateful Docker data
+volume; its production state contract is the existing config bind and provider
+environment, both retained during the image-source replacement.
+
+- ClickHouse remains skipped: there is no `openclaw-clickhouse` production
+  container or existing data owner to adopt.
+- Before backup:
+  `/data/ocee/backups/data-layer/litellm-config-before-nexus-adoption-20260718T101706Z.yaml`
+  (1057 bytes, SHA-256
+  `af921956edbb14c939e0538b0e2cdd364ac272e66ec9869101203989acdee662`).
+- Preserved bind contract: `/data/ocee/infra/litellm/config.yaml` remains
+  mounted read-write at `/app/config.yaml`; its post-adoption checksum equals
+  the backup checksum.
+- Preserved runtime contract: host port `4000`, command
+  `--config /app/config.yaml --port 4000`, restart policy `always`, memory
+  `2g`, CPU `2.0`, no Docker healthcheck, and aliases `openclaw-litellm` and
+  `litellm-proxy` on `openclaw-enterprise_openclaw-net`.
+- Preserved provider contract: `LITELLM_MASTER_KEY`, `ZAI_API_BASE`,
+  `ZAI_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_BASE`, and
+  `MOONSHOT_API_KEY` are captured from the running container with `no_log` for
+  an adoption. Do not rely on the Ansible controller environment to supply
+  production provider credentials.
+- Final image: `127.0.0.1:8082/berriai/litellm:main-latest`
+  (`sha256:bbb422d4c47ff21a73513740f7d3e5dbf1aba9a4adbfcaf2ac2e66bcf4dd6798`),
+  identical to the pre-adoption direct image ID.
+- Automatic pre/post LiteLLM regression and a full post-adoption regression
+  passed for PostgreSQL, Redis, MinIO, LiteLLM, Fleet, Admin, Directory, RAG,
+  Channel, and Open WebUI proxy.
+
 ## Hard Stops
 
 - Do not run `playbooks/infra.yml` against mypc for stateful services while

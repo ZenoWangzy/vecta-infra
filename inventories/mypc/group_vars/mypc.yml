@@ -53,6 +53,18 @@ minio_healthcheck:
   retries: 6
 minio_webhook_enabled: "on"
 minio_webhook_endpoint: "http://fleet-gateway:3000/api/webhooks/minio"
+litellm_published_ports:
+  - "4000:4000"
+litellm_config_host_path: /data/ocee/infra/litellm/config.yaml
+litellm_restart_policy: always
+litellm_network_aliases:
+  - openclaw-litellm
+  - litellm-proxy
+litellm_memory: 2g
+litellm_cpus: "2.0"
+# The current production container has no Docker healthcheck. Preserve that
+# contract; the migration regression probes LiteLLM readiness separately.
+litellm_healthcheck_enabled: false
 open_webui_data_volume: openclaw-enterprise_open-webui-data
 onlyoffice_logs_volume: openclaw-enterprise_onlyoffice-logs
 onlyoffice_data_volume: openclaw-enterprise_onlyoffice-data
