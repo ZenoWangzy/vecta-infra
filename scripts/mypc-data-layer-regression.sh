@@ -6,7 +6,7 @@ usage() {
 Usage: scripts/mypc-data-layer-regression.sh [--service SERVICE] [--phase before|after]
 
 Read-only mypc data-layer regression checks. SERVICE may be one of:
-postgres, redis, minio, clickhouse, all.
+postgres, redis, minio, clickhouse, litellm, all.
 
 The script does not create, update, delete, migrate, restart, or prune anything.
 Run it before and after each approved one-service data-layer adoption step.
@@ -39,7 +39,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$service" in
-  postgres|redis|minio|clickhouse|all) ;;
+  postgres|redis|minio|clickhouse|litellm|all) ;;
   *) echo "invalid --service: $service" >&2; exit 2 ;;
 esac
 
@@ -60,12 +60,19 @@ check_http() {
   local url="$2"
   local expected="${3:-200}"
   local code
-  code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 5 "$url" || true)"
-  if [ "$code" != "$expected" ]; then
-    echo "FAIL $name $url -> ${code:-curl-error}, expected $expected" >&2
-    exit 1
-  fi
-  echo "OK   $name $url -> $code"
+  local attempt
+
+  for attempt in 1 2 3; do
+    code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 5 "$url" || true)"
+    if [ "$code" = "$expected" ]; then
+      echo "OK   $name $url -> $code"
+      return 0
+    fi
+    [ "$attempt" -eq 3 ] || sleep 2
+  done
+
+  echo "FAIL $name $url -> ${code:-curl-error}, expected $expected after 3 attempts" >&2
+  exit 1
 }
 
 container_exists() {
@@ -147,6 +154,13 @@ check_clickhouse() {
   echo "OK   clickhouse select 1"
 }
 
+check_litellm() {
+  local container="${LITELLM_CONTAINER:-openclaw-litellm}"
+  check_container_running "$container"
+  check_http "litellm readiness" \
+    "${LITELLM_READINESS_URL:-http://127.0.0.1:4000/health/liveliness}" 200
+}
+
 check_app_health() {
   check_http "fleet-gateway" "${FLEET_HEALTH_URL:-http://127.0.0.1:3000/healthz}" 200
   check_http "admin-console" "${ADMIN_CONSOLE_URL:-http://127.0.0.1:5173/}" 200
@@ -173,11 +187,13 @@ case "$service" in
   redis) check_redis ;;
   minio) check_minio ;;
   clickhouse) check_clickhouse ;;
+  litellm) check_litellm ;;
   all)
     check_postgres
     check_redis
     check_minio
     check_clickhouse
+    check_litellm
     ;;
 esac
 

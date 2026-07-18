@@ -160,8 +160,10 @@ The mypc inventory intentionally keeps:
 
 Data-layer migration is service-by-service. Do not set
 `mypc_stateful_services_enabled=true` by itself. Every production run must also
-set `mypc_stateful_service_allowlist` to exactly the reviewed service for that
-phase.
+set `mypc_stateful_service_allowlist` to exactly one reviewed service for that
+phase. The `infra-services` role runs the read-only regression script before
+and after the allowlisted service; a regression failure stops the play before
+the service changes or fails the play afterward.
 
 Recommended order:
 
@@ -176,7 +178,9 @@ Recommended order:
    fresh full backup, isolated restore rehearsal, additive-delta review, and
    application compatibility proof.
 
-For every phase:
+For every phase, perform the read-only preflight first, then run the Ansible
+command. The role repeats the same selected-service regression immediately
+before and after the adoption:
 
 ```bash
 scripts/mypc-data-layer-regression.sh --service <service> --phase before
