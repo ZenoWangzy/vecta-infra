@@ -1,4 +1,4 @@
-# mypc (prod) inventory — mirrors vtest structure. Set TODO values before first deploy.
+# mypc (prod) inventory - mirrors vtest structure. Set TODO values before first deploy.
 # Third-party infra images (pinned, not affected by deploy_sha)
 postgres_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/pgvector/pgvector:pg16"
 redis_image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/redis:7-alpine"
@@ -17,9 +17,46 @@ openclaw_image: "alpine/openclaw:2026.5.18"
 # Docker network
 docker_network: "openclaw-enterprise_openclaw-net"
 
-# Nexus / registry endpoints — TODO: set prod values
+# Nexus / registry endpoints - production-local only. Do not point mypc at vtest Nexus.
 nexus_base_url: "http://127.0.0.1:8081"
 nexus_docker_registry: "127.0.0.1:8082"
+
+# Application images built by the protected mypc production-image workflow.
+# These variables are app-cutover inputs only; stateful-service adoption remains
+# disabled and service-by-service until a later approved increment.
+fleet_gateway_image: "{{ nexus_docker_registry }}/fleet-gateway:{{ deploy_sha }}"
+channel_gateway_image: "{{ nexus_docker_registry }}/channel-gateway:{{ deploy_sha }}"
+a2a_router_image: "{{ nexus_docker_registry }}/a2a-router:{{ deploy_sha }}"
+rag_service_image: "{{ nexus_docker_registry }}/rag-service:{{ deploy_sha }}"
+directory_service_image: "{{ nexus_docker_registry }}/directory-service:{{ deploy_sha }}"
+admin_console_image: "{{ nexus_docker_registry }}/admin-console:{{ deploy_sha }}"
+wechat_contact_sync_image: "{{ nexus_docker_registry }}/wechat-contact-sync:{{ deploy_sha }}"
+baidu_search_image: "{{ nexus_docker_registry }}/baidu-search-service:{{ deploy_sha }}"
+fruit_vtest_enabled: false
+
+# The shared deploy role still uses the historical vtest_* variable names for
+# image preflight and write quiesce lists. Keep mypc values app-only here.
+vtest_required_image_repos:
+  - fleet-gateway
+  - channel-gateway
+  - a2a-router
+  - rag-service
+  - directory-service
+  - admin-console
+  - wechat-contact-sync
+  - baidu-search-service
+vtest_write_quiesce_services:
+  - fleet-gateway
+  - channel-gateway
+  - wechat-contact-sync
+
+# Build dependency/cache endpoints. The mypc build workflow uses the same names.
+npm_registry_url: "{{ nexus_base_url }}/repository/{{ nexus_npm_proxy_repo | default('vecta-npm-proxy') }}/"
+pypi_index_url: "{{ nexus_base_url }}/repository/{{ nexus_pypi_proxy_repo | default('vecta-pypi-proxy') }}/simple/"
+alpine_mirror: "{{ nexus_base_url }}/repository/{{ nexus_alpine_proxy_repo | default('vecta-alpine-proxy') }}"
+debian_mirror: "{{ nexus_base_url }}/repository/{{ nexus_debian_proxy_repo | default('vecta-debian-proxy') }}"
+debian_security_mirror: "{{ nexus_base_url }}/repository/{{ nexus_debian_security_proxy_repo | default('vecta-debian-security-proxy') }}"
+docker_base_image_registry: "{{ nexus_docker_registry }}"
 
 # Internal service endpoints
 minio_internal_endpoint: "openclaw-minio"

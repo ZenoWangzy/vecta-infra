@@ -1,0 +1,136 @@
+---
+# Manual production build entry point. It builds an explicitly selected VectA
+# main-branch SHA into the production-local Nexus on the mypc runner only.
+name: Build mypc production images
+
+"on":
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+        description: >-
+          Full 40-character VectA main SHA to build into mypc Nexus
+      docker_cache_prune_until:
+        type: string
+        default: 48h
+        description: >-
+          Docker build-cache retention on the mypc runner; set to 'never'
+          to skip
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mypc-production-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'ZenoWangzy/vecta-infra'
+    runs-on: [self-hosted, mypc, prod-build]
+    environment: production
+    timeout-minutes: 240
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082
+      DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082
+      DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8082
+      NPM_REGISTRY: http://127.0.0.1:8081/repository/vecta-npm-proxy/
+      NPM_CONFIG_REGISTRY: http://127.0.0.1:8081/repository/vecta-npm-proxy/
+      PIP_INDEX_URL: >-
+        http://127.0.0.1:8081/repository/vecta-pypi-proxy/simple/
+      ALPINE_MIRROR: http://127.0.0.1:8081/repository/vecta-alpine-proxy
+      DEBIAN_MIRROR: http://127.0.0.1:8081/repository/vecta-debian-proxy
+      DEBIAN_SECURITY_MIRROR: >-
+        http://127.0.0.1:8081/repository/vecta-debian-security-proxy
+      DOCKER_BUILDKIT: "1"
+    steps:
+      - name: Configure git proxy
+        run: |
+          if [ -z "${PROXY_USERNAME:-}" ] || [ -z "${PROXY_PASSWORD:-}" ]; then
+            echo "Proxy secrets not set; using default git network path"
+            exit 0
+          fi
+          PU="$(printf '%s' "${PROXY_USERNAME}" \
+            | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+          PP="$(printf '%s' "${PROXY_PASSWORD}" \
+            | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+          PROXY="http://${PU}:${PP}@geraldsynnas.ddns.net:8888"
+          git config --global http.proxy "$PROXY"
+          git config --global https.proxy "$PROXY"
+        env:
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+
+      - name: Validate selected SHA
+        run: |
+          if ! printf '%s' "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "source_sha must be a full 40-character lowercase Git SHA" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ZenoWangzy/vecta
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          token: ${{ secrets.VECTA_READ_TOKEN || github.token }}
+          path: vecta
+
+      - name: Verify SHA belongs to VectA main
+        working-directory: vecta
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main || {
+            echo "source_sha must be reachable from ZenoWangzy/vecta main" \
+              >&2
+            exit 1
+          }
+
+      - name: Preflight production build runner
+        run: |
+          set -euo pipefail
+          command -v docker >/dev/null || {
+            echo "docker is required" >&2; exit 1;
+          }
+          command -v node >/dev/null || {
+            echo "node is required" >&2; exit 1;
+          }
+          command -v pnpm >/dev/null || {
+            echo "pnpm is required" >&2; exit 1;
+          }
+          available_kb="$(df -Pk . | awk 'NR==2 {print $4}')"
+          if [ "$available_kb" -lt 62914560 ]; then
+            echo "at least 60GiB free disk is required" >&2
+            exit 1
+          fi
+
+      - name: Login to production Nexus Docker registry
+        run: >-
+          echo "$NEXUS_ADMIN_PASSWORD" |
+          docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
+        env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
+
+      - name: Validate image contract
+        working-directory: vecta
+        run: pnpm check:vtest-images
+
+      - name: Build and push production images
+        working-directory: vecta
+        run: >-
+          nice -n 10 ionice -c2 -n7
+          node scripts/build-push-vtest-images.mjs
+        env:
+          GITHUB_SHA: ${{ inputs.source_sha }}
+
+      - name: Prune mypc Docker build cache
+        if: always() && inputs.docker_cache_prune_until != 'never'
+        run: |
+          set -euo pipefail
+          docker builder prune --force \
+            --filter "until=${{ inputs.docker_cache_prune_until }}"
