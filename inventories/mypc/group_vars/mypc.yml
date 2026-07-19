@@ -193,7 +193,7 @@ deploy_image_tags:
   baidu-search-service: cache-fdfbc005133b
   channel-gateway: cache-94a5357394f9
   directory-service: cache-d38d9f4d3636
-  fleet-gateway: cache-c78398cfe144
+  fleet-gateway: cache-a6d8bcce5249
   rag-service: cache-761b14870cf1
   wechat-contact-sync: cache-73d27641f5e9
 fleet_gateway_image: "{{ nexus_docker_registry }}/fleet-gateway:{{ deploy_image_tags['fleet-gateway'] }}"

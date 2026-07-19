@@ -186,8 +186,12 @@ regression passed.
 
 `/api/notifications/system-alerts` is intentionally a platform-root diagnostic
 endpoint, not a generic tenant-L4 endpoint. mypc now declares the approved
-platform-root identities in inventory and recreates Fleet from the identical
-Nexus image with `PLATFORM_ROOT_EMPLOYEE_IDS=IT001,admin@matrix.com`. The
+platform-root identities in inventory and recreates Fleet from the verified
+live-image mirror `127.0.0.1:8082/fleet-gateway:cache-a6d8bcce5249` with
+`PLATFORM_ROOT_EMPLOYEE_IDS=IT001,admin@matrix.com`. The prior
+`cache-c78398cfe144` tag did not match the running Fleet image and was rejected
+by the image-ID preflight; it must not be used for this configuration-only
+recreation. The
 Fleet compatibility role retains the live image identity, mounts, networks,
 runtime count, and all other environment values; it overlays only this explicit
 diagnostic access setting. The post-recreate regression checks the configured
