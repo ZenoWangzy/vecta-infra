@@ -117,7 +117,9 @@ fleet_gateway_knowledge_host_path: /data/ocee/packages/rag-service/knowledge
 fleet_gateway_templates_host_path: /data/ocee/templates
 fleet_gateway_shared_plugins_host_path: /data/ocee/deploy/instances/shared/plugins
 fleet_gateway_litellm_config_host_path: /data/ocee/infra/litellm/config.yaml
-fleet_gateway_fruit_pack_host_path: /data/ocee/packages/fruit-industry-pack
+# Fleet is serving the active release bundle, not the vtest-style workspace
+# path. Keep this bind exact during a Fleet-only configuration recreation.
+fleet_gateway_fruit_pack_host_path: /data/ocee-releases/fruit-0d11ab0b/packages/fruit-industry-pack
 fleet_gateway_container_name: openclaw-fleet-gateway
 fleet_gateway_restart_policy: unless-stopped
 fleet_gateway_user: "100:110"
