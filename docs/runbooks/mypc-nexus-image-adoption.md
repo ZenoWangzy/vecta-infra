@@ -152,6 +152,27 @@ Before replacement, compressed backups and checksum evidence were written under
 The RAG health endpoint, PostgreSQL, Redis, Fleet Gateway, and the full
 post-deploy regression passed after replacement.
 
+### RAG Parser Repair - 2026-07-19
+
+A protected mypc build produced the immutable RAG image
+`127.0.0.1:8082/rag-service:89da897ec9f7a1b0e1fb59d1ad0238ec46680ecb`
+from VectA `main` commit `89da897ec9f7a1b0e1fb59d1ad0238ec46680ecb`.
+The RAG task keeps the default identical-image requirement. A changed image is
+allowed only when the one-service run explicitly sets
+`rag_service_allow_image_upgrade=true` and supplies a full 40-character SHA
+tag. It still captures the live contract, creates checksummed backups, and
+reuses the original cache volume and knowledge bind exactly.
+
+The build cache cleanup removed the old `cache-*` tag while the live container
+continued to reference its image ID. The task therefore compares the source by
+`docker inspect` image ID, not its mutable/cleanable tag. The repair backup was
+written to
+`/data/ocee/backups/app-adoption/rag-service-nexus-adoption-20260719T032032Z`.
+The source and target image IDs, backup checksums, RAG/Fleet/PostgreSQL/Redis
+health, mount contract, authenticated knowledge list, and the single approved
+document reingest all passed. No volume, bind path, or document file was
+replaced.
+
 ### Fleet Gateway - 2026-07-18
 
 `openclaw-fleet-gateway` now uses
