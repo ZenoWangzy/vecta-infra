@@ -1,7 +1,8 @@
 ---
 # mypc has a production RAG cache volume, knowledge bind, and OCR/provider
 # configuration that do not match the vtest role. Capture the live contract and
-# recreate only from an image proven to have the same Docker image ID.
+# recreate only from the same image, unless a caller explicitly approves an
+# immutable full-SHA repair image.
 - name: Capture mypc RAG container contract
   ansible.builtin.command:
     argv:
@@ -39,15 +40,43 @@
   changed_when: false
   check_mode: false
 
-- name: Verify current and Nexus RAG image identities match
-  ansible.builtin.shell: >-
-    test "$(docker image inspect {{ mypc_rag_service_live.Config.Image | quote }} --format '{{ '{{' }}.Id{{ '}}' }}')"
-    = "$(docker image inspect {{ rag_service_image | quote }} --format '{{ '{{' }}.Id{{ '}}' }}')"
-  args:
-    executable: /bin/bash
+- name: Pull the selected RAG image without changing the live container
+  community.docker.docker_image:
+    name: "{{ rag_service_image }}"
+    source: pull
+    force_source: true
+    state: present
+  no_log: true
+
+- name: Capture current and selected RAG image identities
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - inspect
+      - "{{ mypc_rag_service_live.Config.Image }}"
+      - "{{ rag_service_image }}"
+      - --format
+      - "{{ '{{' }}.Id{{ '}}' }}"
+  register: mypc_rag_service_image_ids
   changed_when: false
   check_mode: false
   no_log: true
+
+- name: Require identical RAG image or an approved immutable repair image
+  ansible.builtin.assert:
+    that:
+      - mypc_rag_service_image_ids.stdout_lines | length == 2
+      - >-
+        mypc_rag_service_image_ids.stdout_lines[0] == mypc_rag_service_image_ids.stdout_lines[1]
+        or (
+          rag_service_allow_image_upgrade | default(false) | bool
+          and rag_service_image is match('^.+:[0-9a-f]{40}$')
+        )
+    fail_msg: >-
+      A different mypc RAG image requires rag_service_allow_image_upgrade=true
+      and an immutable full-SHA image tag. The live container and its state
+      mounts remain untouched when this gate rejects the deployment.
 
 - name: Back up mypc RAG state before Nexus adoption
   ansible.builtin.shell: |
@@ -62,6 +91,9 @@
     tar -C {{ rag_knowledge_host_path | quote }} -czf "$backup_dir/rag-knowledge.tgz" .
     {
       echo "source_image=$(docker inspect -f '{{ '{{' }}.Config.Image{{ '}}' }}' {{ rag_service_container_name | quote }})"
+      echo "target_image={{ rag_service_image }}"
+      echo "source_image_id={{ mypc_rag_service_image_ids.stdout_lines[0] }}"
+      echo "target_image_id={{ mypc_rag_service_image_ids.stdout_lines[1] }}"
       echo "cache_volume={{ rag_model_cache_volume }}"
       echo "cache_path={{ rag_model_cache_container_path }}"
       echo "knowledge_path={{ rag_knowledge_host_path }}"

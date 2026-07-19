@@ -102,6 +102,10 @@ rag_service_log_options:
 rag_service_memory: 1g
 rag_service_cpus: "1.0"
 rag_service_backup_root: /data/ocee/backups/app-adoption
+# A changed RAG image is rejected unless a one-service production repair sets
+# this to true with an immutable full-SHA image tag. This never permits a
+# mutable tag or a replacement state volume/bind mount.
+rag_service_allow_image_upgrade: false
 
 # Existing production bind paths. These are compatibility inputs for gradual
 # Ansible recreation; do not replace them with vtest defaults during cutover.
