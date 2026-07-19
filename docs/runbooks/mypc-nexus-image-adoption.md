@@ -203,6 +203,12 @@ vtest-style `/data/ocee/packages/fruit-industry-pack` path. Inventory must
 retain the active release bind exactly; the mount guard blocks the recreation
 before backup or container replacement when those paths diverge.
 
+The repair completed with backup and checksum evidence at
+`/data/ocee/backups/app-adoption/fleet-gateway-nexus-adoption-20260719T040216Z`.
+The pre/post managed runtime count remained `0`; Fleet, PostgreSQL, and Redis
+regression checks passed. An authenticated `admin@matrix.com` request to
+`/api/notifications/system-alerts?limit=5` returned HTTP 200.
+
 ### Channel Gateway - 2026-07-18
 
 `openclaw-channel-gateway` now uses
