@@ -29,6 +29,7 @@
 
 - name: Require the reviewed mypc RAG state mounts
   ansible.builtin.shell: >-
+    set -o pipefail;
     docker inspect {{ rag_service_container_name | quote }} |
     jq -e --arg volume {{ rag_model_cache_volume | quote }}
     --arg cache_path {{ rag_model_cache_container_path | quote }}
@@ -54,10 +55,10 @@
       - docker
       - image
       - inspect
-      - "{{ mypc_rag_service_live.Config.Image }}"
-      - "{{ rag_service_image }}"
       - --format
       - "{{ '{{' }}.Id{{ '}}' }}"
+      - "{{ mypc_rag_service_live.Image }}"
+      - "{{ rag_service_image }}"
   register: mypc_rag_service_image_ids
   changed_when: false
   check_mode: false
