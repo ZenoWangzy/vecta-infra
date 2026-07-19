@@ -197,6 +197,12 @@ runtime count, and all other environment values; it overlays only this explicit
 diagnostic access setting. The post-recreate regression checks the configured
 root list before it reports Fleet healthy.
 
+The live Fleet fruit-pack bind is
+`/data/ocee-releases/fruit-0d11ab0b/packages/fruit-industry-pack`, not the
+vtest-style `/data/ocee/packages/fruit-industry-pack` path. Inventory must
+retain the active release bind exactly; the mount guard blocks the recreation
+before backup or container replacement when those paths diverge.
+
 ### Channel Gateway - 2026-07-18
 
 `openclaw-channel-gateway` now uses
