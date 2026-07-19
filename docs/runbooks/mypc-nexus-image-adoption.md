@@ -182,6 +182,17 @@ Both production networks, all mount modes, user `100:110`, and the live runtime
 environment were retained. The managed runtime count was unchanged and full
 regression passed.
 
+### Fleet Platform-Root Diagnostics - 2026-07-19
+
+`/api/notifications/system-alerts` is intentionally a platform-root diagnostic
+endpoint, not a generic tenant-L4 endpoint. mypc now declares the approved
+platform-root identities in inventory and recreates Fleet from the identical
+Nexus image with `PLATFORM_ROOT_EMPLOYEE_IDS=IT001,admin@matrix.com`. The
+Fleet compatibility role retains the live image identity, mounts, networks,
+runtime count, and all other environment values; it overlays only this explicit
+diagnostic access setting. The post-recreate regression checks the configured
+root list before it reports Fleet healthy.
+
 ### Channel Gateway - 2026-07-18
 
 `openclaw-channel-gateway` now uses

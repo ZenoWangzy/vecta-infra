@@ -39,6 +39,7 @@ check_http() {
 }
 
 expected_image="${EXPECTED_IMAGE:-}"
+expected_platform_root_employee_ids="${EXPECTED_PLATFORM_ROOT_EMPLOYEE_IDS:-}"
 
 echo "mypc app regression: service=$service phase=$phase"
 case "$service" in
@@ -73,6 +74,12 @@ case "$service" in
       '([.[0].NetworkSettings.Networks | keys[]] | sort == ["openclaw-enterprise_open-webui-net", "openclaw-enterprise_openclaw-net"])
        and ([.[0].Mounts[] | select(.Source == "/data/ocee/data/instances" and .Destination == "/app/data/instances" and .RW)] | length == 1)' >/dev/null
     echo 'OK   production Fleet networks and instance bind preserved'
+    if [ -n "$expected_platform_root_employee_ids" ]; then
+      actual_platform_root_employee_ids="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" \
+        | sed -n 's/^PLATFORM_ROOT_EMPLOYEE_IDS=//p')"
+      [ "$actual_platform_root_employee_ids" = "$expected_platform_root_employee_ids" ]
+      echo 'OK   configured platform-root identities preserved'
+    fi
     check_http fleet-gateway "${FLEET_HEALTH_URL:-http://127.0.0.1:3000/healthz}"
     ;;
   channel-gateway)

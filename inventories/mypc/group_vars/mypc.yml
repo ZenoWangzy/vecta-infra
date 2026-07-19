@@ -133,6 +133,11 @@ fleet_gateway_log_options:
 fleet_gateway_memory: 2g
 fleet_gateway_cpus: "1.5"
 fleet_gateway_backup_root: /data/ocee/backups/app-adoption
+# System alerts are platform-root diagnostics, not a generic L4 capability.
+# Keep this explicit and aligned with the approved vtest root identities.
+platform_root_employee_ids:
+  - IT001
+  - admin@matrix.com
 rag_uploads_host_path: /data/ocee/data/fleet-gateway/uploads
 rag_knowledge_host_path: /data/ocee/packages/rag-service/knowledge
 rag_model_cache_container_path: /home/node/.cache/huggingface
