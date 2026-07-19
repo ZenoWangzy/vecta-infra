@@ -26,6 +26,7 @@
 
 - name: Require the reviewed mypc Fleet mount contract
   ansible.builtin.shell: >-
+    set -o pipefail;
     docker inspect {{ fleet_gateway_container_name | quote }} |
     jq -e --arg instances {{ fleet_gateway_instances_host_path | quote }}
     --arg knowledge {{ fleet_gateway_knowledge_host_path | quote }}
@@ -45,18 +46,41 @@
   changed_when: false
   check_mode: false
 
-- name: Verify current and Nexus Fleet image identities match
-  ansible.builtin.shell: >-
-    test "$(docker image inspect {{ mypc_fleet_gateway_live.Config.Image | quote }} --format '{{ '{{' }}.Id{{ '}}' }}')"
-    = "$(docker image inspect {{ fleet_gateway_image | quote }} --format '{{ '{{' }}.Id{{ '}}' }}')"
-  args:
-    executable: /bin/bash
+- name: Pull the selected Fleet image without changing the live container
+  community.docker.docker_image:
+    name: "{{ fleet_gateway_image }}"
+    source: pull
+    force_source: true
+    state: present
+  no_log: true
+
+- name: Capture current and selected Fleet image identities
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - inspect
+      - --format
+      - "{{ '{{' }}.Id{{ '}}' }}"
+      - "{{ mypc_fleet_gateway_live.Image }}"
+      - "{{ fleet_gateway_image }}"
+  register: mypc_fleet_gateway_image_ids
   changed_when: false
   check_mode: false
   no_log: true
 
+- name: Require the selected Fleet image to match the live image
+  ansible.builtin.assert:
+    that:
+      - mypc_fleet_gateway_image_ids.stdout_lines | length == 2
+      - mypc_fleet_gateway_image_ids.stdout_lines[0] == mypc_fleet_gateway_image_ids.stdout_lines[1]
+    fail_msg: >-
+      The mypc Fleet Gateway image must match the live image ID for this
+      configuration-only recreation.
+
 - name: Capture running per-user runtime count before Fleet adoption
   ansible.builtin.shell: >-
+    set -o pipefail;
     docker ps -q --filter label=openclaw.enterprise.openclaw-image | wc -l
   args:
     executable: /bin/bash
@@ -74,6 +98,10 @@
     sha256sum "$backup_dir/instances.tgz" > "$backup_dir/checksums.sha256"
     {
       echo "source_image=$(docker inspect -f '{{ '{{' }}.Config.Image{{ '}}' }}' {{ fleet_gateway_container_name | quote }})"
+      echo "target_image={{ fleet_gateway_image }}"
+      echo "source_image_id={{ mypc_fleet_gateway_image_ids.stdout_lines[0] }}"
+      echo "target_image_id={{ mypc_fleet_gateway_image_ids.stdout_lines[1] }}"
+      echo "platform_root_employee_ids={{ platform_root_employee_ids | join(',') }}"
       echo "runtime_count_before={{ mypc_fleet_runtime_count_before.stdout | trim }}"
       echo "instances_path={{ fleet_gateway_instances_host_path }}"
     } > "$backup_dir/manifest.txt"
@@ -99,7 +127,13 @@
     user: "{{ fleet_gateway_user }}"
     command: "{{ mypc_fleet_gateway_live.Config.Cmd }}"
     entrypoint: "{{ mypc_fleet_gateway_live.Config.Entrypoint }}"
-    env: "{{ dict(mypc_fleet_gateway_live.Config.Env | map('split', '=', 1)) }}"
+    env: >-
+      {{
+        dict(mypc_fleet_gateway_live.Config.Env | map('split', '=', 1))
+        | combine({
+          'PLATFORM_ROOT_EMPLOYEE_IDS': platform_root_employee_ids | join(','),
+        })
+      }}
     ports: "{{ fleet_gateway_published_ports }}"
     volumes:
       - "{{ fleet_gateway_instances_host_path }}:/app/data/instances:rw"
@@ -124,9 +158,10 @@
   no_log: true
 
 - name: Require the same per-user runtime count after Fleet adoption
-  ansible.builtin.shell: >-
-    test "$(docker ps -q --filter label=openclaw.enterprise.openclaw-image | wc -l)"
-    = "{{ mypc_fleet_runtime_count_before.stdout | trim }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    runtime_count="$(docker ps -q --filter label=openclaw.enterprise.openclaw-image | wc -l)"
+    test "$runtime_count" = "{{ mypc_fleet_runtime_count_before.stdout | trim }}"
   args:
     executable: /bin/bash
   changed_when: false
@@ -137,5 +172,6 @@
     cmd: "{{ role_path }}/../../scripts/mypc-app-regression.sh --service fleet-gateway --phase after"
   environment:
     EXPECTED_IMAGE: "{{ fleet_gateway_image }}"
+    EXPECTED_PLATFORM_ROOT_EMPLOYEE_IDS: "{{ platform_root_employee_ids | join(',') }}"
   changed_when: false
   when: not ansible_check_mode
