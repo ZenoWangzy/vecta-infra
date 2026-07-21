@@ -30,7 +30,13 @@
     volumes:
       - openclaw-open-webui-data:/app/backend/data
     env:
+      OPENAI_API_BASE_URL: "http://openclaw-fleet-gateway:3000/v1"
       OPENAI_API_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') | default(lookup('env', 'SERVICE_KEY'), true) }}"
+      DEFAULT_MODELS: "vecta-agent"
+      DEFAULT_PINNED_MODELS: "vecta-agent"
+      TASK_MODEL_EXTERNAL: "vecta-agent"
+      ENABLE_OLLAMA_API: "false"
+      OLLAMA_BASE_URL: ""
       WEBUI_SECRET_KEY: "{{ lookup('env', 'WEBUI_SECRET_KEY') }}"
       WEBUI_URL: "{{ base_url }}/chat"
       WEBUI_AUTH_TRUSTED_EMAIL_HEADER: X-Auth-Email
