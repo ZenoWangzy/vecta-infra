@@ -117,9 +117,9 @@ platform_root_employee_ids:
 
 # Runtime DB/cache credentials are host-local vtest state, not Git repo state.
 # The self-hosted runner sources /data/ocee/.env before invoking Ansible.
-postgres_user: "{{ lookup('env', 'POSTGRES_USER') | default('openclaw_poc', true) }}"
+postgres_user: "{{ lookup('env', 'POSTGRES_USER') | default('openclaw', true) }}"
 postgres_password: "{{ lookup('env', 'POSTGRES_PASSWORD') | default('poc-db-password-change-me', true) }}"
-postgres_db: "{{ lookup('env', 'POSTGRES_DB') | default('openclaw_poc', true) }}"
+postgres_db: "{{ lookup('env', 'POSTGRES_DB') | default('openclaw', true) }}"
 redis_password: "{{ lookup('env', 'REDIS_PASSWORD') | default('changeme-redis-pw', true) }}"
 
 # Open WebUI trusted-header users. The role derives tenant_id from employees in

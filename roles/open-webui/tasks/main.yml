@@ -50,7 +50,8 @@
     networks:
       - name: "{{ docker_network }}"
       - name: "{{ open_webui_network }}"
-    memory: "512m"
+    memory: "{{ open_webui_memory }}"
+    memory_swap: "{{ open_webui_memory_swap }}"
   register: open_webui_container
 
 - name: Start Open WebUI proxy (nginx)
@@ -113,7 +114,7 @@
       -v ON_ERROR_STOP=1 \
       -v employee_id={{ item.employee_id | quote }} \
       -v channel_uid={{ item.channel_uid | default(item.employee_id) | quote }} \
-      -tAc "
+      -tA <<'SQL'
     WITH input AS (
       SELECT :'employee_id'::text AS employee_id,
              :'channel_uid'::text AS channel_uid
@@ -124,9 +125,6 @@
         CROSS JOIN input
        WHERE lower(e.employee_id) = lower(input.employee_id)
        LIMIT 1
-    ),
-    guard AS (
-      SELECT CASE WHEN EXISTS (SELECT 1 FROM employee) THEN 1 ELSE 1 / 0 END AS ok
     ),
     updated AS (
       UPDATE channel_user_mapping mapping
@@ -148,12 +146,11 @@
       INSERT INTO channel_user_mapping (employee_id, tenant_id, channel, channel_uid, status)
       SELECT employee.employee_id, employee.tenant_id, 'open-webui', employee.channel_uid, 'active'
         FROM employee
-        CROSS JOIN guard
       ON CONFLICT DO NOTHING
       RETURNING 1
     )
-    SELECT (SELECT count(*) FROM updated) + (SELECT count(*) FROM inserted) + 0 * (SELECT ok FROM guard);
-    "
+    SELECT (SELECT count(*) FROM updated) + (SELECT count(*) FROM inserted);
+    SQL
   args:
     executable: /bin/bash
   loop: "{{ open_webui_user_mappings }}"
