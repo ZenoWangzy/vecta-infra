@@ -121,3 +121,10 @@ postgres_user: "{{ lookup('env', 'POSTGRES_USER') | default('openclaw_poc', true
 postgres_password: "{{ lookup('env', 'POSTGRES_PASSWORD') | default('poc-db-password-change-me', true) }}"
 postgres_db: "{{ lookup('env', 'POSTGRES_DB') | default('openclaw_poc', true) }}"
 redis_password: "{{ lookup('env', 'REDIS_PASSWORD') | default('changeme-redis-pw', true) }}"
+
+# Open WebUI trusted-header users. The role derives tenant_id from employees in
+# the target DB and upserts channel_user_mapping(channel='open-webui').
+openwebui_smoke_auth_email: "578634482@qq.com"
+open_webui_user_mappings:
+  - employee_id: "578634482@qq.com"
+  - employee_id: "kk592340752@gmail.com"

@@ -32,9 +32,10 @@
     env:
       OPENAI_API_BASE_URL: "http://openclaw-fleet-gateway:3000/v1"
       OPENAI_API_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') | default(lookup('env', 'SERVICE_KEY'), true) }}"
-      DEFAULT_MODELS: "vecta-agent"
-      DEFAULT_PINNED_MODELS: "vecta-agent"
-      TASK_MODEL_EXTERNAL: "vecta-agent"
+      OPENAI_API_CONFIGS: '{"0":{"enable":true,"model_ids":["{{ open_webui_model_id }}"]}}'
+      DEFAULT_MODELS: "{{ open_webui_model_id }}"
+      DEFAULT_PINNED_MODELS: "{{ open_webui_model_id }}"
+      TASK_MODEL_EXTERNAL: "{{ open_webui_model_id }}"
       ENABLE_OLLAMA_API: "false"
       OLLAMA_BASE_URL: ""
       WEBUI_SECRET_KEY: "{{ lookup('env', 'WEBUI_SECRET_KEY') }}"
@@ -103,6 +104,64 @@
     - open_webui_proxy_health_ready.status | default(0) == 200
     - open_webui_proxy_health_ready.json.status | default(false) | bool
   changed_when: false
+
+- name: Ensure Open WebUI channel user mappings
+  ansible.builtin.shell: |
+    docker exec -i openclaw-postgres psql \
+      -U {{ postgres_user | default('openclaw_poc') | quote }} \
+      -d {{ postgres_db | default('openclaw_poc') | quote }} \
+      -v ON_ERROR_STOP=1 \
+      -v employee_id={{ item.employee_id | quote }} \
+      -v channel_uid={{ item.channel_uid | default(item.employee_id) | quote }} \
+      -tAc "
+    WITH input AS (
+      SELECT :'employee_id'::text AS employee_id,
+             :'channel_uid'::text AS channel_uid
+    ),
+    employee AS (
+      SELECT e.employee_id, e.tenant_id, input.channel_uid
+        FROM employees e
+        CROSS JOIN input
+       WHERE lower(e.employee_id) = lower(input.employee_id)
+       LIMIT 1
+    ),
+    guard AS (
+      SELECT CASE WHEN EXISTS (SELECT 1 FROM employee) THEN 1 ELSE 1 / 0 END AS ok
+    ),
+    updated AS (
+      UPDATE channel_user_mapping mapping
+         SET employee_id = employee.employee_id,
+             status = 'active',
+             bound_at = COALESCE(mapping.bound_at, now())
+        FROM employee
+       WHERE mapping.provider_config_id IS NULL
+         AND mapping.channel = 'open-webui'
+         AND mapping.tenant_id = employee.tenant_id
+         AND lower(mapping.channel_uid) = lower(employee.channel_uid)
+         AND (
+           mapping.employee_id IS DISTINCT FROM employee.employee_id
+           OR mapping.status IS DISTINCT FROM 'active'
+         )
+       RETURNING 1
+    ),
+    inserted AS (
+      INSERT INTO channel_user_mapping (employee_id, tenant_id, channel, channel_uid, status)
+      SELECT employee.employee_id, employee.tenant_id, 'open-webui', employee.channel_uid, 'active'
+        FROM employee
+        CROSS JOIN guard
+      ON CONFLICT DO NOTHING
+      RETURNING 1
+    )
+    SELECT (SELECT count(*) FROM updated) + (SELECT count(*) FROM inserted) + 0 * (SELECT ok FROM guard);
+    "
+  args:
+    executable: /bin/bash
+  loop: "{{ open_webui_user_mappings }}"
+  loop_control:
+    label: "{{ item.channel_uid | default(item.employee_id) }}"
+  register: open_webui_mapping_upsert
+  changed_when: (open_webui_mapping_upsert.stdout | trim | int) > 0
+  when: (open_webui_user_mappings | default([]) | length) > 0
 
 - name: Render host nginx vtest site
   become: true

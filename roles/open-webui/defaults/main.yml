@@ -8,6 +8,8 @@ open_webui_nginx_image: nginx:alpine
 open_webui_proxy_health_url: http://127.0.0.1:3002/health
 open_webui_proxy_health_retries: 120
 open_webui_proxy_health_delay: 5
+open_webui_model_id: vecta-agent
+open_webui_user_mappings: []
 
 # Host nginx is environment-specific. Enable it in inventory when this role
 # should own the public vhost in addition to the container-local proxy.
