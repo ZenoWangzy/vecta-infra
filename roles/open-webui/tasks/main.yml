@@ -32,7 +32,7 @@
     env:
       OPENAI_API_BASE_URL: "http://openclaw-fleet-gateway:3000/v1"
       OPENAI_API_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') | default(lookup('env', 'SERVICE_KEY'), true) }}"
-      OPENAI_API_CONFIGS: '{"0":{"enable":true,"model_ids":["{{ open_webui_model_id }}"]}}'
+      OPENAI_API_CONFIGS: "{{ {'0': {'enable': true, 'model_ids': [open_webui_model_id]}} | to_json }}"
       DEFAULT_MODELS: "{{ open_webui_model_id }}"
       DEFAULT_PINNED_MODELS: "{{ open_webui_model_id }}"
       TASK_MODEL_EXTERNAL: "{{ open_webui_model_id }}"
