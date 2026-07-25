@@ -69,6 +69,35 @@
   when: fruit_vtest_bootstrap | bool
   no_log: true
 
+- name: Fruit vtest — reconcile runtime role scenario catalog grants
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - openclaw-postgres
+      - psql
+      - -U
+      - "{{ postgres_user }}"
+      - -d
+      - "{{ postgres_db }}"
+      - -v
+      - ON_ERROR_STOP=1
+      - -c
+      - >-
+        DO $$
+        BEGIN
+          IF to_regclass('public.scenario_packs') IS NOT NULL
+             AND to_regclass('public.scenario_pack_versions') IS NOT NULL
+             AND to_regclass('public.tenant_scenario_pack_installs') IS NOT NULL THEN
+            EXECUTE format(
+              'GRANT SELECT ON TABLE public.scenario_packs, public.scenario_pack_versions, public.tenant_scenario_pack_installs TO %I',
+              '{{ fruit_vtest_runtime_db_role }}'
+            );
+          END IF;
+        END
+        $$;
+  changed_when: false
+
 - name: Fruit vtest — deploy scoped Fruit MCP service
   community.docker.docker_container:
     name: "{{ fruit_vtest_container_name }}"
