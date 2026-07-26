@@ -1,6 +1,12 @@
 # Managed by Ansible — do not edit on server directly.
 model_list:
-  - model_name: glm-flash
+  - model_name: glm-5
+    litellm_params:
+      model: openai/glm-5
+      api_key: os.environ/ZAI_API_KEY
+      api_base: https://open.bigmodel.cn/api/coding/paas/v4
+
+  - model_name: glm-5.1
     litellm_params:
       model: openai/glm-5.1
       api_key: os.environ/ZAI_API_KEY
@@ -12,14 +18,27 @@ model_list:
       api_key: os.environ/DEEPSEEK_API_KEY
       api_base: https://api.deepseek.com
 
-  - model_name: moonshot-v1
+  - model_name: multimodal-vision
     litellm_params:
-      model: moonshot/moonshot-v1-auto
+      model: openai/kimi-k2.6
       api_key: os.environ/MOONSHOT_API_KEY
-      api_base: https://api.moonshot.cn/v1
+      api_base: os.environ/MOONSHOT_API_BASE
 
 router_settings:
   routing: "simple-shuffle"
-  num_retries: 3
+  num_retries: 4
+  timeout: 60
+  retry_after: 5
+  allowed_fails: 10
+  cooldown_time: 30
   fallbacks:
-    - {"glm-flash": ["deepseek-chat"]}
+    - glm-5:
+        - glm-5.1
+        - deepseek-chat
+    - glm-5.1:
+        - deepseek-chat
+    - deepseek-chat:
+        - glm-5.1
+
+general_settings:
+  drop_params: true

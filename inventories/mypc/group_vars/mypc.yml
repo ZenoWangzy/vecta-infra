@@ -277,5 +277,6 @@ redis_password: "{{ lookup('env', 'REDIS_PASSWORD') | default('changeme-redis-pw
 # Open WebUI trusted-header users. The role derives tenant_id from employees in
 # the target DB and upserts channel_user_mapping(channel='open-webui').
 open_webui_user_mappings:
+  - employee_id: "admin@matrix.com"
   - employee_id: "578634482@qq.com"
   - employee_id: "kk592340752@gmail.com"

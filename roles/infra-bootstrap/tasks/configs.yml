@@ -4,6 +4,7 @@
     dest: "{{ remote_dir }}/infra/litellm/config.yaml"
     mode: "0644"
   notify: restart litellm
+  tags: [litellm-config]
 
 - name: Deploy ClickHouse schema
   ansible.builtin.template:
