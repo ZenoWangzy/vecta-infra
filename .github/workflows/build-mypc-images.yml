@@ -92,8 +92,17 @@ jobs:
           PP="$(printf '%s' "${PROXY_PASSWORD}" \
             | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
           PROXY="http://${PU}:${PP}@geraldsynnas.ddns.net:8888"
-          git config --global http.proxy "$PROXY"
-          git config --global https.proxy "$PROXY"
+          # Dead-proxy fallback: probe before enabling; on failure unset any proxy a
+          # previous job persisted into the runner's global git config and go direct.
+          if curl -sm 8 -x "$PROXY" -o /dev/null https://api.github.com/zen; then
+            git config --global http.proxy "$PROXY"
+            git config --global https.proxy "$PROXY"
+            echo "git proxy enabled"
+          else
+            git config --global --unset-all http.proxy || true
+            git config --global --unset-all https.proxy || true
+            echo "proxy unreachable; using direct GitHub access"
+          fi
         env:
           PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
           PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
