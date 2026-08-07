@@ -75,6 +75,10 @@ jobs:
           PU="$(printf '%s' "${PROXY_USERNAME}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
           PP="$(printf '%s' "${PROXY_PASSWORD}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
           PROXY="http://${PU}:${PP}@geraldsynnas.ddns.net:8888"
+          # Abort transfers that stall below 1KB/s for 30s: the proxy can pass a
+          # small probe yet stall on bulk data, which otherwise hangs git forever.
+          git config --global http.lowSpeedLimit 1024
+          git config --global http.lowSpeedTime 30
           # Dead-proxy fallback: probe before enabling; on failure unset any proxy a
           # previous job persisted into the runner's global git config and go direct.
           if curl -sm 8 -x "$PROXY" -o /dev/null https://api.github.com/zen; then
