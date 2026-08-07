@@ -136,7 +136,27 @@ jobs:
             printf 'header = "Authorization: Bearer %s"\n' "$VECTA_READ_TOKEN"
             printf 'header = "Accept: application/vnd.github+json"\n'
             printf 'retry = 5\nretry-delay = 5\nconnect-timeout = 30\n'
+            # Abort transfers that fall below 10KB/s for 60s: direct GitHub bulk
+            # downloads get GFW-throttled to a crawl and then killed mid-stream
+            # (2026-08-07: 45MB tarball crawled 29min at 27KB/s, died with err 92).
+            printf 'speed-limit = 10240\nspeed-time = 60\n'
           } > "$curl_config"
+          # Route through the squid proxy when it is reachable; it is not subject
+          # to the direct-path throttling. Probe first so a dead proxy cannot
+          # take the build down with it.
+          if [ -n "${PROXY_USERNAME:-}" ] && [ -n "${PROXY_PASSWORD:-}" ]; then
+            PU="$(printf '%s' "${PROXY_USERNAME}" \
+              | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+            PP="$(printf '%s' "${PROXY_PASSWORD}" \
+              | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+            PROXY="http://${PU}:${PP}@geraldsynnas.ddns.net:8888"
+            if curl -sm 8 -x "$PROXY" -o /dev/null https://api.github.com/zen; then
+              printf 'proxy = "%s"\n' "$PROXY" >> "$curl_config"
+              echo "source download proxy enabled"
+            else
+              echo "proxy unreachable; downloading direct"
+            fi
+          fi
           branch_json="$(curl -fsSL --config "$curl_config" \
             "https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/${SOURCE_BRANCH}")"
           branch_sha="$(printf '%s' "$branch_json" | node -e '
@@ -165,6 +185,8 @@ jobs:
           tar -xzf /tmp/vecta-source.tar.gz --strip-components=1 -C vecta
         env:
           VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
 
       - name: Preflight production build runner
         run: |
