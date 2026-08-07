@@ -103,6 +103,20 @@ server {
         proxy_set_header Connection "";
     }
 
+    # ADR-070 个人渠道绑定页（/personal/wechat/bind + bind.js）由 fleet-gateway 提供。
+    # host nginx 的 `location /` 把它转给本代理，这里若不显式命中就会落到末尾的
+    # `location /` → admin-console，SPA fallback 返回 index.html：链接打得开、
+    # 状态 200、但永远没有二维码（2026-08-07 vtest 实测）。
+    location ^~ /personal/ {
+        proxy_pass http://$fleet_gateway:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+    }
+
     location = /agent {
         proxy_pass http://$fleet_gateway:3000/agent;
         proxy_set_header Host $host;

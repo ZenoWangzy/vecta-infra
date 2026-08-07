@@ -46,6 +46,12 @@ require_literal "$PROXY_TEMPLATE" 'location ^~ /admin/ {'
 require_literal "$PROXY_TEMPLATE" 'rewrite ^/admin/(.*)$ /$1 break;'
 require_literal "$PROXY_TEMPLATE" 'proxy_pass http://$admin_console:5173;'
 
+# ADR-070 personal-channel bind page is served by fleet-gateway, not the SPA.
+# Without an explicit location it falls through to `location /` and the Admin
+# Console returns index.html with HTTP 200 — the link opens but never shows a QR.
+require_literal "$PROXY_TEMPLATE" 'location ^~ /personal/ {'
+require_literal "$PROXY_TEMPLATE" 'proxy_pass http://$fleet_gateway:3000;'
+
 reject_duplicate_exact_admin_location "$PROXY_TEMPLATE"
 reject_duplicate_exact_admin_location "$HOST_TEMPLATE"
 
