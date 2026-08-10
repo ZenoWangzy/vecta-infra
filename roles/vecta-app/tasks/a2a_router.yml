@@ -8,6 +8,11 @@
     image_name_mismatch: recreate
     env:
       A2A_ROUTER_TOKEN: "{{ lookup('env', 'A2A_ROUTER_TOKEN') }}"
+      # vecta #408 removed this service's SERVICE_SECRET fallback and made the platform JWT
+      # mandatory, fail-closed: without it the process exits at config load with
+      # "CHANNEL_PLATFORM_SERVICE_TOKEN is required", never binds 9200, and the deploy then
+      # fails at "Wait for a2a-router before fleet-gateway".
+      CHANNEL_PLATFORM_SERVICE_TOKEN: "{{ lookup('env', 'CHANNEL_PLATFORM_SERVICE_TOKEN') }}"
       TZ: Asia/Shanghai
     ports:
       - "{{ a2a_router_port | default('9200') }}:9200"

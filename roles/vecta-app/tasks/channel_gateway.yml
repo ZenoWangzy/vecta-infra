@@ -14,6 +14,10 @@
     image_name_mismatch: recreate
     env:
       TZ: Asia/Shanghai
+      # Verifies inbound platform JWTs; without it the internal API answers 503.
+      PLATFORM_SERVICE_JWT_PUBLIC_KEY: "{{ lookup('env', 'PLATFORM_SERVICE_JWT_PUBLIC_KEY') }}"
+      # Presented when calling fleet-gateway (audience: fleet-gateway, scope fleet:internal).
+      FLEET_PLATFORM_SERVICE_TOKEN: "{{ lookup('env', 'FLEET_PLATFORM_SERVICE_TOKEN') }}"
       ALLOW_NO_CHANNEL: "false"
       DEPLOYMENT_ROLE: "{{ deployment_role | default('primary') }}"
       CHANNEL_ACTIVE: "{{ channel_active | default('true') }}"
