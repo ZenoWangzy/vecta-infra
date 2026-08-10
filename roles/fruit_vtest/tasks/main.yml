@@ -155,6 +155,11 @@
     env:
       FLEET_GATEWAY_URL: "http://openclaw-fleet-gateway:3000"
       SERVICE_SECRET: "{{ fruit_vtest_platform_service_secret }}"
+      # vecta #408: publishing a scenario pack now needs a scoped platform JWT carrying
+      # fleet:scenario-pack-publish. Without it the sync exits with
+      # "FLEET_FRUIT_PLATFORM_TOKEN is required to publish the Fruit Scenario Pack",
+      # which no_log hides, and the whole deploy fails at this task.
+      FLEET_FRUIT_PLATFORM_TOKEN: "{{ lookup('env', 'FLEET_FRUIT_PLATFORM_TOKEN') }}"
       FRUIT_SKILL_ADMIN_EMPLOYEE_ID: "{{ fruit_vtest_canary_employee_id }}"
       FRUIT_SKILL_TENANT_ID: "{{ fruit_vtest_canary_tenant_id }}"
       FRUIT_LIVE_EMPLOYEE_IDS: "{{ fruit_vtest_canary_employee_id }}"

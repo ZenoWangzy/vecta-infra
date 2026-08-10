@@ -54,6 +54,8 @@ on:
         required: false
       VTEST_FLEET_PLATFORM_SERVICE_TOKEN:
         required: false
+      VTEST_FLEET_FRUIT_PLATFORM_TOKEN:
+        required: false
 
 jobs:
   deploy:
@@ -73,6 +75,7 @@ jobs:
       PLATFORM_SERVICE_JWT_PUBLIC_KEY: ${{ secrets.VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY }}
       CHANNEL_PLATFORM_SERVICE_TOKEN: ${{ secrets.VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN }}
       FLEET_PLATFORM_SERVICE_TOKEN: ${{ secrets.VTEST_FLEET_PLATFORM_SERVICE_TOKEN }}
+      FLEET_FRUIT_PLATFORM_TOKEN: ${{ secrets.VTEST_FLEET_FRUIT_PLATFORM_TOKEN }}
       DEPLOY_SHA: ${{ inputs.image_tag }}
       VTEST_ALLOW_MIGRATE: ${{ inputs.run_migrations && '1' || '0' }}
       DEPLOY_TAGS: ${{ inputs.tags || 'open-webui,vecta-app,fruit-vtest' }}
