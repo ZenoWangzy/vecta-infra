@@ -287,6 +287,45 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
             with self.subTest(server=actual_header):
                 self.assertEqual((actual_header or "") == expected_header, accepted)
 
+    def test_extdirect_responses_use_strict_mapping_roots(self) -> None:
+        response_contracts = (
+            ("nexus_http_settings_before", "read", 1),
+            ("nexus_http_settings_update", "update", 2),
+            ("nexus_http_settings_after", "read", 3),
+            ("nexus_http_settings_rollback", "update", 4),
+            ("nexus_http_settings_rollback_read", "read", 5),
+        )
+
+        for variable, method, tid in response_contracts:
+            with self.subTest(variable=variable):
+                self.assertIn(f"{variable}.json is mapping", ROLE)
+                self.assertIn(f"{variable}.json.type | default('') == 'rpc'", ROLE)
+                self.assertIn(f"{variable}.json.action | default('') == 'coreui_HttpSettings'", ROLE)
+                self.assertIn(f"{variable}.json.method | default('') == '{method}'", ROLE)
+                self.assertIn(f"{variable}.json.tid | default(0) | int == {tid}", ROLE)
+                self.assertIn(f"{variable}.json.result is mapping", ROLE)
+                self.assertIn(f"{variable}.json.result.success | default(false) | bool", ROLE)
+                self.assertIn(f"{variable}.json.result.data is mapping", ROLE)
+                self.assertNotIn(f"{variable}.json[0]", ROLE)
+                self.assertNotIn(f"{variable}.json is sequence", ROLE)
+                self.assertNotIn(f"{variable}.json | length", ROLE)
+
+        mapping_response = {
+            "tid": 1,
+            "action": "coreui_HttpSettings",
+            "method": "read",
+            "result": {"success": True, "data": {}},
+            "type": "rpc",
+        }
+        for response, accepted in (
+            (mapping_response, True),
+            ([mapping_response], False),
+            ([], False),
+            (None, False),
+        ):
+            with self.subTest(response_type=type(response).__name__):
+                self.assertEqual(isinstance(response, dict), accepted)
+
     def test_three_proxy_update_branches_are_task_scoped(self) -> None:
         decision = task_block("Decide whether Nexus System HTTP needs an explicit password rotation")
         previous_password_gate = task_block("Require the old password before recoverable proxy rotation")
@@ -304,7 +343,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         expected_previous_password_gate = """not (nexus_outbound_proxy_existing_enabled | bool)
             or
             not (nexus_outbound_proxy_needs_update | bool)
-            or nexus_http_settings_before.json[0].result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
+            or nexus_http_settings_before.json.result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
             or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)"""
 
         # An enabled proxy with PROXY_PREVIOUS_PASSWORD always writes the new password.
@@ -342,7 +381,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("when: nexus_outbound_proxy_update_started | default(false) | bool", rollback_metadata)
         self.assertIn("lookup('env', 'PROXY_PREVIOUS_PASSWORD')", rollback_restore)
         self.assertIn(
-            "if nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder",
+            "if nexus_http_settings_before.json.result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder",
             rollback_restore,
         )
         self.assertIn(enabled_rollback_when, rollback_invalidation)
@@ -355,12 +394,12 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         # require cache invalidation and a fresh authenticated manifest response.
         metadata_clause = """and (
                 (
-                  nexus_http_settings_rollback_read.json[0].result.data
+                  nexus_http_settings_rollback_read.json.result.data
                   | combine({'httpAuthPassword': None, 'httpsAuthPassword': None}, recursive=True)
                 )
                 ==
                 (
-                  nexus_http_settings_before.json[0].result.data
+                  nexus_http_settings_before.json.result.data
                   | combine({'httpAuthPassword': None, 'httpsAuthPassword': None}, recursive=True)
                 )
               )"""
