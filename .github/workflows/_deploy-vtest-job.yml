@@ -162,6 +162,14 @@ jobs:
           GIT_CONFIG_NOSYSTEM: "1"
           GIT_CONFIG_GLOBAL: /dev/null
 
+      - name: Reset staged migration SQL files
+        run: |
+          set -euo pipefail
+          migration_dir=/tmp/migration-sqls
+          [ "$migration_dir" = "/tmp/migration-sqls" ] || { echo "unexpected migration directory" >&2; exit 1; }
+          rm -rf -- "$migration_dir"
+          mkdir -p -- "$migration_dir"
+
       - name: Download migration SQL files
         if: inputs.migration_artifact_run_id != ''
         uses: actions/download-artifact@v4

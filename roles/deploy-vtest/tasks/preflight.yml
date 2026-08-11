@@ -4,12 +4,25 @@
       - deploy_sha is match('^[0-9a-f]{40}$')
     fail_msg: "deploy_sha must be a full 40-character lowercase Git SHA"
 
+- name: Preflight — select one migration mode
+  set_fact:
+    vtest_explicit_migration_mode: "{{ vtest_migration_files | default('') | length > 0 }}"
+
+- name: Preflight — require approval for explicit migration files
+  assert:
+    that:
+      - not (vtest_explicit_migration_mode | bool) or vtest_allow_migrate | string == '1'
+    fail_msg: "Explicit migration files require vtest_allow_migrate=1"
+
 - name: Preflight — compose required Nexus image repo list
   set_fact:
     vtest_required_image_repos_effective: >-
       {{
         vtest_required_image_repos
-        + ([vtest_migrator_image_repo] if (vtest_allow_migrate | string) == '1' else [])
+        + ([vtest_migrator_image_repo]
+           if ((vtest_allow_migrate | string) == '1'
+               and not (vtest_explicit_migration_mode | bool))
+           else [])
         + ([fruit_vtest_image_repo]
            if (fruit_vtest_enabled | default(false) | bool
                and ('fruit-vtest' in ansible_run_tags or 'all' in ansible_run_tags))
@@ -69,9 +82,14 @@
     executable: /bin/bash
   register: ledger_result
   changed_when: false
-  when: vtest_allow_migrate | string == '1'
+  when:
+    - vtest_allow_migrate | string == '1'
+    - not vtest_explicit_migration_mode | bool
 
 - name: Preflight — fail if migration ledger is unreadable
   fail:
     msg: "Migration ledger unreadable — aborting before any write"
-  when: vtest_allow_migrate | string == '1' and 'LEDGER_UNREADABLE' in ledger_result.stdout
+  when:
+    - vtest_allow_migrate | string == '1'
+    - not vtest_explicit_migration_mode | bool
+    - "'LEDGER_UNREADABLE' in ledger_result.stdout"

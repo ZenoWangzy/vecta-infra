@@ -1,4 +1,4 @@
-- name: Run vecta migrator image
+- name: Run standard vecta migrator image
   community.docker.docker_container:
     name: openclaw-vecta-migrator
     image: "{{ vecta_migrator_image }}"
@@ -12,3 +12,18 @@
     networks:
       - name: "{{ docker_network }}"
   register: migrator_result
+  when: not vtest_explicit_migration_mode | bool
+
+- name: Apply allowlisted explicit migrations
+  ansible.builtin.script:
+    cmd: apply-explicit-migration.sh
+  environment:
+    VTEST_MIGRATION_FILE: "{{ vtest_migration_file | trim }}"
+    VTEST_POSTGRES_USER: "{{ postgres_user | default('openclaw_poc') }}"
+    VTEST_POSTGRES_DB: "{{ postgres_db | default('openclaw_poc') }}"
+  loop: "{{ vtest_migration_files.split(',') }}"
+  loop_control:
+    loop_var: vtest_migration_file
+    label: "{{ vtest_migration_file | trim }}"
+  when: vtest_explicit_migration_mode | bool
+  changed_when: true
