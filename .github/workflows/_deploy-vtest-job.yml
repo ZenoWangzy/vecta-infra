@@ -68,7 +68,6 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.VTEST_DATABASE_URL }}
       SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
-      NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
       WECOM_CORP_ID: ${{ secrets.WECOM_CORP_ID }}
       WECOM_CONTACTS_SECRET: ${{ secrets.WECOM_CONTACTS_SECRET }}
       WECOM_BOT_ID: ${{ secrets.WECOM_BOT_ID }}
@@ -177,6 +176,8 @@ jobs:
           for v in DATABASE_URL SERVICE_KEY NEXUS_ADMIN_PASSWORD; do
             [ -n "${!v:-}" ] || { echo "secret $v missing — refusing to deploy"; exit 1; }
           done
+        env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
 
       - name: Validate image tag is immutable full SHA
         run: |
@@ -188,6 +189,7 @@ jobs:
       - name: Deploy via Ansible
         run: |
           set -euo pipefail
+          ci_nexus_admin_password="${NEXUS_ADMIN_PASSWORD:-}"
           ci_wecom_corp_id="${WECOM_CORP_ID:-}"
           ci_wecom_contacts_secret="${WECOM_CONTACTS_SECRET:-}"
           ci_wecom_bot_id="${WECOM_BOT_ID:-}"
@@ -203,6 +205,7 @@ jobs:
             . /data/ocee/.env
             set +a
           fi
+          export NEXUS_ADMIN_PASSWORD="$ci_nexus_admin_password"
           if [ -n "$ci_proxy_username_set" ]; then export PROXY_USERNAME="$ci_proxy_username"; else unset PROXY_USERNAME; fi
           if [ -n "$ci_proxy_password_set" ]; then export PROXY_PASSWORD="$ci_proxy_password"; else unset PROXY_PASSWORD; fi
           if [ -n "$ci_proxy_previous_password_set" ]; then export PROXY_PREVIOUS_PASSWORD="$ci_proxy_previous_password"; else unset PROXY_PREVIOUS_PASSWORD; fi
@@ -219,8 +222,9 @@ jobs:
             -e "fruit_vtest_bootstrap=$VTEST_FRUIT_BOOTSTRAP" \
             -e "vtest_migration_files=$(ls /tmp/migration-sqls/*.sql 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo '')" \
             --tags "${DEPLOY_TAGS:-open-webui,vecta-app,fruit-vtest}"
-          unset PROXY_PREVIOUS_PASSWORD ci_proxy_previous_password
+          unset NEXUS_ADMIN_PASSWORD PROXY_USERNAME PROXY_PASSWORD PROXY_PREVIOUS_PASSWORD ci_nexus_admin_password ci_proxy_username ci_proxy_password ci_proxy_previous_password
         env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}
           PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
           PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
           PROXY_PREVIOUS_PASSWORD: ${{ secrets.PROXY_PREVIOUS_PASSWORD }}

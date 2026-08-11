@@ -9,8 +9,13 @@ from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ROLE = (ROOT / "roles/nexus/tasks/main.yml").read_text()
+ROLE = (ROOT / "roles/nexus/tasks/system_http_proxy.yml").read_text()
+NEXUS_MAIN = (ROOT / "roles/nexus/tasks/main.yml").read_text()
 DEFAULTS = (ROOT / "roles/nexus/defaults/main.yml").read_text()
+INFRA_PLAYBOOK = (ROOT / "playbooks/infra.yml").read_text()
+DEPLOY_PLAYBOOK = (ROOT / "playbooks/deploy.yml").read_text()
+APP_PLAYBOOK = (ROOT / "playbooks/app.yml").read_text()
+DEPLOY_VTEST = (ROOT / "roles/deploy-vtest/tasks/deploy.yml").read_text()
 WORKFLOW = (ROOT / ".github/workflows/_deploy-vtest-job.yml").read_text()
 
 
@@ -21,6 +26,15 @@ def task_block(name: str) -> str:
     next_task = re.search(rf"^{' ' * len(match.group('indent'))}- name: ", ROLE[match.end() :], re.MULTILINE)
     end = len(ROLE) if next_task is None else match.end() + next_task.start()
     return ROLE[match.start() : end]
+
+
+def nexus_main_task_block(name: str) -> str:
+    match = re.search(rf"^- name: {re.escape(name)}$", NEXUS_MAIN, re.MULTILINE)
+    if match is None:
+        raise AssertionError(f"missing Nexus main task: {name}")
+    next_task = re.search(r"^- name: ", NEXUS_MAIN[match.end() :], re.MULTILINE)
+    end = len(NEXUS_MAIN) if next_task is None else match.end() + next_task.start()
+    return NEXUS_MAIN[match.start() : end]
 
 
 def workflow_step(name: str) -> str:
@@ -42,6 +56,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertNotIn("PROXY_USERNAME:", job_env)
         self.assertNotIn("PROXY_PASSWORD:", job_env)
         self.assertNotIn("PROXY_PREVIOUS_PASSWORD:", job_env)
+        self.assertNotIn("NEXUS_ADMIN_PASSWORD:", job_env)
         self.assertIn("GIT_CONFIG_COUNT=5", git_proxy)
         self.assertIn("GIT_CONFIG_KEY_0=http.lowSpeedLimit", git_proxy)
         self.assertIn("GIT_CONFIG_KEY_1=http.lowSpeedTime", git_proxy)
@@ -83,6 +98,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}", deploy)
         self.assertIn("PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}", deploy)
         self.assertIn("PROXY_PREVIOUS_PASSWORD: ${{ secrets.PROXY_PREVIOUS_PASSWORD }}", deploy)
+        self.assertIn("NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}", deploy)
 
     def test_proxy_url_percent_encodes_special_character_credentials(self) -> None:
         encoder = "printf '%s' \"$1\" | od -An -tx1 | tr -d ' \\n' | sed 's/../%&/g'"
@@ -199,6 +215,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         deploy = workflow_step("Deploy via Ansible")
         source_at = deploy.index(". /data/ocee/.env")
         for value in (
+            "ci_nexus_admin_password=",
             "ci_proxy_username_set",
             "ci_proxy_password_set",
             "ci_proxy_previous_password_set",
@@ -208,6 +225,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         ):
             self.assertLess(deploy.index(value), source_at, value)
         for value in (
+            "export NEXUS_ADMIN_PASSWORD=\"$ci_nexus_admin_password\"",
             "export PROXY_USERNAME=\"$ci_proxy_username\"",
             "export PROXY_PASSWORD=\"$ci_proxy_password\"",
             "export PROXY_PREVIOUS_PASSWORD=\"$ci_proxy_previous_password\"",
@@ -216,18 +234,23 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
             "unset PROXY_PREVIOUS_PASSWORD",
         ):
             self.assertGreater(deploy.index(value), source_at, value)
-        self.assertGreater(deploy.rindex("unset PROXY_PREVIOUS_PASSWORD ci_proxy_previous_password"), source_at)
+        self.assertGreater(
+            deploy.rindex(
+                "unset NEXUS_ADMIN_PASSWORD PROXY_USERNAME PROXY_PASSWORD PROXY_PREVIOUS_PASSWORD"
+            ),
+            source_at,
+        )
 
     def test_secret_carrying_tasks_do_not_log(self) -> None:
         for name in (
             "Refuse incomplete Nexus outbound proxy secrets",
-            "Determine whether Nexus outbound proxy configuration is requested",
+            "Restrict Nexus System HTTP proxy automation to vtest",
             "Initialize Nexus System HTTP recovery state",
             "Read Nexus version before System HTTP automation",
             "Require the pinned Nexus version for System HTTP automation",
             "Read Nexus System HTTP settings before update",
             "Validate the pinned Nexus System HTTP read response",
-            "Refuse an enabled Nexus proxy outside the recoverable contract",
+            "Refuse Nexus System HTTP settings outside the recoverable contract",
             "Decide whether Nexus System HTTP needs an explicit password rotation",
             "Invalidate cache before probing an unrotated enabled Nexus proxy",
             "Probe an unrotated enabled Nexus proxy after cache invalidation",
@@ -264,6 +287,94 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("The placeholder confirms redaction, never password equality.", ROLE)
         self.assertIn("PROXY_PREVIOUS_PASSWORD is required", ROLE)
         self.assertIn("PROXY_PREVIOUS_PASSWORD:\n        required: false", WORKFLOW)
+
+    def test_system_http_entry_is_isolated_from_full_nexus_role_side_effects(self) -> None:
+        self.assertIn("ansible.builtin.import_role:", INFRA_PLAYBOOK)
+        self.assertIn("name: nexus", INFRA_PLAYBOOK)
+        self.assertIn("tasks_from: system_http_proxy", INFRA_PLAYBOOK)
+        self.assertIn("tags: [nexus]", INFRA_PLAYBOOK)
+        self.assertNotIn("- role: nexus", INFRA_PLAYBOOK)
+
+        self.assertIn(
+            "ansible.builtin.import_tasks: system_http_proxy.yml", NEXUS_MAIN
+        )
+        self.assertNotIn("coreui_HttpSettings", NEXUS_MAIN)
+        self.assertNotIn("nexus_outbound_proxy_enabled", NEXUS_MAIN)
+        for forbidden in (
+            "Compose Nexus proxy repository definitions",
+            "Create or update Nexus proxy repositories",
+            "Configure Docker daemon registry mirror",
+            "Write .npmrc pointing to Nexus npm proxy",
+            "copy:",
+            "notify:",
+        ):
+            self.assertNotIn(forbidden, ROLE)
+
+    def test_full_deploy_chain_has_one_isolated_system_http_entry(self) -> None:
+        self.assertIn("- import_playbook: infra.yml", DEPLOY_PLAYBOOK)
+        self.assertIn("- import_playbook: app.yml", DEPLOY_PLAYBOOK)
+        self.assertIn("- role: deploy-vtest", APP_PLAYBOOK)
+        self.assertEqual(INFRA_PLAYBOOK.count("tasks_from: system_http_proxy"), 1)
+        self.assertNotIn("name: nexus", DEPLOY_VTEST)
+        self.assertNotIn("include_role:\n    name: nexus", DEPLOY_VTEST)
+
+    def test_full_nexus_role_refuses_partial_proxy_secrets_before_repository_writes(self) -> None:
+        gate = "Refuse partial Nexus outbound proxy secrets before repository writes"
+        gate_block = nexus_main_task_block(gate)
+        expected_pair_gate = """(lookup('env', 'PROXY_USERNAME') | length == 0)
+        ==
+        (lookup('env', 'PROXY_PASSWORD') | length == 0)"""
+
+        self.assertIn(compact(expected_pair_gate), compact(gate_block))
+        self.assertIn("must be supplied together", gate_block)
+        self.assertIn("no_log: true", gate_block)
+        for repository_write in (
+            "Create or update Nexus proxy repositories",
+            "Create or update Docker hosted repo",
+            "Create or update Docker proxy repo",
+            "Create or update Docker group repo",
+        ):
+            self.assertLess(NEXUS_MAIN.index(gate), NEXUS_MAIN.index(repository_write))
+
+    def test_system_http_entry_is_vtest_only_and_mypc_guards_always_run(self) -> None:
+        target_gate = task_block("Restrict Nexus System HTTP proxy automation to vtest")
+        self.assertIn("'vtest' in group_names", target_gate)
+        self.assertIn("inventory_hostname in (groups.get('vtest', []))", target_gate)
+        self.assertIn("tags: [always]", INFRA_PLAYBOOK)
+        self.assertIn("tags: [always]", APP_PLAYBOOK)
+
+    def test_system_http_entry_fails_closed_for_required_secrets_and_disabled_non_proxy_hosts(self) -> None:
+        secret_gate = task_block("Refuse incomplete Nexus outbound proxy secrets")
+        settings_gate = task_block(
+            "Refuse Nexus System HTTP settings outside the recoverable contract"
+        )
+        fail_closed = workflow_step("Fail closed if secrets missing")
+        expected_disabled_non_proxy_gate = """(nexus_http_settings_before.json.result.data.httpEnabled | default(false) | bool)
+            or
+            (nexus_http_settings_before.json.result.data.nonProxyHosts | default([], true) | length == 0)
+            or
+            (
+              (nexus_http_settings_before.json.result.data.nonProxyHosts | default([], true) | sort)
+              == (nexus_outbound_proxy_non_proxy_hosts | sort)
+            )"""
+
+        for secret in (
+            "NEXUS_ADMIN_PASSWORD",
+            "PROXY_USERNAME",
+            "PROXY_PASSWORD",
+        ):
+            self.assertIn(f"lookup('env', '{secret}') | length > 0", secret_gate)
+        self.assertIn("no_log: true", secret_gate)
+        self.assertNotIn("PROXY_PREVIOUS_PASSWORD", secret_gate)
+        self.assertIn(
+            "not (nexus_http_settings_before.json.result.data.httpsEnabled",
+            settings_gate,
+        )
+        self.assertIn(
+            compact(expected_disabled_non_proxy_gate), compact(settings_gate)
+        )
+        self.assertIn("NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}", fail_closed)
+        self.assertIn("NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}", workflow_step("Deploy via Ansible"))
 
     def test_nexus_status_server_header_is_exact_and_empty_body_safe(self) -> None:
         version_read = task_block("Read Nexus version before System HTTP automation")
@@ -340,9 +451,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
             not (nexus_outbound_proxy_existing_enabled | bool)
             or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
           }}"""
-        expected_previous_password_gate = """not (nexus_outbound_proxy_existing_enabled | bool)
-            or
-            not (nexus_outbound_proxy_needs_update | bool)
+        expected_previous_password_gate = """not (nexus_outbound_proxy_needs_update | bool)
             or nexus_http_settings_before.json.result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
             or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)"""
 
@@ -359,7 +468,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("status_code: 200", unrotated_probe)
         self.assertIn("until: nexus_docker_manifest_unrotated_probe.status == 200", unrotated_probe)
 
-        # A disabled snapshot takes the first-write branch through the same update task.
+        # A disabled snapshot takes the first-write branch.
         self.assertIn(compact(expected_decision), compact(decision))
         self.assertIn("when: nexus_outbound_proxy_needs_update | bool", update)
 
@@ -367,6 +476,45 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("nexus_outbound_proxy_non_proxy_hosts | sort", ROLE)
         self.assertIn("== (nexus_outbound_proxy_non_proxy_hosts | sort)", ROLE)
         self.assertNotIn("| union(", ROLE)
+
+    def test_redacted_snapshot_requires_previous_password_for_each_write_branch(self) -> None:
+        previous_password_gate = task_block("Require the old password before recoverable proxy rotation")
+        rollback_guard = task_block("Refuse unverifiable Nexus System HTTP rollback")
+        rollback_restore = task_block("Restore Nexus System HTTP settings from the pre-update snapshot")
+
+        self.assertIn("not (nexus_outbound_proxy_needs_update | bool)", previous_password_gate)
+        self.assertIn("httpAuthPassword != nexus_outbound_proxy_password_placeholder", previous_password_gate)
+        self.assertIn("PROXY_PREVIOUS_PASSWORD", previous_password_gate)
+        self.assertNotIn("httpAuthEnabled", previous_password_gate)
+
+        # A redacted password requires a previous value whenever the branch writes.
+        # httpEnabled x previous-password: disabled/no is blocked; all other
+        # branches either have the recovery value or make no write.
+        for http_enabled, has_previous_password, writes, accepted in (
+            (False, False, True, False),
+            (False, True, True, True),
+            (True, False, False, True),
+            (True, True, True, True),
+        ):
+            with self.subTest(
+                http_enabled=http_enabled,
+                has_previous_password=has_previous_password,
+            ):
+                needs_update = not http_enabled or has_previous_password
+                requires_previous_password = needs_update
+                self.assertEqual(needs_update, writes)
+                self.assertEqual(
+                    not requires_previous_password or has_previous_password,
+                    accepted,
+                )
+
+        self.assertLess(ROLE.index(rollback_guard), ROLE.index(rollback_restore))
+        self.assertIn("httpAuthPassword != nexus_outbound_proxy_password_placeholder", rollback_guard)
+        self.assertIn("PROXY_PREVIOUS_PASSWORD", rollback_guard)
+        rollback_write_guard = """httpAuthPassword
+          != nexus_outbound_proxy_password_placeholder
+          or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)"""
+        self.assertIn(compact(rollback_write_guard), compact(rollback_restore))
 
     def test_rollback_verification_requires_enabled_snapshot_probe(self) -> None:
         rollback_restore = task_block("Restore Nexus System HTTP settings from the pre-update snapshot")
@@ -381,7 +529,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("when: nexus_outbound_proxy_update_started | default(false) | bool", rollback_metadata)
         self.assertIn("lookup('env', 'PROXY_PREVIOUS_PASSWORD')", rollback_restore)
         self.assertIn(
-            "if nexus_http_settings_before.json.result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder",
+            "nexus_http_settings_before.json.result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder",
             rollback_restore,
         )
         self.assertIn(enabled_rollback_when, rollback_invalidation)
@@ -408,7 +556,10 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
                 or
                 (
                   nexus_docker_manifest_rollback_invalidation.status | default(0) | int == 204
-                  and nexus_docker_manifest_rollback_probe.status | default(0) | int == 200
+                  and (
+                    nexus_docker_manifest_rollback_probe.results | default([])
+                    | map(attribute='status') | list
+                  ) == [200, 200]
                 )
               )"""
         rollback_contract = compact(rollback_verified)
@@ -424,8 +575,9 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         probe = ROLE.index("Probe the authenticated Node manifest through Nexus")
         self.assertLess(invalidate, probe)
         self.assertIn("/repositories/{{ nexus_docker_proxy_repo }}/invalidate-cache", ROLE)
-        self.assertIn("/v2/library/node/manifests/20-alpine", ROLE)
+        self.assertIn("/v2/library/node/manifests/{{ item }}", ROLE)
         final_probe = task_block("Probe the authenticated Node manifest through Nexus")
+        self.assertIn("loop: [20-alpine, 20-slim]", final_probe)
         self.assertIn("status_code: 200", final_probe)
         self.assertIn("retries: 5", final_probe)
 
