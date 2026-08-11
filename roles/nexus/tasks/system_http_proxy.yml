@@ -37,11 +37,12 @@
     - name: Require the pinned Nexus version for System HTTP automation
       assert:
         that:
-          - nexus_outbound_proxy_version_check.json is mapping
-          - nexus_outbound_proxy_version_check.json.version | default('') == nexus_outbound_proxy_version
+          - >-
+            nexus_outbound_proxy_version_check.server | default('')
+            == 'Nexus/' ~ nexus_outbound_proxy_version ~ ' (COMMUNITY)'
         fail_msg: >-
-          System HTTP ExtDirect automation is pinned to Nexus {{ nexus_outbound_proxy_version }};
-          refusing to guess a different version's contract
+          System HTTP ExtDirect automation requires the Server header
+          Nexus/{{ nexus_outbound_proxy_version }} (COMMUNITY); refusing a missing or different contract
       no_log: true
 
     - name: Read Nexus System HTTP settings before update
@@ -173,13 +174,8 @@
       assert:
         that:
           - >-
-            not (nexus_outbound_proxy_existing_enabled | bool)
-            or
             not (nexus_outbound_proxy_needs_update | bool)
-            or not (
-              (nexus_http_settings_before.json[0].result.data.httpAuthEnabled | default(false) | bool)
-              and nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
-            )
+            or nexus_http_settings_before.json[0].result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
             or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
         fail_msg: PROXY_PREVIOUS_PASSWORD is required to recover a changed write-only HTTP proxy password
       no_log: true
@@ -325,6 +321,16 @@
       when: nexus_outbound_proxy_needs_update | bool
 
   rescue:
+    - name: Refuse unverifiable Nexus System HTTP rollback
+      assert:
+        that:
+          - >-
+            nexus_http_settings_before.json[0].result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
+            or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
+        fail_msg: Cannot restore a redacted Nexus HTTP password without PROXY_PREVIOUS_PASSWORD
+      no_log: true
+      when: nexus_outbound_proxy_update_started | default(false) | bool
+
     - name: Restore Nexus System HTTP settings from the pre-update snapshot
       uri:
         url: "{{ nexus_base_url }}/service/extdirect"
@@ -344,7 +350,10 @@
                     {
                       'httpAuthPassword': (
                         lookup('env', 'PROXY_PREVIOUS_PASSWORD')
-                        if nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+                        if (
+                          nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+                          and (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
+                        )
                         else nexus_http_settings_before.json[0].result.data.httpAuthPassword
                       )
                     },
@@ -358,7 +367,12 @@
       register: nexus_http_settings_rollback
       failed_when: false
       no_log: true
-      when: nexus_outbound_proxy_update_started | default(false) | bool
+      when:
+        - nexus_outbound_proxy_update_started | default(false) | bool
+        - >-
+          nexus_http_settings_before.json[0].result.data.httpAuthPassword
+          != nexus_outbound_proxy_password_placeholder
+          or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
 
     - name: Read Nexus System HTTP metadata after rollback
       uri:
@@ -446,6 +460,10 @@
               and (nexus_http_settings_rollback_read.json[0].result is mapping)
               and (nexus_http_settings_rollback_read.json[0].result.success | default(false) | bool)
               and (nexus_http_settings_rollback_read.json[0].result.data is mapping)
+              and (
+                nexus_http_settings_before.json[0].result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
+                or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
+              )
               and (
                 (
                   nexus_http_settings_rollback_read.json[0].result.data

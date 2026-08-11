@@ -375,6 +375,28 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}", fail_closed)
         self.assertIn("NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}", workflow_step("Deploy via Ansible"))
 
+    def test_nexus_status_server_header_is_exact_and_empty_body_safe(self) -> None:
+        version_read = task_block("Read Nexus version before System HTTP automation")
+        version_gate = task_block("Require the pinned Nexus version for System HTTP automation")
+        expected_condition = """nexus_outbound_proxy_version_check.server | default('')
+          == 'Nexus/' ~ nexus_outbound_proxy_version ~ ' (COMMUNITY)'"""
+
+        self.assertIn("method: GET", version_read)
+        self.assertIn("status_code: 200", version_read)
+        self.assertIn(compact(expected_condition), compact(version_gate))
+        self.assertNotIn("nexus_outbound_proxy_version_check.json", version_gate)
+
+        expected_header = "Nexus/3.94.0-12 (COMMUNITY)"
+        for actual_header, accepted in (
+            (expected_header, True),
+            (None, False),
+            ("", False),
+            ("Nexus/3.93.0-01 (COMMUNITY)", False),
+            ("Nexus/3.94.0-12 (PRO)", False),
+        ):
+            with self.subTest(server=actual_header):
+                self.assertEqual((actual_header or "") == expected_header, accepted)
+
     def test_three_proxy_update_branches_are_task_scoped(self) -> None:
         decision = task_block("Decide whether Nexus System HTTP needs an explicit password rotation")
         previous_password_gate = task_block("Require the old password before recoverable proxy rotation")
@@ -389,13 +411,8 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
             not (nexus_outbound_proxy_existing_enabled | bool)
             or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
           }}"""
-        expected_previous_password_gate = """not (nexus_outbound_proxy_existing_enabled | bool)
-            or
-            not (nexus_outbound_proxy_needs_update | bool)
-            or not (
-              (nexus_http_settings_before.json[0].result.data.httpAuthEnabled | default(false) | bool)
-              and nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
-            )
+        expected_previous_password_gate = """not (nexus_outbound_proxy_needs_update | bool)
+            or nexus_http_settings_before.json[0].result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
             or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)"""
 
         # An enabled proxy with PROXY_PREVIOUS_PASSWORD always writes the new password.
@@ -411,7 +428,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("status_code: 200", unrotated_probe)
         self.assertIn("until: nexus_docker_manifest_unrotated_probe.status == 200", unrotated_probe)
 
-        # A disabled snapshot without a redacted password takes the first-write branch.
+        # A disabled snapshot takes the first-write branch.
         self.assertIn(compact(expected_decision), compact(decision))
         self.assertIn("when: nexus_outbound_proxy_needs_update | bool", update)
 
@@ -420,21 +437,44 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("== (nexus_outbound_proxy_non_proxy_hosts | sort)", ROLE)
         self.assertNotIn("| union(", ROLE)
 
-    def test_disabled_redacted_snapshot_requires_previous_password_before_write(self) -> None:
+    def test_redacted_snapshot_requires_previous_password_for_each_write_branch(self) -> None:
         previous_password_gate = task_block("Require the old password before recoverable proxy rotation")
-        rollback_verified = task_block("Determine whether Nexus System HTTP rollback was verified")
+        rollback_guard = task_block("Refuse unverifiable Nexus System HTTP rollback")
+        rollback_restore = task_block("Restore Nexus System HTTP settings from the pre-update snapshot")
 
-        self.assertIn("httpAuthEnabled | default(false) | bool", previous_password_gate)
-        self.assertIn("httpAuthPassword == nexus_outbound_proxy_password_placeholder", previous_password_gate)
+        self.assertIn("not (nexus_outbound_proxy_needs_update | bool)", previous_password_gate)
+        self.assertIn("httpAuthPassword != nexus_outbound_proxy_password_placeholder", previous_password_gate)
         self.assertIn("PROXY_PREVIOUS_PASSWORD", previous_password_gate)
-        self.assertIn(
-            "not (nexus_http_settings_before.json[0].result.data.httpAuthEnabled | default(false) | bool)",
-            rollback_verified,
-        )
-        self.assertIn(
-            "nexus_http_settings_before.json[0].result.data.httpAuthPassword is none",
-            rollback_verified,
-        )
+        self.assertNotIn("httpAuthEnabled", previous_password_gate)
+
+        # A redacted password requires a previous value whenever the branch writes.
+        # httpEnabled x previous-password: disabled/no is blocked; all other
+        # branches either have the recovery value or make no write.
+        for http_enabled, has_previous_password, writes, accepted in (
+            (False, False, True, False),
+            (False, True, True, True),
+            (True, False, False, True),
+            (True, True, True, True),
+        ):
+            with self.subTest(
+                http_enabled=http_enabled,
+                has_previous_password=has_previous_password,
+            ):
+                needs_update = not http_enabled or has_previous_password
+                requires_previous_password = needs_update
+                self.assertEqual(needs_update, writes)
+                self.assertEqual(
+                    not requires_previous_password or has_previous_password,
+                    accepted,
+                )
+
+        self.assertLess(ROLE.index(rollback_guard), ROLE.index(rollback_restore))
+        self.assertIn("httpAuthPassword != nexus_outbound_proxy_password_placeholder", rollback_guard)
+        self.assertIn("PROXY_PREVIOUS_PASSWORD", rollback_guard)
+        rollback_write_guard = """httpAuthPassword
+          != nexus_outbound_proxy_password_placeholder
+          or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)"""
+        self.assertIn(compact(rollback_write_guard), compact(rollback_restore))
 
     def test_rollback_verification_requires_enabled_snapshot_probe(self) -> None:
         rollback_restore = task_block("Restore Nexus System HTTP settings from the pre-update snapshot")
@@ -449,7 +489,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("when: nexus_outbound_proxy_update_started | default(false) | bool", rollback_metadata)
         self.assertIn("lookup('env', 'PROXY_PREVIOUS_PASSWORD')", rollback_restore)
         self.assertIn(
-            "if nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder",
+            "nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder",
             rollback_restore,
         )
         self.assertIn(enabled_rollback_when, rollback_invalidation)
