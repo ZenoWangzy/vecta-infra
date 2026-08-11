@@ -67,54 +67,52 @@
     - name: Validate the pinned Nexus System HTTP read response
       assert:
         that:
-          - nexus_http_settings_before.json is sequence
-          - nexus_http_settings_before.json | length == 1
-          - nexus_http_settings_before.json[0] is mapping
-          - nexus_http_settings_before.json[0].type | default('') == 'rpc'
-          - nexus_http_settings_before.json[0].action | default('') == 'coreui_HttpSettings'
-          - nexus_http_settings_before.json[0].method | default('') == 'read'
-          - nexus_http_settings_before.json[0].tid | default(0) | int == 1
-          - nexus_http_settings_before.json[0].result is mapping
-          - nexus_http_settings_before.json[0].result.success | default(false) | bool
-          - nexus_http_settings_before.json[0].result.data is mapping
-          - "'httpEnabled' in nexus_http_settings_before.json[0].result.data"
-          - "'httpHost' in nexus_http_settings_before.json[0].result.data"
-          - "'httpPort' in nexus_http_settings_before.json[0].result.data"
-          - "'httpAuthEnabled' in nexus_http_settings_before.json[0].result.data"
-          - "'httpAuthUsername' in nexus_http_settings_before.json[0].result.data"
-          - "'httpAuthPassword' in nexus_http_settings_before.json[0].result.data"
-          - "'httpsEnabled' in nexus_http_settings_before.json[0].result.data"
-          - "'httpsAuthPassword' in nexus_http_settings_before.json[0].result.data"
-          - "'nonProxyHosts' in nexus_http_settings_before.json[0].result.data"
+          - nexus_http_settings_before.json is mapping
+          - nexus_http_settings_before.json.type | default('') == 'rpc'
+          - nexus_http_settings_before.json.action | default('') == 'coreui_HttpSettings'
+          - nexus_http_settings_before.json.method | default('') == 'read'
+          - nexus_http_settings_before.json.tid | default(0) | int == 1
+          - nexus_http_settings_before.json.result is mapping
+          - nexus_http_settings_before.json.result.success | default(false) | bool
+          - nexus_http_settings_before.json.result.data is mapping
+          - "'httpEnabled' in nexus_http_settings_before.json.result.data"
+          - "'httpHost' in nexus_http_settings_before.json.result.data"
+          - "'httpPort' in nexus_http_settings_before.json.result.data"
+          - "'httpAuthEnabled' in nexus_http_settings_before.json.result.data"
+          - "'httpAuthUsername' in nexus_http_settings_before.json.result.data"
+          - "'httpAuthPassword' in nexus_http_settings_before.json.result.data"
+          - "'httpsEnabled' in nexus_http_settings_before.json.result.data"
+          - "'httpsAuthPassword' in nexus_http_settings_before.json.result.data"
+          - "'nonProxyHosts' in nexus_http_settings_before.json.result.data"
         fail_msg: Nexus System HTTP read response does not match the pinned 3.94.0-12 ExtDirect schema
       no_log: true
 
     - name: Refuse Nexus System HTTP settings outside the recoverable contract
       assert:
         that:
-          - not (nexus_http_settings_before.json[0].result.data.httpsEnabled | default(false) | bool)
+          - not (nexus_http_settings_before.json.result.data.httpsEnabled | default(false) | bool)
           - >-
-            not (nexus_http_settings_before.json[0].result.data.httpEnabled | default(false) | bool)
+            not (nexus_http_settings_before.json.result.data.httpEnabled | default(false) | bool)
             or
             (
-              nexus_http_settings_before.json[0].result.data.httpHost == nexus_outbound_proxy_host
-              and (nexus_http_settings_before.json[0].result.data.httpPort | int == nexus_outbound_proxy_port | int)
-              and (nexus_http_settings_before.json[0].result.data.httpAuthEnabled | default(false) | bool)
-              and nexus_http_settings_before.json[0].result.data.httpAuthUsername == lookup('env', 'PROXY_USERNAME')
-              and nexus_http_settings_before.json[0].result.data.httpAuthNtlmHost is none
-              and nexus_http_settings_before.json[0].result.data.httpAuthNtlmDomain is none
+              nexus_http_settings_before.json.result.data.httpHost == nexus_outbound_proxy_host
+              and (nexus_http_settings_before.json.result.data.httpPort | int == nexus_outbound_proxy_port | int)
+              and (nexus_http_settings_before.json.result.data.httpAuthEnabled | default(false) | bool)
+              and nexus_http_settings_before.json.result.data.httpAuthUsername == lookup('env', 'PROXY_USERNAME')
+              and nexus_http_settings_before.json.result.data.httpAuthNtlmHost is none
+              and nexus_http_settings_before.json.result.data.httpAuthNtlmDomain is none
               and (
-                (nexus_http_settings_before.json[0].result.data.nonProxyHosts | default([], true) | sort)
+                (nexus_http_settings_before.json.result.data.nonProxyHosts | default([], true) | sort)
                 == (nexus_outbound_proxy_non_proxy_hosts | sort)
               )
             )
           - >-
-            (nexus_http_settings_before.json[0].result.data.httpEnabled | default(false) | bool)
+            (nexus_http_settings_before.json.result.data.httpEnabled | default(false) | bool)
             or
-            (nexus_http_settings_before.json[0].result.data.nonProxyHosts | default([], true) | length == 0)
+            (nexus_http_settings_before.json.result.data.nonProxyHosts | default([], true) | length == 0)
             or
             (
-              (nexus_http_settings_before.json[0].result.data.nonProxyHosts | default([], true) | sort)
+              (nexus_http_settings_before.json.result.data.nonProxyHosts | default([], true) | sort)
               == (nexus_outbound_proxy_non_proxy_hosts | sort)
             )
         fail_msg: Nexus System HTTP settings differ from the recoverable HTTP-only configuration; refusing to overwrite them
@@ -123,7 +121,7 @@
     - name: Determine whether Nexus already has the enabled proxy
       set_fact:
         nexus_outbound_proxy_existing_enabled: >-
-          {{ nexus_http_settings_before.json[0].result.data.httpEnabled | default(false) | bool }}
+          {{ nexus_http_settings_before.json.result.data.httpEnabled | default(false) | bool }}
       no_log: true
 
     - name: Decide whether Nexus System HTTP needs an explicit password rotation
@@ -175,7 +173,7 @@
         that:
           - >-
             not (nexus_outbound_proxy_needs_update | bool)
-            or nexus_http_settings_before.json[0].result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
+            or nexus_http_settings_before.json.result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
             or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
         fail_msg: PROXY_PREVIOUS_PASSWORD is required to recover a changed write-only HTTP proxy password
       no_log: true
@@ -200,7 +198,7 @@
             data:
               - >-
                 {{
-                  nexus_http_settings_before.json[0].result.data
+                  nexus_http_settings_before.json.result.data
                   | combine(
                     {
                       'httpEnabled': true,
@@ -227,16 +225,14 @@
     - name: Validate the pinned Nexus System HTTP update response
       assert:
         that:
-          - nexus_http_settings_update.json is sequence
-          - nexus_http_settings_update.json | length == 1
-          - nexus_http_settings_update.json[0] is mapping
-          - nexus_http_settings_update.json[0].type | default('') == 'rpc'
-          - nexus_http_settings_update.json[0].action | default('') == 'coreui_HttpSettings'
-          - nexus_http_settings_update.json[0].method | default('') == 'update'
-          - nexus_http_settings_update.json[0].tid | default(0) | int == 2
-          - nexus_http_settings_update.json[0].result is mapping
-          - nexus_http_settings_update.json[0].result.success | default(false) | bool
-          - nexus_http_settings_update.json[0].result.data is mapping
+          - nexus_http_settings_update.json is mapping
+          - nexus_http_settings_update.json.type | default('') == 'rpc'
+          - nexus_http_settings_update.json.action | default('') == 'coreui_HttpSettings'
+          - nexus_http_settings_update.json.method | default('') == 'update'
+          - nexus_http_settings_update.json.tid | default(0) | int == 2
+          - nexus_http_settings_update.json.result is mapping
+          - nexus_http_settings_update.json.result.success | default(false) | bool
+          - nexus_http_settings_update.json.result.data is mapping
         fail_msg: Nexus System HTTP update response does not match the pinned 3.94.0-12 ExtDirect schema
       no_log: true
       when: nexus_outbound_proxy_needs_update | bool
@@ -264,26 +260,24 @@
     - name: Verify Nexus System HTTP settings after update
       assert:
         that:
-          - nexus_http_settings_after.json is sequence
-          - nexus_http_settings_after.json | length == 1
-          - nexus_http_settings_after.json[0] is mapping
-          - nexus_http_settings_after.json[0].type | default('') == 'rpc'
-          - nexus_http_settings_after.json[0].action | default('') == 'coreui_HttpSettings'
-          - nexus_http_settings_after.json[0].method | default('') == 'read'
-          - nexus_http_settings_after.json[0].tid | default(0) | int == 3
-          - nexus_http_settings_after.json[0].result is mapping
-          - nexus_http_settings_after.json[0].result.success | default(false) | bool
-          - nexus_http_settings_after.json[0].result.data is mapping
-          - nexus_http_settings_after.json[0].result.data.httpEnabled | default(false) | bool
-          - nexus_http_settings_after.json[0].result.data.httpHost == nexus_outbound_proxy_host
-          - nexus_http_settings_after.json[0].result.data.httpPort | int == nexus_outbound_proxy_port | int
-          - nexus_http_settings_after.json[0].result.data.httpAuthEnabled | default(false) | bool
-          - nexus_http_settings_after.json[0].result.data.httpAuthUsername == lookup('env', 'PROXY_USERNAME')
+          - nexus_http_settings_after.json is mapping
+          - nexus_http_settings_after.json.type | default('') == 'rpc'
+          - nexus_http_settings_after.json.action | default('') == 'coreui_HttpSettings'
+          - nexus_http_settings_after.json.method | default('') == 'read'
+          - nexus_http_settings_after.json.tid | default(0) | int == 3
+          - nexus_http_settings_after.json.result is mapping
+          - nexus_http_settings_after.json.result.success | default(false) | bool
+          - nexus_http_settings_after.json.result.data is mapping
+          - nexus_http_settings_after.json.result.data.httpEnabled | default(false) | bool
+          - nexus_http_settings_after.json.result.data.httpHost == nexus_outbound_proxy_host
+          - nexus_http_settings_after.json.result.data.httpPort | int == nexus_outbound_proxy_port | int
+          - nexus_http_settings_after.json.result.data.httpAuthEnabled | default(false) | bool
+          - nexus_http_settings_after.json.result.data.httpAuthUsername == lookup('env', 'PROXY_USERNAME')
           # The placeholder confirms redaction, never password equality.
-          - nexus_http_settings_after.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
-          - not (nexus_http_settings_after.json[0].result.data.httpsEnabled | default(false) | bool)
+          - nexus_http_settings_after.json.result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+          - not (nexus_http_settings_after.json.result.data.httpsEnabled | default(false) | bool)
           - >-
-            (nexus_http_settings_after.json[0].result.data.nonProxyHosts | default([], true) | sort)
+            (nexus_http_settings_after.json.result.data.nonProxyHosts | default([], true) | sort)
             == (nexus_outbound_proxy_non_proxy_hosts | sort)
         fail_msg: Nexus System HTTP settings did not retain the expected HTTP-only proxy configuration
       no_log: true
@@ -325,7 +319,7 @@
       assert:
         that:
           - >-
-            nexus_http_settings_before.json[0].result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
+            nexus_http_settings_before.json.result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
             or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
         fail_msg: Cannot restore a redacted Nexus HTTP password without PROXY_PREVIOUS_PASSWORD
       no_log: true
@@ -345,16 +339,16 @@
             data:
               - >-
                 {{
-                  nexus_http_settings_before.json[0].result.data
+                  nexus_http_settings_before.json.result.data
                   | combine(
                     {
                       'httpAuthPassword': (
                         lookup('env', 'PROXY_PREVIOUS_PASSWORD')
                         if (
-                          nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+                          nexus_http_settings_before.json.result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
                           and (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
                         )
-                        else nexus_http_settings_before.json[0].result.data.httpAuthPassword
+                        else nexus_http_settings_before.json.result.data.httpAuthPassword
                       )
                     },
                     recursive=True
@@ -370,7 +364,7 @@
       when:
         - nexus_outbound_proxy_update_started | default(false) | bool
         - >-
-          nexus_http_settings_before.json[0].result.data.httpAuthPassword
+          nexus_http_settings_before.json.result.data.httpAuthPassword
           != nexus_outbound_proxy_password_placeholder
           or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
 
@@ -441,60 +435,58 @@
             or
             (
               (nexus_http_settings_rollback.status | default(0) | int == 200)
-              and (nexus_http_settings_rollback.json is sequence)
-              and (nexus_http_settings_rollback.json | length == 1)
-              and (nexus_http_settings_rollback.json[0].type | default('') == 'rpc')
-              and (nexus_http_settings_rollback.json[0].action | default('') == 'coreui_HttpSettings')
-              and (nexus_http_settings_rollback.json[0].method | default('') == 'update')
-              and (nexus_http_settings_rollback.json[0].tid | default(0) | int == 4)
-              and (nexus_http_settings_rollback.json[0].result is mapping)
-              and (nexus_http_settings_rollback.json[0].result.success | default(false) | bool)
-              and (nexus_http_settings_rollback.json[0].result.data is mapping)
+              and (nexus_http_settings_rollback.json is mapping)
+              and (nexus_http_settings_rollback.json.type | default('') == 'rpc')
+              and (nexus_http_settings_rollback.json.action | default('') == 'coreui_HttpSettings')
+              and (nexus_http_settings_rollback.json.method | default('') == 'update')
+              and (nexus_http_settings_rollback.json.tid | default(0) | int == 4)
+              and (nexus_http_settings_rollback.json.result is mapping)
+              and (nexus_http_settings_rollback.json.result.success | default(false) | bool)
+              and (nexus_http_settings_rollback.json.result.data is mapping)
               and (nexus_http_settings_rollback_read.status | default(0) | int == 200)
-              and (nexus_http_settings_rollback_read.json is sequence)
-              and (nexus_http_settings_rollback_read.json | length == 1)
-              and (nexus_http_settings_rollback_read.json[0].type | default('') == 'rpc')
-              and (nexus_http_settings_rollback_read.json[0].action | default('') == 'coreui_HttpSettings')
-              and (nexus_http_settings_rollback_read.json[0].method | default('') == 'read')
-              and (nexus_http_settings_rollback_read.json[0].tid | default(0) | int == 5)
-              and (nexus_http_settings_rollback_read.json[0].result is mapping)
-              and (nexus_http_settings_rollback_read.json[0].result.success | default(false) | bool)
-              and (nexus_http_settings_rollback_read.json[0].result.data is mapping)
+              and (nexus_http_settings_rollback_read.json is mapping)
+              and (nexus_http_settings_rollback_read.json.type | default('') == 'rpc')
+              and (nexus_http_settings_rollback_read.json.action | default('') == 'coreui_HttpSettings')
+              and (nexus_http_settings_rollback_read.json.method | default('') == 'read')
+              and (nexus_http_settings_rollback_read.json.tid | default(0) | int == 5)
+              and (nexus_http_settings_rollback_read.json.result is mapping)
+              and (nexus_http_settings_rollback_read.json.result.success | default(false) | bool)
+              and (nexus_http_settings_rollback_read.json.result.data is mapping)
               and (
-                nexus_http_settings_before.json[0].result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
+                nexus_http_settings_before.json.result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
                 or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
               )
               and (
                 (
-                  nexus_http_settings_rollback_read.json[0].result.data
+                  nexus_http_settings_rollback_read.json.result.data
                   | combine({'httpAuthPassword': None, 'httpsAuthPassword': None}, recursive=True)
                 )
                 ==
                 (
-                  nexus_http_settings_before.json[0].result.data
+                  nexus_http_settings_before.json.result.data
                   | combine({'httpAuthPassword': None, 'httpsAuthPassword': None}, recursive=True)
                 )
               )
               and (
-                not (nexus_http_settings_before.json[0].result.data.httpAuthEnabled | default(false) | bool)
-                and nexus_http_settings_before.json[0].result.data.httpAuthPassword is none
-                and nexus_http_settings_rollback_read.json[0].result.data.httpAuthPassword is none
+                not (nexus_http_settings_before.json.result.data.httpAuthEnabled | default(false) | bool)
+                and nexus_http_settings_before.json.result.data.httpAuthPassword is none
+                and nexus_http_settings_rollback_read.json.result.data.httpAuthPassword is none
                 or
                 (
-                  (nexus_http_settings_before.json[0].result.data.httpAuthEnabled | default(false) | bool)
-                  and nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
-                  and nexus_http_settings_rollback_read.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+                  (nexus_http_settings_before.json.result.data.httpAuthEnabled | default(false) | bool)
+                  and nexus_http_settings_before.json.result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+                  and nexus_http_settings_rollback_read.json.result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
                 )
               )
               and (
                 (
-                  nexus_http_settings_before.json[0].result.data.httpsAuthPassword is none
-                  and nexus_http_settings_rollback_read.json[0].result.data.httpsAuthPassword is none
+                  nexus_http_settings_before.json.result.data.httpsAuthPassword is none
+                  and nexus_http_settings_rollback_read.json.result.data.httpsAuthPassword is none
                 )
                 or
                 (
-                  nexus_http_settings_before.json[0].result.data.httpsAuthPassword == nexus_outbound_proxy_password_placeholder
-                  and nexus_http_settings_rollback_read.json[0].result.data.httpsAuthPassword == nexus_outbound_proxy_password_placeholder
+                  nexus_http_settings_before.json.result.data.httpsAuthPassword == nexus_outbound_proxy_password_placeholder
+                  and nexus_http_settings_rollback_read.json.result.data.httpsAuthPassword == nexus_outbound_proxy_password_placeholder
                 )
               )
               and (
