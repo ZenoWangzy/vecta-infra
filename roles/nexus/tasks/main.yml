@@ -1,3 +1,13 @@
+- name: Refuse partial Nexus outbound proxy secrets before repository writes
+  ansible.builtin.assert:
+    that:
+      - >-
+        (lookup('env', 'PROXY_USERNAME') | length == 0)
+        ==
+        (lookup('env', 'PROXY_PASSWORD') | length == 0)
+    fail_msg: PROXY_USERNAME and PROXY_PASSWORD must be supplied together
+  no_log: true
+
 - name: Check Nexus OSS health
   uri:
     url: "{{ nexus_base_url }}/service/rest/v1/status"

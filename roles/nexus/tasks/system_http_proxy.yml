@@ -1,3 +1,11 @@
+- name: Restrict Nexus System HTTP proxy automation to vtest
+  ansible.builtin.assert:
+    that:
+      - "'vtest' in group_names"
+      - inventory_hostname in (groups.get('vtest', []))
+    fail_msg: Nexus System HTTP proxy automation is restricted to the vtest inventory host
+  no_log: true
+
 - name: Refuse incomplete Nexus outbound proxy secrets
   assert:
     that:
@@ -142,7 +150,7 @@
 
     - name: Probe an unrotated enabled Nexus proxy after cache invalidation
       uri:
-        url: "http://127.0.0.1:{{ nexus_docker_group_connector_port }}/v2/library/node/manifests/20-alpine"
+        url: "http://127.0.0.1:{{ nexus_docker_group_connector_port }}/v2/library/node/manifests/{{ item }}"
         method: GET
         user: admin
         password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
@@ -152,6 +160,7 @@
         status_code: 200
         timeout: 30
       register: nexus_docker_manifest_unrotated_probe
+      loop: [20-alpine, 20-slim]
       retries: 5
       delay: 5
       until: nexus_docker_manifest_unrotated_probe.status == 200
@@ -167,7 +176,10 @@
             not (nexus_outbound_proxy_existing_enabled | bool)
             or
             not (nexus_outbound_proxy_needs_update | bool)
-            or nexus_http_settings_before.json[0].result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
+            or not (
+              (nexus_http_settings_before.json[0].result.data.httpAuthEnabled | default(false) | bool)
+              and nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+            )
             or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
         fail_msg: PROXY_PREVIOUS_PASSWORD is required to recover a changed write-only HTTP proxy password
       no_log: true
@@ -295,7 +307,7 @@
 
     - name: Probe the authenticated Node manifest through Nexus
       uri:
-        url: "http://127.0.0.1:{{ nexus_docker_group_connector_port }}/v2/library/node/manifests/20-alpine"
+        url: "http://127.0.0.1:{{ nexus_docker_group_connector_port }}/v2/library/node/manifests/{{ item }}"
         method: GET
         user: admin
         password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
@@ -305,6 +317,7 @@
         status_code: 200
         timeout: 30
       register: nexus_docker_manifest_probe
+      loop: [20-alpine, 20-slim]
       retries: 5
       delay: 5
       until: nexus_docker_manifest_probe.status == 200
@@ -386,7 +399,7 @@
 
     - name: Probe an enabled Nexus proxy after rollback
       uri:
-        url: "http://127.0.0.1:{{ nexus_docker_group_connector_port }}/v2/library/node/manifests/20-alpine"
+        url: "http://127.0.0.1:{{ nexus_docker_group_connector_port }}/v2/library/node/manifests/{{ item }}"
         method: GET
         user: admin
         password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
@@ -396,6 +409,7 @@
         status_code: 200
         timeout: 30
       register: nexus_docker_manifest_rollback_probe
+      loop: [20-alpine, 20-slim]
       retries: 5
       delay: 5
       until: nexus_docker_manifest_rollback_probe.status == 200
@@ -444,13 +458,13 @@
                 )
               )
               and (
-                (
-                  nexus_http_settings_before.json[0].result.data.httpAuthPassword is none
-                  and nexus_http_settings_rollback_read.json[0].result.data.httpAuthPassword is none
-                )
+                not (nexus_http_settings_before.json[0].result.data.httpAuthEnabled | default(false) | bool)
+                and nexus_http_settings_before.json[0].result.data.httpAuthPassword is none
+                and nexus_http_settings_rollback_read.json[0].result.data.httpAuthPassword is none
                 or
                 (
-                  nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+                  (nexus_http_settings_before.json[0].result.data.httpAuthEnabled | default(false) | bool)
+                  and nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
                   and nexus_http_settings_rollback_read.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
                 )
               )
@@ -470,7 +484,10 @@
                 or
                 (
                   nexus_docker_manifest_rollback_invalidation.status | default(0) | int == 204
-                  and nexus_docker_manifest_rollback_probe.status | default(0) | int == 200
+                  and (
+                    nexus_docker_manifest_rollback_probe.results | default([])
+                    | map(attribute='status') | list
+                  ) == [200, 200]
                 )
               )
             )

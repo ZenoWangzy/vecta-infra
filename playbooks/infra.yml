@@ -6,6 +6,7 @@
     - name: Guard against accidental prod deploy
       ansible.builtin.fail:
         msg: "Set mypc_deploy_enabled=true and configure a real host before deploying to mypc."
+      tags: [always]
       when:
         - "'mypc' in group_names"
         - not (mypc_deploy_enabled | default(false) | bool)

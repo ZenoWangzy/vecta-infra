@@ -19,16 +19,6 @@
   changed_when: true
 
 - include_role:
-    name: nexus
-    apply:
-      tags:
-        - nexus
-  tags:
-    - nexus
-  when: "'nexus' in ansible_run_tags or 'all' in ansible_run_tags"
-
-
-- include_role:
     name: search
     apply:
       tags: search
