@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ROLE_MAIN = (ROOT / "roles/deploy-vtest/tasks/main.yml").read_text()
 PREFLIGHT = (ROOT / "roles/deploy-vtest/tasks/preflight.yml").read_text()
 INVENTORY = (ROOT / "inventories/vtest/group_vars/vtest.yml").read_text()
+OPEN_WEBUI_ROLE = (ROOT / "roles/open-webui/tasks/main.yml").read_text()
 
 
 def task_block(text: str, name: str) -> str:
@@ -23,6 +24,10 @@ def task_block(text: str, name: str) -> str:
 
 class VtestPinnedImageSeedContractTest(unittest.TestCase):
     def test_inventory_seeds_only_open_webui_images_for_selected_tags(self) -> None:
+        self.assertEqual(
+            re.findall(r'^\s+image: "\{\{ ([a-z0-9_]+) \}\}"$', OPEN_WEBUI_ROLE, re.MULTILINE),
+            ["open_webui_image", "open_webui_nginx_image", "kk_file_view_image", "onlyoffice_image"],
+        )
         for exact_ref in (
             'open_webui_image: "{{ nexus_docker_registry }}/open-webui/open-webui:v0.9.2"',
             'open_webui_nginx_image: "{{ nexus_docker_registry }}/library/nginx:alpine"',
