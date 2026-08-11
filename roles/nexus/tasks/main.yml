@@ -319,11 +319,12 @@
     - name: Require the pinned Nexus version for System HTTP automation
       assert:
         that:
-          - nexus_outbound_proxy_version_check.json is mapping
-          - nexus_outbound_proxy_version_check.json.version | default('') == nexus_outbound_proxy_version
+          - >-
+            nexus_outbound_proxy_version_check.server | default('')
+            == 'Nexus/' ~ nexus_outbound_proxy_version ~ ' (COMMUNITY)'
         fail_msg: >-
-          System HTTP ExtDirect automation is pinned to Nexus {{ nexus_outbound_proxy_version }};
-          refusing to guess a different version's contract
+          System HTTP ExtDirect automation requires the Server header
+          Nexus/{{ nexus_outbound_proxy_version }} (COMMUNITY); refusing a missing or different contract
       no_log: true
 
     - name: Read Nexus System HTTP settings before update

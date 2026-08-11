@@ -265,6 +265,28 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("PROXY_PREVIOUS_PASSWORD is required", ROLE)
         self.assertIn("PROXY_PREVIOUS_PASSWORD:\n        required: false", WORKFLOW)
 
+    def test_nexus_status_server_header_is_exact_and_empty_body_safe(self) -> None:
+        version_read = task_block("Read Nexus version before System HTTP automation")
+        version_gate = task_block("Require the pinned Nexus version for System HTTP automation")
+        expected_condition = """nexus_outbound_proxy_version_check.server | default('')
+          == 'Nexus/' ~ nexus_outbound_proxy_version ~ ' (COMMUNITY)'"""
+
+        self.assertIn("method: GET", version_read)
+        self.assertIn("status_code: 200", version_read)
+        self.assertIn(compact(expected_condition), compact(version_gate))
+        self.assertNotIn("nexus_outbound_proxy_version_check.json", version_gate)
+
+        expected_header = "Nexus/3.94.0-12 (COMMUNITY)"
+        for actual_header, accepted in (
+            (expected_header, True),
+            (None, False),
+            ("", False),
+            ("Nexus/3.93.0-01 (COMMUNITY)", False),
+            ("Nexus/3.94.0-12 (PRO)", False),
+        ):
+            with self.subTest(server=actual_header):
+                self.assertEqual((actual_header or "") == expected_header, accepted)
+
     def test_three_proxy_update_branches_are_task_scoped(self) -> None:
         decision = task_block("Decide whether Nexus System HTTP needs an explicit password rotation")
         previous_password_gate = task_block("Require the old password before recoverable proxy rotation")
