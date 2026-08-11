@@ -46,6 +46,8 @@ on:
         required: false
       PROXY_PASSWORD:
         required: false
+      PROXY_PREVIOUS_PASSWORD:
+        required: false
       # vecta #408 platform service JWTs. Optional so an unprovisioned environment still
       # deploys everything else, but a2a-router will not start without the channel token.
       VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY:
@@ -81,38 +83,83 @@ jobs:
       DEPLOY_TAGS: ${{ inputs.tags || 'open-webui,vecta-app,fruit-vtest' }}
       VTEST_FRUIT_BOOTSTRAP: ${{ inputs.fruit_bootstrap && '1' || '0' }}
     steps:
-      - name: Configure git proxy
+      - name: Configure git proxy and check out vecta-infra
         run: |
+          set -euo pipefail
+          home_input="${HOME:-}"
+          [ -n "$home_input" ] || { echo "HOME is required for the workspace guard" >&2; exit 1; }
+          home_resolved="$(cd -- "$home_input" && pwd -P)"
+          runner_workspace_input="${RUNNER_WORKSPACE:-}"
+          [ -n "$runner_workspace_input" ] || { echo "RUNNER_WORKSPACE is required" >&2; exit 1; }
+          case "$runner_workspace_input" in
+            /*) ;;
+            *) echo "RUNNER_WORKSPACE must be an absolute path" >&2; exit 1 ;;
+          esac
+          [ -d "$runner_workspace_input" ] || { echo "RUNNER_WORKSPACE must exist" >&2; exit 1; }
+          runner_workspace_resolved="$(cd -- "$runner_workspace_input" && pwd -P)"
+          [ "$runner_workspace_resolved" = "$RUNNER_WORKSPACE" ] || { echo "resolved runner workspace must equal RUNNER_WORKSPACE" >&2; exit 1; }
+          [ "$runner_workspace_resolved" != "/" ] || { echo "refusing a filesystem-root runner workspace" >&2; exit 1; }
+          [ "$runner_workspace_resolved" != "$home_resolved" ] || { echo "refusing a HOME runner workspace" >&2; exit 1; }
+          workspace_input="${GITHUB_WORKSPACE:-}"
+          [ -n "$workspace_input" ] || { echo "GITHUB_WORKSPACE is required" >&2; exit 1; }
+          case "$workspace_input" in
+            /*) ;;
+            *) echo "GITHUB_WORKSPACE must be an absolute path" >&2; exit 1 ;;
+          esac
+          [ -d "$workspace_input" ] || { echo "GITHUB_WORKSPACE must exist" >&2; exit 1; }
+          workspace_resolved="$(cd -- "$workspace_input" && pwd -P)"
+          [ "$workspace_resolved" = "$GITHUB_WORKSPACE" ] || { echo "resolved workspace must equal GITHUB_WORKSPACE" >&2; exit 1; }
+          [ "$workspace_resolved" != "/" ] || { echo "refusing to clean the filesystem root" >&2; exit 1; }
+          [ "$workspace_resolved" != "$home_resolved" ] || { echo "refusing to clean HOME" >&2; exit 1; }
+          case "$workspace_resolved" in
+            "$runner_workspace_resolved"/*) ;;
+            *) echo "GITHUB_WORKSPACE must be a strict child of RUNNER_WORKSPACE" >&2; exit 1 ;;
+          esac
+          [ "$(pwd -P)" = "$workspace_resolved" ] || { echo "current directory must equal GITHUB_WORKSPACE" >&2; exit 1; }
+          cleanup_git_configuration() {
+            unset proxy_url proxy_username_encoded proxy_password_encoded git_auth GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_KEY_1 GIT_CONFIG_KEY_2 GIT_CONFIG_KEY_3 GIT_CONFIG_KEY_4 GIT_CONFIG_KEY_5 GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1 GIT_CONFIG_VALUE_2 GIT_CONFIG_VALUE_3 GIT_CONFIG_VALUE_4 GIT_CONFIG_VALUE_5
+          }
+          trap cleanup_git_configuration EXIT
+          git_auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_COUNT=6
+          export GIT_CONFIG_KEY_0=http.lowSpeedLimit
+          export GIT_CONFIG_VALUE_0=1024
+          export GIT_CONFIG_KEY_1=http.lowSpeedTime
+          export GIT_CONFIG_VALUE_1=30
+          export GIT_CONFIG_KEY_2=http.proxy
+          export GIT_CONFIG_KEY_3=https.proxy
+          export GIT_CONFIG_KEY_4=http.extraHeader
+          export GIT_CONFIG_VALUE_4="Authorization: Basic $git_auth"
+          export GIT_CONFIG_KEY_5=remote.origin.url
+          export GIT_CONFIG_VALUE_5=https://github.com/ZenoWangzy/vecta-infra.git
           if [ -z "${PROXY_USERNAME:-}" ] || [ -z "${PROXY_PASSWORD:-}" ]; then
             echo "Proxy secrets not set; using default git network path"
-            exit 0
-          fi
-          PU="$(printf '%s' "${PROXY_USERNAME}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
-          PP="$(printf '%s' "${PROXY_PASSWORD}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
-          PROXY="http://${PU}:${PP}@geraldsynnas.ddns.net:8888"
-          # Abort transfers that stall below 1KB/s for 30s: the proxy can pass a
-          # small probe yet stall on bulk data, which otherwise hangs git forever.
-          git config --global http.lowSpeedLimit 1024
-          git config --global http.lowSpeedTime 30
-          # Dead-proxy fallback: probe before enabling; on failure unset any proxy a
-          # previous job persisted into the runner's global git config and go direct.
-          if curl -sm 8 -x "$PROXY" -o /dev/null https://api.github.com/zen; then
-            git config --global http.proxy "$PROXY"
-            git config --global https.proxy "$PROXY"
-            echo "git proxy enabled"
+            export GIT_CONFIG_VALUE_2=
+            export GIT_CONFIG_VALUE_3=
           else
-            git config --global --unset-all http.proxy || true
-            git config --global --unset-all https.proxy || true
-            echo "proxy unreachable; using direct GitHub access"
+            proxy_username_encoded="$(printf '%s' "${PROXY_USERNAME}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+            proxy_password_encoded="$(printf '%s' "${PROXY_PASSWORD}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+            proxy_url="http://${proxy_username_encoded}:${proxy_password_encoded}@geraldsynnas.ddns.net:8888"
+            # Keep proxy credentials in this shell/process environment, never a curl or git argv.
+            if HTTPS_PROXY="$proxy_url" HTTP_PROXY="$proxy_url" curl -sm 8 -o /dev/null https://api.github.com/zen; then
+              export GIT_CONFIG_VALUE_2="$proxy_url"
+              export GIT_CONFIG_VALUE_3="$proxy_url"
+              echo "git proxy enabled"
+            else
+              export GIT_CONFIG_VALUE_2=
+              export GIT_CONFIG_VALUE_3=
+              echo "proxy unreachable; using direct GitHub access"
+            fi
           fi
+          git init --quiet
+          git fetch --depth=1 origin main
+          git checkout --force FETCH_HEAD
+          git reset --hard FETCH_HEAD
+          git clean -ffdx
         env:
           PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
           PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
-
-      - uses: actions/checkout@v4
-        with:
-          repository: ZenoWangzy/vecta-infra
-          ref: main
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Download migration SQL files
         if: inputs.migration_artifact_run_id != ''
@@ -143,11 +190,20 @@ jobs:
           ci_wecom_contacts_secret="${WECOM_CONTACTS_SECRET:-}"
           ci_wecom_bot_id="${WECOM_BOT_ID:-}"
           ci_wecom_bot_secret="${WECOM_BOT_SECRET:-}"
+          ci_proxy_username_set="${PROXY_USERNAME+x}"
+          ci_proxy_password_set="${PROXY_PASSWORD+x}"
+          ci_proxy_previous_password_set="${PROXY_PREVIOUS_PASSWORD+x}"
+          ci_proxy_username="${PROXY_USERNAME:-}"
+          ci_proxy_password="${PROXY_PASSWORD:-}"
+          ci_proxy_previous_password="${PROXY_PREVIOUS_PASSWORD:-}"
           if [ -f /data/ocee/.env ]; then
             set -a
             . /data/ocee/.env
             set +a
           fi
+          if [ -n "$ci_proxy_username_set" ]; then export PROXY_USERNAME="$ci_proxy_username"; else unset PROXY_USERNAME; fi
+          if [ -n "$ci_proxy_password_set" ]; then export PROXY_PASSWORD="$ci_proxy_password"; else unset PROXY_PASSWORD; fi
+          if [ -n "$ci_proxy_previous_password_set" ]; then export PROXY_PREVIOUS_PASSWORD="$ci_proxy_previous_password"; else unset PROXY_PREVIOUS_PASSWORD; fi
           export SERVICE_KEY="${OPENWEBUI_SERVICE_KEY:-${SERVICE_KEY:-}}"
           [ -n "$ci_wecom_corp_id" ] && export WECOM_CORP_ID="$ci_wecom_corp_id"
           [ -n "$ci_wecom_contacts_secret" ] && export WECOM_CONTACTS_SECRET="$ci_wecom_contacts_secret"
@@ -161,6 +217,11 @@ jobs:
             -e "fruit_vtest_bootstrap=$VTEST_FRUIT_BOOTSTRAP" \
             -e "vtest_migration_files=$(ls /tmp/migration-sqls/*.sql 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo '')" \
             --tags "${DEPLOY_TAGS:-open-webui,vecta-app,fruit-vtest}"
+          unset PROXY_PREVIOUS_PASSWORD ci_proxy_previous_password
+        env:
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+          PROXY_PREVIOUS_PASSWORD: ${{ secrets.PROXY_PREVIOUS_PASSWORD }}
 
       - name: Prune vtest Docker build state
         if: always()

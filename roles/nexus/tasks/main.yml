@@ -9,6 +9,20 @@
   delay: 5
   until: nexus_health.status == 200
 
+- name: Refuse incomplete Nexus outbound proxy secrets
+  assert:
+    that:
+      - >-
+        (lookup('env', 'PROXY_USERNAME') | length > 0) ==
+        (lookup('env', 'PROXY_PASSWORD') | length > 0)
+    fail_msg: PROXY_USERNAME and PROXY_PASSWORD must be set together
+  no_log: true
+
+- name: Determine whether Nexus outbound proxy configuration is requested
+  set_fact:
+    nexus_outbound_proxy_enabled: "{{ (lookup('env', 'PROXY_USERNAME') | length) > 0 }}"
+  no_log: true
+
 - name: Compose Nexus proxy repository definitions
   set_fact:
     nexus_proxy_repositories:
@@ -282,6 +296,477 @@
   delay: 2
   until: nexus_docker_group_connector_health.status in [200, 401]
   failed_when: nexus_docker_group_connector_health.status not in [200, 401]
+
+- name: Configure and verify Nexus System HTTP proxy
+  block:
+    - name: Initialize Nexus System HTTP recovery state
+      set_fact:
+        nexus_outbound_proxy_update_started: false
+      no_log: true
+
+    - name: Read Nexus version before System HTTP automation
+      uri:
+        url: "{{ nexus_base_url }}/service/rest/v1/status"
+        method: GET
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        status_code: 200
+        timeout: 10
+      register: nexus_outbound_proxy_version_check
+      no_log: true
+
+    - name: Require the pinned Nexus version for System HTTP automation
+      assert:
+        that:
+          - nexus_outbound_proxy_version_check.json is mapping
+          - nexus_outbound_proxy_version_check.json.version | default('') == nexus_outbound_proxy_version
+        fail_msg: >-
+          System HTTP ExtDirect automation is pinned to Nexus {{ nexus_outbound_proxy_version }};
+          refusing to guess a different version's contract
+      no_log: true
+
+    - name: Read Nexus System HTTP settings before update
+      uri:
+        url: "{{ nexus_base_url }}/service/extdirect"
+        method: POST
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          - action: coreui_HttpSettings
+            method: read
+            data: []
+            type: rpc
+            tid: 1
+        status_code: 200
+        timeout: 10
+      register: nexus_http_settings_before
+      no_log: true
+
+    - name: Validate the pinned Nexus System HTTP read response
+      assert:
+        that:
+          - nexus_http_settings_before.json is sequence
+          - nexus_http_settings_before.json | length == 1
+          - nexus_http_settings_before.json[0] is mapping
+          - nexus_http_settings_before.json[0].type | default('') == 'rpc'
+          - nexus_http_settings_before.json[0].action | default('') == 'coreui_HttpSettings'
+          - nexus_http_settings_before.json[0].method | default('') == 'read'
+          - nexus_http_settings_before.json[0].tid | default(0) | int == 1
+          - nexus_http_settings_before.json[0].result is mapping
+          - nexus_http_settings_before.json[0].result.success | default(false) | bool
+          - nexus_http_settings_before.json[0].result.data is mapping
+          - "'httpEnabled' in nexus_http_settings_before.json[0].result.data"
+          - "'httpHost' in nexus_http_settings_before.json[0].result.data"
+          - "'httpPort' in nexus_http_settings_before.json[0].result.data"
+          - "'httpAuthEnabled' in nexus_http_settings_before.json[0].result.data"
+          - "'httpAuthUsername' in nexus_http_settings_before.json[0].result.data"
+          - "'httpAuthPassword' in nexus_http_settings_before.json[0].result.data"
+          - "'httpsEnabled' in nexus_http_settings_before.json[0].result.data"
+          - "'httpsAuthPassword' in nexus_http_settings_before.json[0].result.data"
+          - "'nonProxyHosts' in nexus_http_settings_before.json[0].result.data"
+        fail_msg: Nexus System HTTP read response does not match the pinned 3.94.0-12 ExtDirect schema
+      no_log: true
+
+    - name: Refuse an enabled Nexus proxy outside the recoverable contract
+      assert:
+        that:
+          - not (nexus_http_settings_before.json[0].result.data.httpsEnabled | default(false) | bool)
+          - >-
+            not (nexus_http_settings_before.json[0].result.data.httpEnabled | default(false) | bool)
+            or
+            (
+              nexus_http_settings_before.json[0].result.data.httpHost == nexus_outbound_proxy_host
+              and (nexus_http_settings_before.json[0].result.data.httpPort | int == nexus_outbound_proxy_port | int)
+              and (nexus_http_settings_before.json[0].result.data.httpAuthEnabled | default(false) | bool)
+              and nexus_http_settings_before.json[0].result.data.httpAuthUsername == lookup('env', 'PROXY_USERNAME')
+              and nexus_http_settings_before.json[0].result.data.httpAuthNtlmHost is none
+              and nexus_http_settings_before.json[0].result.data.httpAuthNtlmDomain is none
+              and (
+                (nexus_http_settings_before.json[0].result.data.nonProxyHosts | default([], true) | sort)
+                == (nexus_outbound_proxy_non_proxy_hosts | sort)
+              )
+            )
+        fail_msg: An enabled Nexus proxy differs from the recoverable HTTP-only configuration; refusing to overwrite it
+      no_log: true
+
+    - name: Determine whether Nexus already has the enabled proxy
+      set_fact:
+        nexus_outbound_proxy_existing_enabled: >-
+          {{ nexus_http_settings_before.json[0].result.data.httpEnabled | default(false) | bool }}
+      no_log: true
+
+    - name: Decide whether Nexus System HTTP needs an explicit password rotation
+      set_fact:
+        nexus_outbound_proxy_needs_update: >-
+          {{
+            not (nexus_outbound_proxy_existing_enabled | bool)
+            or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
+          }}
+      no_log: true
+
+    - name: Invalidate cache before probing an unrotated enabled Nexus proxy
+      uri:
+        url: "{{ nexus_base_url }}/service/rest/v1/repositories/{{ nexus_docker_proxy_repo }}/invalidate-cache"
+        method: POST
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        status_code: 204
+        timeout: 20
+      no_log: true
+      when:
+        - nexus_outbound_proxy_existing_enabled | bool
+        - not (nexus_outbound_proxy_needs_update | bool)
+
+    - name: Probe an unrotated enabled Nexus proxy after cache invalidation
+      uri:
+        url: "http://127.0.0.1:{{ nexus_docker_group_connector_port }}/v2/library/node/manifests/20-alpine"
+        method: GET
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        headers:
+          Accept: application/vnd.docker.distribution.manifest.v2+json
+        status_code: 200
+        timeout: 30
+      register: nexus_docker_manifest_unrotated_probe
+      retries: 5
+      delay: 5
+      until: nexus_docker_manifest_unrotated_probe.status == 200
+      no_log: true
+      when:
+        - nexus_outbound_proxy_existing_enabled | bool
+        - not (nexus_outbound_proxy_needs_update | bool)
+
+    - name: Require the old password before recoverable proxy rotation
+      assert:
+        that:
+          - >-
+            not (nexus_outbound_proxy_existing_enabled | bool)
+            or
+            not (nexus_outbound_proxy_needs_update | bool)
+            or nexus_http_settings_before.json[0].result.data.httpAuthPassword != nexus_outbound_proxy_password_placeholder
+            or (lookup('env', 'PROXY_PREVIOUS_PASSWORD') | length > 0)
+        fail_msg: PROXY_PREVIOUS_PASSWORD is required to recover a changed write-only HTTP proxy password
+      no_log: true
+
+    - name: Mark Nexus System HTTP update as started
+      set_fact:
+        nexus_outbound_proxy_update_started: true
+      no_log: true
+      when: nexus_outbound_proxy_needs_update | bool
+
+    - name: Update Nexus System HTTP proxy through the pinned ExtDirect contract
+      uri:
+        url: "{{ nexus_base_url }}/service/extdirect"
+        method: POST
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          - action: coreui_HttpSettings
+            method: update
+            data:
+              - >-
+                {{
+                  nexus_http_settings_before.json[0].result.data
+                  | combine(
+                    {
+                      'httpEnabled': true,
+                      'httpHost': nexus_outbound_proxy_host,
+                      'httpPort': nexus_outbound_proxy_port,
+                      'httpAuthEnabled': true,
+                      'httpAuthUsername': lookup('env', 'PROXY_USERNAME'),
+                      'httpAuthPassword': lookup('env', 'PROXY_PASSWORD'),
+                      'httpAuthNtlmHost': None,
+                      'httpAuthNtlmDomain': None,
+                      'nonProxyHosts': nexus_outbound_proxy_non_proxy_hosts | sort
+                    },
+                    recursive=True
+                  )
+                }}
+            type: rpc
+            tid: 2
+        status_code: 200
+        timeout: 10
+      register: nexus_http_settings_update
+      no_log: true
+      when: nexus_outbound_proxy_needs_update | bool
+
+    - name: Validate the pinned Nexus System HTTP update response
+      assert:
+        that:
+          - nexus_http_settings_update.json is sequence
+          - nexus_http_settings_update.json | length == 1
+          - nexus_http_settings_update.json[0] is mapping
+          - nexus_http_settings_update.json[0].type | default('') == 'rpc'
+          - nexus_http_settings_update.json[0].action | default('') == 'coreui_HttpSettings'
+          - nexus_http_settings_update.json[0].method | default('') == 'update'
+          - nexus_http_settings_update.json[0].tid | default(0) | int == 2
+          - nexus_http_settings_update.json[0].result is mapping
+          - nexus_http_settings_update.json[0].result.success | default(false) | bool
+          - nexus_http_settings_update.json[0].result.data is mapping
+        fail_msg: Nexus System HTTP update response does not match the pinned 3.94.0-12 ExtDirect schema
+      no_log: true
+      when: nexus_outbound_proxy_needs_update | bool
+
+    - name: Read Nexus System HTTP settings after update
+      uri:
+        url: "{{ nexus_base_url }}/service/extdirect"
+        method: POST
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          - action: coreui_HttpSettings
+            method: read
+            data: []
+            type: rpc
+            tid: 3
+        status_code: 200
+        timeout: 10
+      register: nexus_http_settings_after
+      no_log: true
+      when: nexus_outbound_proxy_needs_update | bool
+
+    - name: Verify Nexus System HTTP settings after update
+      assert:
+        that:
+          - nexus_http_settings_after.json is sequence
+          - nexus_http_settings_after.json | length == 1
+          - nexus_http_settings_after.json[0] is mapping
+          - nexus_http_settings_after.json[0].type | default('') == 'rpc'
+          - nexus_http_settings_after.json[0].action | default('') == 'coreui_HttpSettings'
+          - nexus_http_settings_after.json[0].method | default('') == 'read'
+          - nexus_http_settings_after.json[0].tid | default(0) | int == 3
+          - nexus_http_settings_after.json[0].result is mapping
+          - nexus_http_settings_after.json[0].result.success | default(false) | bool
+          - nexus_http_settings_after.json[0].result.data is mapping
+          - nexus_http_settings_after.json[0].result.data.httpEnabled | default(false) | bool
+          - nexus_http_settings_after.json[0].result.data.httpHost == nexus_outbound_proxy_host
+          - nexus_http_settings_after.json[0].result.data.httpPort | int == nexus_outbound_proxy_port | int
+          - nexus_http_settings_after.json[0].result.data.httpAuthEnabled | default(false) | bool
+          - nexus_http_settings_after.json[0].result.data.httpAuthUsername == lookup('env', 'PROXY_USERNAME')
+          # The placeholder confirms redaction, never password equality.
+          - nexus_http_settings_after.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+          - not (nexus_http_settings_after.json[0].result.data.httpsEnabled | default(false) | bool)
+          - >-
+            (nexus_http_settings_after.json[0].result.data.nonProxyHosts | default([], true) | sort)
+            == (nexus_outbound_proxy_non_proxy_hosts | sort)
+        fail_msg: Nexus System HTTP settings did not retain the expected HTTP-only proxy configuration
+      no_log: true
+      when: nexus_outbound_proxy_needs_update | bool
+
+    - name: Invalidate the Docker proxy cache after System HTTP update
+      uri:
+        url: "{{ nexus_base_url }}/service/rest/v1/repositories/{{ nexus_docker_proxy_repo }}/invalidate-cache"
+        method: POST
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        status_code: 204
+        timeout: 20
+      no_log: true
+      when: nexus_outbound_proxy_needs_update | bool
+
+    - name: Probe the authenticated Node manifest through Nexus
+      uri:
+        url: "http://127.0.0.1:{{ nexus_docker_group_connector_port }}/v2/library/node/manifests/20-alpine"
+        method: GET
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        headers:
+          Accept: application/vnd.docker.distribution.manifest.v2+json
+        status_code: 200
+        timeout: 30
+      register: nexus_docker_manifest_probe
+      retries: 5
+      delay: 5
+      until: nexus_docker_manifest_probe.status == 200
+      no_log: true
+      when: nexus_outbound_proxy_needs_update | bool
+
+  rescue:
+    - name: Restore Nexus System HTTP settings from the pre-update snapshot
+      uri:
+        url: "{{ nexus_base_url }}/service/extdirect"
+        method: POST
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          - action: coreui_HttpSettings
+            method: update
+            data:
+              - >-
+                {{
+                  nexus_http_settings_before.json[0].result.data
+                  | combine(
+                    {
+                      'httpAuthPassword': (
+                        lookup('env', 'PROXY_PREVIOUS_PASSWORD')
+                        if nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+                        else nexus_http_settings_before.json[0].result.data.httpAuthPassword
+                      )
+                    },
+                    recursive=True
+                  )
+                }}
+            type: rpc
+            tid: 4
+        status_code: 200
+        timeout: 10
+      register: nexus_http_settings_rollback
+      failed_when: false
+      no_log: true
+      when: nexus_outbound_proxy_update_started | default(false) | bool
+
+    - name: Read Nexus System HTTP metadata after rollback
+      uri:
+        url: "{{ nexus_base_url }}/service/extdirect"
+        method: POST
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          - action: coreui_HttpSettings
+            method: read
+            data: []
+            type: rpc
+            tid: 5
+        status_code: 200
+        timeout: 10
+      register: nexus_http_settings_rollback_read
+      failed_when: false
+      no_log: true
+      when: nexus_outbound_proxy_update_started | default(false) | bool
+
+    - name: Invalidate cache after restoring an enabled Nexus proxy snapshot
+      uri:
+        url: "{{ nexus_base_url }}/service/rest/v1/repositories/{{ nexus_docker_proxy_repo }}/invalidate-cache"
+        method: POST
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        status_code: 204
+        timeout: 20
+      register: nexus_docker_manifest_rollback_invalidation
+      failed_when: false
+      no_log: true
+      when:
+        - nexus_outbound_proxy_update_started | default(false) | bool
+        - nexus_outbound_proxy_existing_enabled | default(false) | bool
+
+    - name: Probe an enabled Nexus proxy after rollback
+      uri:
+        url: "http://127.0.0.1:{{ nexus_docker_group_connector_port }}/v2/library/node/manifests/20-alpine"
+        method: GET
+        user: admin
+        password: "{{ lookup('env', 'NEXUS_ADMIN_PASSWORD') }}"
+        force_basic_auth: true
+        headers:
+          Accept: application/vnd.docker.distribution.manifest.v2+json
+        status_code: 200
+        timeout: 30
+      register: nexus_docker_manifest_rollback_probe
+      retries: 5
+      delay: 5
+      until: nexus_docker_manifest_rollback_probe.status == 200
+      failed_when: false
+      no_log: true
+      when:
+        - nexus_outbound_proxy_update_started | default(false) | bool
+        - nexus_outbound_proxy_existing_enabled | default(false) | bool
+
+    - name: Determine whether Nexus System HTTP rollback was verified
+      set_fact:
+        nexus_outbound_proxy_rollback_verified: >-
+          {{
+            not (nexus_outbound_proxy_update_started | default(false) | bool)
+            or
+            (
+              (nexus_http_settings_rollback.status | default(0) | int == 200)
+              and (nexus_http_settings_rollback.json is sequence)
+              and (nexus_http_settings_rollback.json | length == 1)
+              and (nexus_http_settings_rollback.json[0].type | default('') == 'rpc')
+              and (nexus_http_settings_rollback.json[0].action | default('') == 'coreui_HttpSettings')
+              and (nexus_http_settings_rollback.json[0].method | default('') == 'update')
+              and (nexus_http_settings_rollback.json[0].tid | default(0) | int == 4)
+              and (nexus_http_settings_rollback.json[0].result is mapping)
+              and (nexus_http_settings_rollback.json[0].result.success | default(false) | bool)
+              and (nexus_http_settings_rollback.json[0].result.data is mapping)
+              and (nexus_http_settings_rollback_read.status | default(0) | int == 200)
+              and (nexus_http_settings_rollback_read.json is sequence)
+              and (nexus_http_settings_rollback_read.json | length == 1)
+              and (nexus_http_settings_rollback_read.json[0].type | default('') == 'rpc')
+              and (nexus_http_settings_rollback_read.json[0].action | default('') == 'coreui_HttpSettings')
+              and (nexus_http_settings_rollback_read.json[0].method | default('') == 'read')
+              and (nexus_http_settings_rollback_read.json[0].tid | default(0) | int == 5)
+              and (nexus_http_settings_rollback_read.json[0].result is mapping)
+              and (nexus_http_settings_rollback_read.json[0].result.success | default(false) | bool)
+              and (nexus_http_settings_rollback_read.json[0].result.data is mapping)
+              and (
+                (
+                  nexus_http_settings_rollback_read.json[0].result.data
+                  | combine({'httpAuthPassword': None, 'httpsAuthPassword': None}, recursive=True)
+                )
+                ==
+                (
+                  nexus_http_settings_before.json[0].result.data
+                  | combine({'httpAuthPassword': None, 'httpsAuthPassword': None}, recursive=True)
+                )
+              )
+              and (
+                (
+                  nexus_http_settings_before.json[0].result.data.httpAuthPassword is none
+                  and nexus_http_settings_rollback_read.json[0].result.data.httpAuthPassword is none
+                )
+                or
+                (
+                  nexus_http_settings_before.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+                  and nexus_http_settings_rollback_read.json[0].result.data.httpAuthPassword == nexus_outbound_proxy_password_placeholder
+                )
+              )
+              and (
+                (
+                  nexus_http_settings_before.json[0].result.data.httpsAuthPassword is none
+                  and nexus_http_settings_rollback_read.json[0].result.data.httpsAuthPassword is none
+                )
+                or
+                (
+                  nexus_http_settings_before.json[0].result.data.httpsAuthPassword == nexus_outbound_proxy_password_placeholder
+                  and nexus_http_settings_rollback_read.json[0].result.data.httpsAuthPassword == nexus_outbound_proxy_password_placeholder
+                )
+              )
+              and (
+                not (nexus_outbound_proxy_existing_enabled | default(false) | bool)
+                or
+                (
+                  nexus_docker_manifest_rollback_invalidation.status | default(0) | int == 204
+                  and nexus_docker_manifest_rollback_probe.status | default(0) | int == 200
+                )
+              )
+            )
+          }}
+      no_log: true
+
+    - name: Fail after Nexus System HTTP recovery attempt
+      fail:
+        msg: >-
+          Nexus System HTTP failed at {{ ansible_failed_task.name | default('an unknown task') }};
+          rollback_verified={{ nexus_outbound_proxy_rollback_verified | default(false) }}.
+          Manual recovery is required when rollback_verified is false.
+      no_log: false
+
+  when: nexus_outbound_proxy_enabled | bool
 
 # ── Docker daemon mirror + npmrc ──────────────────────────────────────────────
 
