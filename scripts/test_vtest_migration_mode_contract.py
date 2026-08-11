@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Static contract for mutually exclusive vtest migration modes."""
+"""Contracts for mutually exclusive and fail-closed vtest migration modes."""
 
 from pathlib import Path
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 
 
@@ -13,6 +16,8 @@ MIGRATE = (ROOT / "roles/deploy-vtest/tasks/migrate.yml").read_text()
 DEPLOY = (ROOT / "roles/deploy-vtest/tasks/deploy.yml").read_text()
 MYPC_INVENTORY = (ROOT / "inventories/mypc/group_vars/mypc.yml").read_text()
 WORKFLOW = (ROOT / ".github/workflows/_deploy-vtest-job.yml").read_text()
+EXPLICIT_MIGRATION_HELPER = ROOT / "roles/deploy-vtest/files/apply-explicit-migration.sh"
+MIGRATION_ROOT = Path("/tmp/migration-sqls")
 
 
 def task_block(text: str, name: str) -> str:
@@ -66,9 +71,103 @@ class VtestMigrationModeContractTest(unittest.TestCase):
 
         self.assertIn("not (vtest_explicit_migration_mode | bool)", approval)
         self.assertIn("vtest_allow_migrate | string == '1'", approval)
-        self.assertIn("case \"$file\" in /tmp/migration-sqls/*.sql)", explicit)
-        self.assertIn("-v ON_ERROR_STOP=1", explicit)
+        self.assertIn("ansible.builtin.script:", explicit)
+        self.assertIn("cmd: apply-explicit-migration.sh", explicit)
+        self.assertIn("VTEST_MIGRATION_FILE: \"{{ vtest_migration_file | trim }}\"", explicit)
+        self.assertIn("loop: \"{{ vtest_migration_files.split(',') }}\"", explicit)
+        self.assertNotIn('<<< "{{ vtest_migration_files }}"', explicit)
         self.assertIn('vtest_allow_migrate: "0"', MYPC_INVENTORY)
+
+    def test_explicit_migration_helper_rejects_unsafe_paths_before_docker(self) -> None:
+        MIGRATION_ROOT.mkdir(exist_ok=True)
+        self.assertFalse(MIGRATION_ROOT.is_symlink())
+
+        with tempfile.TemporaryDirectory(prefix="vtest-migration-contract-") as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            marker = temp_path / "docker-called"
+            injection_marker = temp_path / "injection-ran"
+            fake_docker = fake_bin / "docker"
+            fake_docker.write_text(
+                '#!/bin/sh\nprintf called > "$DOCKER_MARKER"\ncat >/dev/null\n',
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+
+            base_env = {
+                **os.environ,
+                "DOCKER_MARKER": str(marker),
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "VTEST_POSTGRES_DB": "openclaw_poc",
+                "VTEST_POSTGRES_USER": "openclaw_poc",
+            }
+            invalid_paths = [
+                str(MIGRATION_ROOT / "../outside.sql"),
+                str(MIGRATION_ROOT / "bad'quote.sql"),
+                str(MIGRATION_ROOT / 'bad"quote.sql'),
+                str(MIGRATION_ROOT / "bad;touch.sql"),
+                str(MIGRATION_ROOT / f"bad$(touch {injection_marker}).sql"),
+            ]
+            symlink_target = temp_path / "symlink-target.sql"
+            symlink_target.write_text("select 1;\n", encoding="utf-8")
+            symlink_file = MIGRATION_ROOT / f"contract-symlink-{os.getpid()}.sql"
+            symlink_file.unlink(missing_ok=True)
+            symlink_file.symlink_to(symlink_target)
+            invalid_paths.append(str(symlink_file))
+
+            try:
+                for migration_path in invalid_paths:
+                    with self.subTest(migration_path=migration_path):
+                        marker.unlink(missing_ok=True)
+                        result = subprocess.run(
+                            ["/bin/bash", str(EXPLICIT_MIGRATION_HELPER)],
+                            env={**base_env, "VTEST_MIGRATION_FILE": migration_path},
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertFalse(marker.exists(), result.stderr)
+                        self.assertFalse(injection_marker.exists(), result.stderr)
+            finally:
+                symlink_file.unlink(missing_ok=True)
+
+    def test_explicit_migration_helper_accepts_one_direct_regular_sql_file(self) -> None:
+        MIGRATION_ROOT.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="vtest-migration-contract-") as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            marker = temp_path / "docker-called"
+            fake_docker = fake_bin / "docker"
+            fake_docker.write_text(
+                '#!/bin/sh\nprintf called > "$DOCKER_MARKER"\ncat >/dev/null\n',
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            migration_file = MIGRATION_ROOT / f"contract-{os.getpid()}.sql"
+            migration_file.write_text("select 1;\n", encoding="utf-8")
+
+            try:
+                result = subprocess.run(
+                    ["/bin/bash", str(EXPLICIT_MIGRATION_HELPER)],
+                    env={
+                        **os.environ,
+                        "DOCKER_MARKER": str(marker),
+                        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                        "VTEST_MIGRATION_FILE": str(migration_file),
+                        "VTEST_POSTGRES_DB": "openclaw_poc",
+                        "VTEST_POSTGRES_USER": "openclaw_poc",
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(marker.exists())
+            finally:
+                migration_file.unlink(missing_ok=True)
 
     def test_each_run_discards_stale_migration_files_before_optional_download(self) -> None:
         reset = workflow_step("Reset staged migration SQL files")
