@@ -12,6 +12,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 ROLE_MAIN = (ROOT / "roles/deploy-vtest/tasks/main.yml").read_text()
 PREFLIGHT = (ROOT / "roles/deploy-vtest/tasks/preflight.yml").read_text()
+QUIESCE = (ROOT / "roles/deploy-vtest/tasks/quiesce.yml").read_text()
+BACKUP = (ROOT / "roles/deploy-vtest/tasks/backup.yml").read_text()
 MIGRATE = (ROOT / "roles/deploy-vtest/tasks/migrate.yml").read_text()
 DEPLOY = (ROOT / "roles/deploy-vtest/tasks/deploy.yml").read_text()
 MYPC_INVENTORY = (ROOT / "inventories/mypc/group_vars/mypc.yml").read_text()
@@ -64,6 +66,33 @@ class VtestMigrationModeContractTest(unittest.TestCase):
         self.assertLess(ROLE_MAIN.index("- import_tasks: quiesce.yml"), ROLE_MAIN.index("- import_tasks: backup.yml"))
         self.assertLess(ROLE_MAIN.index("- import_tasks: backup.yml"), ROLE_MAIN.index("- import_tasks: migrate.yml"))
         self.assertLess(ROLE_MAIN.index("- import_tasks: migrate.yml"), ROLE_MAIN.index("- import_tasks: deploy.yml"))
+
+    def test_quiesce_results_are_redacted_and_running_services_are_recovered_on_failure(self) -> None:
+        inspect = task_block(QUIESCE, "Inspect write-capable app containers before migration")
+        stop = task_block(QUIESCE, "Stop write-capable app containers before migration")
+        restore_at = ROLE_MAIN.index("    - name: Restore write-capable app containers after failed deploy")
+        audit_at = ROLE_MAIN.index("    - import_tasks: audit_failure.yml")
+        restore = ROLE_MAIN[restore_at:audit_at]
+
+        for block in (inspect, stop, restore):
+            self.assertIn("no_log: true", block)
+        self.assertIn("vtest_quiesce_containers.results | default([])", restore)
+        self.assertIn("item.container.State.Running | default(false)", restore)
+        self.assertIn("ignore_errors: true", restore)
+        self.assertLess(restore_at, audit_at)
+
+    def test_backup_selects_a_login_superuser_and_fails_closed_before_pg_dump(self) -> None:
+        backup = task_block(BACKUP, "Backup vtest DB before any migrate")
+        selection_at = backup.index("FROM pg_catalog.pg_roles")
+        empty_guard_at = backup.index('[ -n "$backup_user" ]')
+        dump_at = backup.index("pg_dump")
+
+        self.assertIn("WHERE rolsuper AND rolcanlogin", backup)
+        self.assertIn("ORDER BY (rolname = current_user) DESC, rolname", backup)
+        self.assertLess(selection_at, empty_guard_at)
+        self.assertLess(empty_guard_at, dump_at)
+        self.assertIn('-U "$backup_user"', backup)
+        self.assertIn('-d "$backup_database"', backup)
 
     def test_explicit_mode_is_fail_closed_and_production_remains_disabled(self) -> None:
         approval = task_block(PREFLIGHT, "Preflight — require approval for explicit migration files")

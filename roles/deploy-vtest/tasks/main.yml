@@ -31,7 +31,24 @@
         - vecta-app
         - fruit-vtest
   rescue:
+    - name: Restore write-capable app containers after failed deploy
+      community.docker.docker_container:
+        name: "openclaw-{{ item.item }}"
+        state: started
+      loop: "{{ vtest_quiesce_containers.results | default([]) }}"
+      when:
+        - item.exists | default(false)
+        - item.container.State.Running | default(false)
+      register: vtest_quiesce_restore
+      ignore_errors: true
+      no_log: true
+      tags: always
     - import_tasks: audit_failure.yml
+      tags: always
+    - name: Fail if quiesced services could not be restored
+      fail:
+        msg: "Deploy failed and one or more quiesced services could not be restored"
+      when: vtest_quiesce_restore is failed
       tags: always
     - fail:
         msg: "Deploy failed — failure audit written"
