@@ -50,7 +50,6 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertIn("GIT_CONFIG_KEY_4=remote.origin.url", git_proxy)
         self.assertIn("GIT_CONFIG_VALUE_4=https://github.com/ZenoWangzy/vecta-infra.git", git_proxy)
         self.assertIn('GIT_TERMINAL_PROMPT: "0"', git_proxy)
-        self.assertIn('HTTPS_PROXY="$proxy_url" HTTP_PROXY="$proxy_url" curl -sm 8', git_proxy)
         self.assertIn("unset proxy_url proxy_username_encoded proxy_password_encoded GIT_CONFIG_COUNT", git_proxy)
         self.assertIn('proxy_username_encoded="$(printf \'%s\' "${PROXY_USERNAME}" | od -An -tx1 | tr -d \' \\n\' | sed \'s/../%&/g\')"', git_proxy)
         self.assertIn('proxy_password_encoded="$(printf \'%s\' "${PROXY_PASSWORD}" | od -An -tx1 | tr -d \' \\n\' | sed \'s/../%&/g\')"', git_proxy)
@@ -59,6 +58,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertNotIn("git config --global", git_proxy)
         self.assertNotIn('curl -x "$PROXY"', git_proxy)
         self.assertNotIn('git -C "$GITHUB_WORKSPACE" fetch "$proxy_url"', git_proxy)
+        self.assertNotRegex(git_proxy, r"git fetch[^\n]*proxy_url")
         self.assertNotIn("remote add origin https://", git_proxy)
         self.assertNotIn("GITHUB_TOKEN@", git_proxy)
         self.assertNotIn("https://x-access-token:", git_proxy)
@@ -69,6 +69,14 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertNotIn("base64", git_proxy)
         self.assertNotIn("GIT_CONFIG_KEY_5", git_proxy)
         self.assertNotIn("GIT_CONFIG_VALUE_5", git_proxy)
+        for leaked_log in (
+            'echo "$proxy_url"',
+            'echo "${PROXY_USERNAME}"',
+            'echo "${PROXY_PASSWORD}"',
+            "set -x",
+            "GIT_TRACE",
+        ):
+            self.assertNotIn(leaked_log, git_proxy)
         self.assertNotIn("actions/checkout", WORKFLOW)
         self.assertIn("PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}", git_proxy)
         self.assertIn("PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}", git_proxy)
@@ -99,8 +107,33 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertEqual(parsed.hostname, "geraldsynnas.ddns.net")
         self.assertEqual(parsed.port, 8888)
 
+    def test_public_checkout_is_direct_first_and_proxy_fallback_is_lazy(self) -> None:
+        git_proxy = workflow_step("Configure git proxy and check out vecta-infra")
+        fetch = "timeout 30s git fetch --depth=1 origin main"
+        first_fetch = git_proxy.index(fetch)
+        fallback_credentials = git_proxy.index("proxy_username_encoded=")
+        second_fetch = git_proxy.index(fetch, first_fetch + 1)
+
+        self.assertEqual(git_proxy.count(fetch), 2)
+        self.assertLess(first_fetch, fallback_credentials)
+        self.assertLess(fallback_credentials, second_fetch)
+        self.assertLess(second_fetch, git_proxy.index("git checkout --force FETCH_HEAD"))
+        self.assertIn(f"if {fetch}; then", git_proxy)
+        self.assertIn("direct public GitHub checkout succeeded", git_proxy)
+        self.assertIn("direct public GitHub checkout failed; retrying through configured proxy", git_proxy)
+        self.assertIn("configured proxy GitHub checkout failed", git_proxy)
+        self.assertIn('GIT_CONFIG_NOSYSTEM: "1"', git_proxy)
+        self.assertIn("GIT_CONFIG_GLOBAL: /dev/null", git_proxy)
+        self.assertIn("GIT_CONFIG_VALUE_1=10", git_proxy)
+        self.assertIn('if [ -z "${PROXY_USERNAME:-}" ] || [ -z "${PROXY_PASSWORD:-}" ]; then', git_proxy)
+        self.assertNotIn("curl -sm 8", git_proxy)
+
     def test_secure_checkout_cleans_only_the_validated_github_workspace(self) -> None:
         git_proxy = workflow_step("Configure git proxy and check out vecta-infra")
+        final_guard = git_proxy.index('[ "$(pwd -P)" = "$workspace_resolved" ]')
+        remove_git = git_proxy.index("rm -rf -- .git")
+        init = git_proxy.index("git init --quiet")
+        fetch = git_proxy.index("git fetch --depth=1 origin main")
         checkout = git_proxy.index("git checkout --force FETCH_HEAD")
         reset = git_proxy.index("git reset --hard FETCH_HEAD")
         clean = git_proxy.index("git clean -ffdx")
@@ -134,6 +167,7 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
             self.assertIn(guard, git_proxy, guard)
             self.assertLess(git_proxy.index(guard), reset, guard)
         for command in (
+            "rm -rf -- .git",
             "git init --quiet",
             "git fetch --depth=1 origin main",
             "git checkout --force FETCH_HEAD",
@@ -141,6 +175,10 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
             "git clean -ffdx",
         ):
             self.assertGreater(git_proxy.index(command), git_proxy.index('"$runner_workspace_resolved"/*) ;;'), command)
+        self.assertEqual(git_proxy.count("rm -rf"), 1)
+        self.assertLess(final_guard, remove_git)
+        self.assertLess(remove_git, init)
+        self.assertLess(init, fetch)
         self.assertLess(checkout, reset)
         self.assertLess(reset, clean)
         self.assertNotIn('git -C "$GITHUB_WORKSPACE"', git_proxy)
