@@ -117,21 +117,18 @@ jobs:
           esac
           [ "$(pwd -P)" = "$workspace_resolved" ] || { echo "current directory must equal GITHUB_WORKSPACE" >&2; exit 1; }
           cleanup_git_configuration() {
-            unset proxy_url proxy_username_encoded proxy_password_encoded git_auth GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_KEY_1 GIT_CONFIG_KEY_2 GIT_CONFIG_KEY_3 GIT_CONFIG_KEY_4 GIT_CONFIG_KEY_5 GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1 GIT_CONFIG_VALUE_2 GIT_CONFIG_VALUE_3 GIT_CONFIG_VALUE_4 GIT_CONFIG_VALUE_5
+            unset proxy_url proxy_username_encoded proxy_password_encoded GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_KEY_1 GIT_CONFIG_KEY_2 GIT_CONFIG_KEY_3 GIT_CONFIG_KEY_4 GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1 GIT_CONFIG_VALUE_2 GIT_CONFIG_VALUE_3 GIT_CONFIG_VALUE_4
           }
           trap cleanup_git_configuration EXIT
-          git_auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-          export GIT_CONFIG_COUNT=6
+          export GIT_CONFIG_COUNT=5
           export GIT_CONFIG_KEY_0=http.lowSpeedLimit
           export GIT_CONFIG_VALUE_0=1024
           export GIT_CONFIG_KEY_1=http.lowSpeedTime
           export GIT_CONFIG_VALUE_1=30
           export GIT_CONFIG_KEY_2=http.proxy
           export GIT_CONFIG_KEY_3=https.proxy
-          export GIT_CONFIG_KEY_4=http.extraHeader
-          export GIT_CONFIG_VALUE_4="Authorization: Basic $git_auth"
-          export GIT_CONFIG_KEY_5=remote.origin.url
-          export GIT_CONFIG_VALUE_5=https://github.com/ZenoWangzy/vecta-infra.git
+          export GIT_CONFIG_KEY_4=remote.origin.url
+          export GIT_CONFIG_VALUE_4=https://github.com/ZenoWangzy/vecta-infra.git
           if [ -z "${PROXY_USERNAME:-}" ] || [ -z "${PROXY_PASSWORD:-}" ]; then
             echo "Proxy secrets not set; using default git network path"
             export GIT_CONFIG_VALUE_2=
@@ -159,7 +156,7 @@ jobs:
         env:
           PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
           PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GIT_TERMINAL_PROMPT: "0"
 
       - name: Download migration SQL files
         if: inputs.migration_artifact_run_id != ''
@@ -225,6 +222,11 @@ jobs:
 
       - name: Prune vtest Docker build state
         if: always()
-        run: bash scripts/prune-vtest-docker-build-state.sh
+        run: |
+          if [ ! -f scripts/prune-vtest-docker-build-state.sh ]; then
+            echo "Skipping Docker build-state prune because the checkout did not provide its script"
+            exit 0
+          fi
+          bash scripts/prune-vtest-docker-build-state.sh
         env:
           VTEST_DOCKER_CACHE_PRUNE_UNTIL: ${{ inputs.docker_cache_prune_until }}

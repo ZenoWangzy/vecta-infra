@@ -42,13 +42,16 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertNotIn("PROXY_USERNAME:", job_env)
         self.assertNotIn("PROXY_PASSWORD:", job_env)
         self.assertNotIn("PROXY_PREVIOUS_PASSWORD:", job_env)
-        self.assertIn("GIT_CONFIG_COUNT=6", git_proxy)
+        self.assertIn("GIT_CONFIG_COUNT=5", git_proxy)
         self.assertIn("GIT_CONFIG_KEY_0=http.lowSpeedLimit", git_proxy)
         self.assertIn("GIT_CONFIG_KEY_1=http.lowSpeedTime", git_proxy)
-        self.assertIn("GIT_CONFIG_KEY_4=http.extraHeader", git_proxy)
-        self.assertIn("GIT_CONFIG_KEY_5=remote.origin.url", git_proxy)
+        self.assertIn("GIT_CONFIG_KEY_2=http.proxy", git_proxy)
+        self.assertIn("GIT_CONFIG_KEY_3=https.proxy", git_proxy)
+        self.assertIn("GIT_CONFIG_KEY_4=remote.origin.url", git_proxy)
+        self.assertIn("GIT_CONFIG_VALUE_4=https://github.com/ZenoWangzy/vecta-infra.git", git_proxy)
+        self.assertIn('GIT_TERMINAL_PROMPT: "0"', git_proxy)
         self.assertIn('HTTPS_PROXY="$proxy_url" HTTP_PROXY="$proxy_url" curl -sm 8', git_proxy)
-        self.assertIn("unset proxy_url proxy_username_encoded proxy_password_encoded git_auth GIT_CONFIG_COUNT", git_proxy)
+        self.assertIn("unset proxy_url proxy_username_encoded proxy_password_encoded GIT_CONFIG_COUNT", git_proxy)
         self.assertIn('proxy_username_encoded="$(printf \'%s\' "${PROXY_USERNAME}" | od -An -tx1 | tr -d \' \\n\' | sed \'s/../%&/g\')"', git_proxy)
         self.assertIn('proxy_password_encoded="$(printf \'%s\' "${PROXY_PASSWORD}" | od -An -tx1 | tr -d \' \\n\' | sed \'s/../%&/g\')"', git_proxy)
         self.assertIn('proxy_url="http://${proxy_username_encoded}:${proxy_password_encoded}@geraldsynnas.ddns.net:8888"', git_proxy)
@@ -59,6 +62,13 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertNotIn("remote add origin https://", git_proxy)
         self.assertNotIn("GITHUB_TOKEN@", git_proxy)
         self.assertNotIn("https://x-access-token:", git_proxy)
+        self.assertNotIn("GITHUB_TOKEN", git_proxy)
+        self.assertNotIn("git_auth", git_proxy)
+        self.assertNotIn("extraHeader", git_proxy)
+        self.assertNotIn("Authorization:", git_proxy)
+        self.assertNotIn("base64", git_proxy)
+        self.assertNotIn("GIT_CONFIG_KEY_5", git_proxy)
+        self.assertNotIn("GIT_CONFIG_VALUE_5", git_proxy)
         self.assertNotIn("actions/checkout", WORKFLOW)
         self.assertIn("PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}", git_proxy)
         self.assertIn("PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}", git_proxy)
@@ -134,6 +144,18 @@ class NexusOutboundProxyContractTest(unittest.TestCase):
         self.assertLess(checkout, reset)
         self.assertLess(reset, clean)
         self.assertNotIn('git -C "$GITHUB_WORKSPACE"', git_proxy)
+
+    def test_prune_skips_safely_when_checkout_did_not_provide_the_script(self) -> None:
+        prune = workflow_step("Prune vtest Docker build state")
+
+        guard = "if [ ! -f scripts/prune-vtest-docker-build-state.sh ]; then"
+        run = "bash scripts/prune-vtest-docker-build-state.sh"
+        self.assertIn("if: always()", prune)
+        self.assertIn(guard, prune)
+        self.assertIn("checkout did not provide its script", prune)
+        self.assertIn("exit 0", prune)
+        self.assertIn(run, prune)
+        self.assertLess(prune.index(guard), prune.index(run))
 
     def test_deploy_restores_github_proxy_values_after_sourcing_host_env(self) -> None:
         deploy = workflow_step("Deploy via Ansible")
