@@ -31,6 +31,31 @@
   register: nexus_manifest_checks
   no_log: true
 
+- name: Preflight — seed pinned third-party images needed by selected tags
+  shell: |
+    set -euo pipefail
+    if docker pull "$VTEST_PINNED_IMAGE"; then
+      exit 0
+    fi
+    if ! docker image inspect "$VTEST_PINNED_IMAGE" >/dev/null 2>&1; then
+      echo "Pinned image is unavailable in Nexus and the exact local image is missing: $VTEST_PINNED_IMAGE" >&2
+      exit 1
+    fi
+    docker push "$VTEST_PINNED_IMAGE"
+    docker pull "$VTEST_PINNED_IMAGE"
+    echo VTEST_PINNED_IMAGE_SEEDED
+  args:
+    executable: /bin/bash
+  environment:
+    VTEST_PINNED_IMAGE: "{{ item }}"
+  loop: "{{ vtest_pinned_third_party_images | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: vtest_pinned_third_party_seed
+  changed_when: "'VTEST_PINNED_IMAGE_SEEDED' in vtest_pinned_third_party_seed.stdout_lines"
+  when: "'open-webui' in ansible_run_tags or 'all' in ansible_run_tags"
+  tags: open-webui
+
 - name: Preflight — read migration ledger count
   shell: |
     set -euo pipefail
