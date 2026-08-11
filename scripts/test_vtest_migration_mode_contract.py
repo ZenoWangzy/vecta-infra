@@ -102,8 +102,9 @@ class VtestMigrationModeContractTest(unittest.TestCase):
         self.assertIn("vtest_allow_migrate | string == '1'", approval)
         self.assertIn("ansible.builtin.script:", explicit)
         self.assertIn("cmd: apply-explicit-migration.sh", explicit)
-        self.assertIn("VTEST_MIGRATION_FILE: \"{{ vtest_migration_file | trim }}\"", explicit)
-        self.assertIn("loop: \"{{ vtest_migration_files.split(',') }}\"", explicit)
+        self.assertIn('VTEST_MIGRATION_FILES: "{{ vtest_migration_files }}"', explicit)
+        self.assertNotIn("loop:", explicit)
+        self.assertNotIn("loop_control:", explicit)
         self.assertNotIn('<<< "{{ vtest_migration_files }}"', explicit)
         self.assertIn('vtest_allow_migrate: "0"', MYPC_INVENTORY)
 
@@ -119,10 +120,12 @@ class VtestMigrationModeContractTest(unittest.TestCase):
             injection_marker = temp_path / "injection-ran"
             fake_docker = fake_bin / "docker"
             fake_docker.write_text(
-                '#!/bin/sh\nprintf called > "$DOCKER_MARKER"\ncat >/dev/null\n',
+                '#!/bin/sh\nprintf called >> "$DOCKER_MARKER"\ncat >/dev/null\n',
                 encoding="utf-8",
             )
             fake_docker.chmod(0o755)
+            valid_file = MIGRATION_ROOT / f"contract-valid-{os.getpid()}.sql"
+            valid_file.write_text("select 1;\n", encoding="utf-8")
 
             base_env = {
                 **os.environ,
@@ -132,6 +135,7 @@ class VtestMigrationModeContractTest(unittest.TestCase):
                 "VTEST_POSTGRES_USER": "openclaw_poc",
             }
             invalid_paths = [
+                "",
                 str(MIGRATION_ROOT / "../outside.sql"),
                 str(MIGRATION_ROOT / "bad'quote.sql"),
                 str(MIGRATION_ROOT / 'bad"quote.sql'),
@@ -151,7 +155,10 @@ class VtestMigrationModeContractTest(unittest.TestCase):
                         marker.unlink(missing_ok=True)
                         result = subprocess.run(
                             ["/bin/bash", str(EXPLICIT_MIGRATION_HELPER)],
-                            env={**base_env, "VTEST_MIGRATION_FILE": migration_path},
+                            env={
+                                **base_env,
+                                "VTEST_MIGRATION_FILES": f"{valid_file},{migration_path}",
+                            },
                             capture_output=True,
                             text=True,
                             check=False,
@@ -160,32 +167,48 @@ class VtestMigrationModeContractTest(unittest.TestCase):
                         self.assertFalse(marker.exists(), result.stderr)
                         self.assertFalse(injection_marker.exists(), result.stderr)
             finally:
+                valid_file.unlink(missing_ok=True)
                 symlink_file.unlink(missing_ok=True)
 
-    def test_explicit_migration_helper_accepts_one_direct_regular_sql_file(self) -> None:
+    def test_explicit_migration_helper_materializes_all_files_then_runs_them_in_order(self) -> None:
         MIGRATION_ROOT.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="vtest-migration-contract-") as temp_dir:
             temp_path = Path(temp_dir)
             fake_bin = temp_path / "bin"
             fake_bin.mkdir()
-            marker = temp_path / "docker-called"
+            calls = temp_path / "docker-calls"
+            docker_args = temp_path / "docker-args"
+            docker_stdin = temp_path / "docker-stdin"
             fake_docker = fake_bin / "docker"
             fake_docker.write_text(
-                '#!/bin/sh\nprintf called > "$DOCKER_MARKER"\ncat >/dev/null\n',
+                '#!/bin/sh\n'
+                'printf "called\\n" >> "$DOCKER_CALLS"\n'
+                'printf "%s\\n" "$@" >> "$DOCKER_ARGS"\n'
+                'printf "%s\\n" --args-end-- >> "$DOCKER_ARGS"\n'
+                'cat >> "$DOCKER_STDIN"\n'
+                'printf "%s\\n" --stdin-end-- >> "$DOCKER_STDIN"\n'
+                'if [ "$(wc -l < "$DOCKER_CALLS" | tr -d " ")" = 1 ]; then\n'
+                '  rm -f -- "$SECOND_SOURCE"\n'
+                'fi\n',
                 encoding="utf-8",
             )
             fake_docker.chmod(0o755)
-            migration_file = MIGRATION_ROOT / f"contract-{os.getpid()}.sql"
-            migration_file.write_text("select 1;\n", encoding="utf-8")
+            first_file = MIGRATION_ROOT / f"contract-first-{os.getpid()}.sql"
+            second_file = MIGRATION_ROOT / f"contract-second-{os.getpid()}.sql"
+            first_file.write_text("select 'first';\n", encoding="utf-8")
+            second_file.write_text("select 'second';\n", encoding="utf-8")
 
             try:
                 result = subprocess.run(
                     ["/bin/bash", str(EXPLICIT_MIGRATION_HELPER)],
                     env={
                         **os.environ,
-                        "DOCKER_MARKER": str(marker),
+                        "DOCKER_ARGS": str(docker_args),
+                        "DOCKER_CALLS": str(calls),
+                        "DOCKER_STDIN": str(docker_stdin),
                         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-                        "VTEST_MIGRATION_FILE": str(migration_file),
+                        "SECOND_SOURCE": str(second_file),
+                        "VTEST_MIGRATION_FILES": f"{first_file},{second_file}",
                         "VTEST_POSTGRES_DB": "openclaw_poc",
                         "VTEST_POSTGRES_USER": "openclaw_poc",
                     },
@@ -194,9 +217,125 @@ class VtestMigrationModeContractTest(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertTrue(marker.exists())
+                self.assertEqual(calls.read_text().splitlines(), ["called", "called"])
+                self.assertFalse(second_file.exists(), "first Docker call did not remove the second source")
+                args = docker_args.read_text().splitlines()
+                self.assertEqual(args.count("-X"), 2)
+                self.assertEqual(args.count("--single-transaction"), 2)
+                self.assertEqual(args.count("ON_ERROR_STOP=1"), 2)
+                self.assertEqual(args.count("-f"), 2)
+                self.assertEqual(args.count("-"), 2)
+                stdin = docker_stdin.read_text()
+                self.assertEqual(stdin.count("select 'first';"), 1)
+                self.assertEqual(stdin.count("select 'second';"), 1)
+                self.assertLess(stdin.index("select 'first';"), stdin.index("select 'second';"))
             finally:
-                migration_file.unlink(missing_ok=True)
+                first_file.unlink(missing_ok=True)
+                second_file.unlink(missing_ok=True)
+
+    def test_explicit_migration_helper_copy_failure_stops_before_docker(self) -> None:
+        MIGRATION_ROOT.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="vtest-migration-contract-") as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            marker = temp_path / "docker-called"
+            fake_docker = fake_bin / "docker"
+            fake_docker.write_text(
+                '#!/bin/sh\nprintf called >> "$DOCKER_MARKER"\ncat >/dev/null\n',
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            fake_cp = fake_bin / "cp"
+            fake_cp.write_text(
+                '#!/bin/sh\n'
+                'if [ "$2" = "$FAIL_COPY_SOURCE" ]; then exit 72; fi\n'
+                'exec /bin/cp "$@"\n',
+                encoding="utf-8",
+            )
+            fake_cp.chmod(0o755)
+            materialized_dir = temp_path / "materialized"
+            fake_mktemp = fake_bin / "mktemp"
+            fake_mktemp.write_text(
+                '#!/bin/sh\nmkdir "$MATERIALIZED_DIR"\nprintf "%s\\n" "$MATERIALIZED_DIR"\n',
+                encoding="utf-8",
+            )
+            fake_mktemp.chmod(0o755)
+            first_file = MIGRATION_ROOT / f"contract-first-{os.getpid()}.sql"
+            second_file = MIGRATION_ROOT / f"contract-second-{os.getpid()}.sql"
+            first_file.write_text("select 'first';\n", encoding="utf-8")
+            second_file.write_text("select 'second';\n", encoding="utf-8")
+
+            try:
+                result = subprocess.run(
+                    ["/bin/bash", str(EXPLICIT_MIGRATION_HELPER)],
+                    env={
+                        **os.environ,
+                        "DOCKER_MARKER": str(marker),
+                        "FAIL_COPY_SOURCE": str(second_file.resolve()),
+                        "MATERIALIZED_DIR": str(materialized_dir),
+                        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                        "VTEST_MIGRATION_FILES": f"{first_file},{second_file}",
+                        "VTEST_POSTGRES_DB": "openclaw_poc",
+                        "VTEST_POSTGRES_USER": "openclaw_poc",
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(marker.exists(), result.stderr)
+                self.assertFalse(materialized_dir.exists(), "materialized files were not cleaned after failure")
+            finally:
+                first_file.unlink(missing_ok=True)
+                second_file.unlink(missing_ok=True)
+
+    def test_explicit_migration_helper_stops_after_first_psql_failure(self) -> None:
+        MIGRATION_ROOT.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="vtest-migration-contract-") as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            calls = temp_path / "docker-calls"
+            docker_stdin = temp_path / "docker-stdin"
+            fake_docker = fake_bin / "docker"
+            fake_docker.write_text(
+                '#!/bin/sh\n'
+                'printf "called\\n" >> "$DOCKER_CALLS"\n'
+                'cat >> "$DOCKER_STDIN"\n'
+                'exit 23\n',
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            first_file = MIGRATION_ROOT / f"contract-first-{os.getpid()}.sql"
+            second_file = MIGRATION_ROOT / f"contract-second-{os.getpid()}.sql"
+            first_file.write_text("select 'first';\n", encoding="utf-8")
+            second_file.write_text("select 'second';\n", encoding="utf-8")
+
+            try:
+                result = subprocess.run(
+                    ["/bin/bash", str(EXPLICIT_MIGRATION_HELPER)],
+                    env={
+                        **os.environ,
+                        "DOCKER_CALLS": str(calls),
+                        "DOCKER_STDIN": str(docker_stdin),
+                        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                        "VTEST_MIGRATION_FILES": f"{first_file},{second_file}",
+                        "VTEST_POSTGRES_DB": "openclaw_poc",
+                        "VTEST_POSTGRES_USER": "openclaw_poc",
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 23)
+                self.assertEqual(calls.read_text().splitlines(), ["called"])
+                stdin = docker_stdin.read_text()
+                self.assertIn("select 'first';", stdin)
+                self.assertNotIn("select 'second';", stdin)
+            finally:
+                first_file.unlink(missing_ok=True)
+                second_file.unlink(missing_ok=True)
 
     def test_each_run_discards_stale_migration_files_before_optional_download(self) -> None:
         reset = workflow_step("Reset staged migration SQL files")

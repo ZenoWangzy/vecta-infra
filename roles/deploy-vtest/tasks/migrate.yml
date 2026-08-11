@@ -18,12 +18,8 @@
   ansible.builtin.script:
     cmd: apply-explicit-migration.sh
   environment:
-    VTEST_MIGRATION_FILE: "{{ vtest_migration_file | trim }}"
+    VTEST_MIGRATION_FILES: "{{ vtest_migration_files }}"
     VTEST_POSTGRES_USER: "{{ postgres_user | default('openclaw_poc') }}"
     VTEST_POSTGRES_DB: "{{ postgres_db | default('openclaw_poc') }}"
-  loop: "{{ vtest_migration_files.split(',') }}"
-  loop_control:
-    loop_var: vtest_migration_file
-    label: "{{ vtest_migration_file | trim }}"
   when: vtest_explicit_migration_mode | bool
   changed_when: true
