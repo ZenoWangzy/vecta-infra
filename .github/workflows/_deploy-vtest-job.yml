@@ -123,32 +123,35 @@ jobs:
           export GIT_CONFIG_KEY_0=http.lowSpeedLimit
           export GIT_CONFIG_VALUE_0=1024
           export GIT_CONFIG_KEY_1=http.lowSpeedTime
-          export GIT_CONFIG_VALUE_1=30
+          export GIT_CONFIG_VALUE_1=10
           export GIT_CONFIG_KEY_2=http.proxy
+          export GIT_CONFIG_VALUE_2=
           export GIT_CONFIG_KEY_3=https.proxy
+          export GIT_CONFIG_VALUE_3=
           export GIT_CONFIG_KEY_4=remote.origin.url
           export GIT_CONFIG_VALUE_4=https://github.com/ZenoWangzy/vecta-infra.git
-          if [ -z "${PROXY_USERNAME:-}" ] || [ -z "${PROXY_PASSWORD:-}" ]; then
-            echo "Proxy secrets not set; using default git network path"
-            export GIT_CONFIG_VALUE_2=
-            export GIT_CONFIG_VALUE_3=
+          # Drop caller checkout metadata only after the workspace guards above.
+          rm -rf -- .git
+          git init --quiet
+          if timeout 30s git fetch --depth=1 origin main; then
+            echo "direct public GitHub checkout succeeded"
           else
+            if [ -z "${PROXY_USERNAME:-}" ] || [ -z "${PROXY_PASSWORD:-}" ]; then
+              echo "direct public GitHub checkout failed and proxy secrets are not configured" >&2
+              exit 1
+            fi
             proxy_username_encoded="$(printf '%s' "${PROXY_USERNAME}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
             proxy_password_encoded="$(printf '%s' "${PROXY_PASSWORD}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
             proxy_url="http://${proxy_username_encoded}:${proxy_password_encoded}@geraldsynnas.ddns.net:8888"
-            # Keep proxy credentials in this shell/process environment, never a curl or git argv.
-            if HTTPS_PROXY="$proxy_url" HTTP_PROXY="$proxy_url" curl -sm 8 -o /dev/null https://api.github.com/zen; then
-              export GIT_CONFIG_VALUE_2="$proxy_url"
-              export GIT_CONFIG_VALUE_3="$proxy_url"
-              echo "git proxy enabled"
-            else
-              export GIT_CONFIG_VALUE_2=
-              export GIT_CONFIG_VALUE_3=
-              echo "proxy unreachable; using direct GitHub access"
+            # Keep proxy credentials in this shell/process environment, never a git argv or file.
+            export GIT_CONFIG_VALUE_2="$proxy_url"
+            export GIT_CONFIG_VALUE_3="$proxy_url"
+            echo "direct public GitHub checkout failed; retrying through configured proxy"
+            if ! timeout 30s git fetch --depth=1 origin main; then
+              echo "configured proxy GitHub checkout failed" >&2
+              exit 1
             fi
           fi
-          git init --quiet
-          git fetch --depth=1 origin main
           git checkout --force FETCH_HEAD
           git reset --hard FETCH_HEAD
           git clean -ffdx
@@ -156,6 +159,8 @@ jobs:
           PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
           PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
           GIT_TERMINAL_PROMPT: "0"
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
 
       - name: Download migration SQL files
         if: inputs.migration_artifact_run_id != ''
