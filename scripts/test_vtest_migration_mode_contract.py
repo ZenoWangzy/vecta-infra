@@ -181,7 +181,11 @@ class VtestMigrationModeContractTest(unittest.TestCase):
         self.assertIn('[ "$migration_dir" = "/tmp/migration-sqls" ]', reset)
         self.assertIn('rm -rf -- "$migration_dir"', reset)
         self.assertIn('mkdir -p -- "$migration_dir"', reset)
-        self.assertIn("if: inputs.migration_artifact_run_id != ''", workflow_step("Download migration SQL files"))
+        download = workflow_step("Download migration SQL files")
+        self.assertIn("if: inputs.migration_artifact_run_id != ''", download)
+        self.assertIn("name: migration-sqls", download)
+        self.assertNotIn("run-id:", download)
+        self.assertNotIn("github-token:", download)
 
 
 if __name__ == "__main__":
