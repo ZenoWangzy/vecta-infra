@@ -1,4 +1,4 @@
-- name: Run vecta migrator image
+- name: Run standard vecta migrator image
   community.docker.docker_container:
     name: openclaw-vecta-migrator
     image: "{{ vecta_migrator_image }}"
@@ -12,3 +12,24 @@
     networks:
       - name: "{{ docker_network }}"
   register: migrator_result
+  when: not vtest_explicit_migration_mode | bool
+
+- name: Apply allowlisted explicit migrations
+  shell: |
+    set -euo pipefail
+    IFS=',' read -r -a migration_files <<< "{{ vtest_migration_files }}"
+    for file in "${migration_files[@]}"; do
+      file="${file#"${file%%[![:space:]]*}"}"; file="${file%"${file##*[![:space:]]}"}"
+      case "$file" in /tmp/migration-sqls/*.sql) ;; *) echo "migration not allowlisted: $file" >&2; exit 1 ;; esac
+      [ -s "$file" ] || { echo "migration file not found: $file" >&2; exit 1; }
+      echo "Applying allowlisted migration: $file"
+      docker exec -i openclaw-postgres psql \
+        -U {{ postgres_user | default('openclaw_poc') | quote }} \
+        -d {{ postgres_db | default('openclaw_poc') | quote }} \
+        -v ON_ERROR_STOP=1 < "$file"
+    done
+  args:
+    chdir: "{{ remote_dir }}"
+    executable: /bin/bash
+  when: vtest_explicit_migration_mode | bool
+  changed_when: true
