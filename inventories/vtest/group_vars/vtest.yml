@@ -137,6 +137,10 @@ postgres_password: "{{ lookup('env', 'POSTGRES_PASSWORD') | default('poc-db-pass
 postgres_db: "{{ lookup('env', 'POSTGRES_DB') | default('openclaw', true) }}"
 redis_password: "{{ lookup('env', 'REDIS_PASSWORD') | default('changeme-redis-pw', true) }}"
 
+# The shared-pool CLI is opt-in and only passed by the non-mypc vtest role.
+# It is disabled by default in the role and is not part of the production mypc task.
+shared_pool_vtest_e2e_enabled: true
+
 # Open WebUI trusted-header users. The role derives tenant_id from employees in
 # the target DB and upserts channel_user_mapping(channel='open-webui').
 openwebui_smoke_auth_email: "578634482@qq.com"

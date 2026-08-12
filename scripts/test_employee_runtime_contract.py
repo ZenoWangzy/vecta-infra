@@ -15,6 +15,7 @@ NEXUS_GROUP = (ROOT / "roles/nexus/tasks/docker_group.yml").read_text()
 INFRA_PLAYBOOK = (ROOT / "playbooks/infra.yml").read_text()
 FLEET = (ROOT / "roles/vecta-app/tasks/fleet_gateway.yml").read_text()
 CHANNEL = (ROOT / "roles/vecta-app/tasks/channel_gateway.yml").read_text()
+MYPC_CHANNEL = (ROOT / "roles/vecta-app/tasks/channel_gateway_mypc.yml").read_text()
 
 
 def task_block(text: str, name: str) -> str:
@@ -65,6 +66,20 @@ class EmployeeRuntimeContractTest(unittest.TestCase):
         )
         self.assertIn('etc_hosts: "{{ fleet_gateway_etc_hosts | default(omit) }}"', FLEET)
         self.assertIn('etc_hosts: "{{ channel_gateway_etc_hosts | default(omit) }}"', CHANNEL)
+
+    def test_vtest_channel_shares_fleet_database_and_gates_the_e2e_cli(self) -> None:
+        self.assertIn(
+            "DATABASE_URL: \"{{ (shared_pool_vtest_e2e_enabled | default(false) | bool) | ternary('",
+            CHANNEL,
+        )
+        self.assertIn("'postgresql://' ~ (postgres_user | default('openclaw_poc'))", CHANNEL)
+        self.assertIn("~ '@openclaw-postgres:5432/' ~ (postgres_db | default('openclaw_poc')), omit) }}\"", CHANNEL)
+        self.assertIn(
+            'SHARED_POOL_VTEST_E2E_ENABLED: "{{ (shared_pool_vtest_e2e_enabled | default(false) | bool) | ternary(\'1\', omit) }}"',
+            CHANNEL,
+        )
+        self.assertIn("shared_pool_vtest_e2e_enabled: true", INVENTORY)
+        self.assertNotIn("SHARED_POOL_VTEST_E2E_ENABLED", MYPC_CHANNEL)
 
 
 if __name__ == "__main__":
