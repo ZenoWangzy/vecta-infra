@@ -31,10 +31,10 @@ MINT_PATH = ROOT / "scripts/mint-vtest-platform-bundle.mjs"
 VERIFY_PATH = ROOT / "scripts/verify-vtest-platform-bundle.mjs"
 
 
-def mint_bundle() -> dict[str, str]:
+def mint_bundle(input_text: str = "tenant-b\ntenant-a\n") -> dict[str, str]:
     result = subprocess.run(
         ["node", str(MINT_PATH)],
-        input="tenant-b\ntenant-a\n",
+        input=input_text,
         capture_output=True,
         text=True,
         check=False,
@@ -134,6 +134,24 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
             self.assertIn(marker, FIXTURE)
         self.assertNotRegex(FIXTURE, r"\b(?:DELETE|TRUNCATE|DROP)\b")
         self.assertIn("refusing to repurpose an unmarked tenant", FIXTURE)
+
+    def test_empty_employee_allowlist_still_mints_fixture_only(self) -> None:
+        fields = mint_bundle("")
+        self.assertEqual(json.loads(fields["TENANT_IDS_JSON"]), ["vtest-shared-pool"])
+
+    def test_tenant_allowlist_uses_explicit_rls_context_and_filters_psql_status(self) -> None:
+        for marker in (
+            "tenant_query_output=",
+            "even when this DB role has BYPASSRLS",
+            "BEGIN; SET LOCAL app.current_tenant = '__auth__';",
+            "current_setting('app.current_tenant', true)",
+            "SELECT DISTINCT tenant_id FROM public.employees",
+            "COMMIT;",
+            "tenant_query_line",
+            "''|BEGIN|COMMIT|SET|DO",
+        ):
+            self.assertIn(marker, WORKFLOW)
+        self.assertNotIn("SELECT DISTINCT tenant_id FROM public.employees WHERE tenant_id IS NOT NULL ORDER BY tenant_id\")\"", WORKFLOW)
 
     def test_atomic_cutover_orders_backup_deploy_health_cleanup_and_rollback(self) -> None:
         self.assertRegex(MAIN, r"quiesce\.yml[\s\S]+backup\.yml[\s\S]+backup_shared_pool_bundle\.yml")

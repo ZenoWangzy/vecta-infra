@@ -189,7 +189,7 @@ jobs:
             unset PLATFORM_SERVICE_JWT_PUBLIC_KEY CHANNEL_PLATFORM_SERVICE_TOKEN FLEET_PLATFORM_SERVICE_TOKEN FLEET_FRUIT_PLATFORM_TOKEN VTEST_EXPECTED_TENANT_IDS_JSON
             unset VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN VTEST_FLEET_PLATFORM_SERVICE_TOKEN VTEST_FLEET_FRUIT_PLATFORM_TOKEN
             unset VTEST_SHARED_POOL_RESTART_PROBE
-            unset bundle_output bundle_key bundle_value platform_public_key channel_platform_token fleet_platform_token fleet_fruit_platform_token expected_tenant_ids_json tenant_ids postgres_user postgres_db deploy_tags
+            unset bundle_output bundle_key bundle_value platform_public_key channel_platform_token fleet_platform_token fleet_fruit_platform_token expected_tenant_ids_json tenant_query_output tenant_query_line tenant_ids postgres_user postgres_db deploy_tags
           }
           trap cleanup_ephemeral_platform_bundle EXIT
           ci_nexus_admin_password="${NEXUS_ADMIN_PASSWORD:-}"
@@ -214,9 +214,18 @@ jobs:
           unset VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN VTEST_FLEET_PLATFORM_SERVICE_TOKEN VTEST_FLEET_FRUIT_PLATFORM_TOKEN
           postgres_user="${POSTGRES_USER:-openclaw}"
           postgres_db="${POSTGRES_DB:-openclaw}"
-          tenant_ids="$(docker exec openclaw-postgres psql -X -v ON_ERROR_STOP=1 -U "$postgres_user" -d "$postgres_db" -Atc \
-            "SELECT DISTINCT tenant_id FROM public.employees WHERE tenant_id IS NOT NULL ORDER BY tenant_id")"
-          bundle_output="$(printf '%s\n' "$tenant_ids" | node scripts/mint-vtest-platform-bundle.mjs)"
+          # Keep an explicit tenant context even when this DB role has BYPASSRLS;
+          # the query must exercise the same __auth__ context as the guarded preflight.
+          tenant_query_output="$(docker exec openclaw-postgres psql -X -q -v ON_ERROR_STOP=1 -U "$postgres_user" -d "$postgres_db" -Atc \
+            "BEGIN; SET LOCAL app.current_tenant = '__auth__'; DO \$context\$ BEGIN IF current_setting('app.current_tenant', true) <> '__auth__' THEN RAISE EXCEPTION 'vtest tenant context was not applied'; END IF; END \$context\$; SELECT DISTINCT tenant_id FROM public.employees WHERE tenant_id IS NOT NULL ORDER BY tenant_id; COMMIT;")"
+          tenant_ids=''
+          while IFS= read -r tenant_query_line; do
+            case "$tenant_query_line" in
+              ''|BEGIN|COMMIT|SET|DO|"SET LOCAL") ;;
+              *) tenant_ids="${tenant_ids}${tenant_query_line}"$'\n' ;;
+            esac
+          done <<< "$tenant_query_output"
+          bundle_output="$(printf '%s' "$tenant_ids" | node scripts/mint-vtest-platform-bundle.mjs)"
           bundle_field_count=0
           while IFS='=' read -r bundle_key bundle_value; do
             case "$bundle_key" in
