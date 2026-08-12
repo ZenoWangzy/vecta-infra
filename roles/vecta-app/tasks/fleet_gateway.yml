@@ -99,3 +99,4 @@
     networks:
       - name: "{{ docker_network }}"
     memory: "2g"
+  no_log: true

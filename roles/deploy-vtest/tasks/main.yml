@@ -8,17 +8,25 @@
         - vecta-app
         - fruit-vtest
     - import_tasks: quiesce.yml
-      when: vtest_allow_migrate | string == '1'
+      when: >-
+        (vtest_allow_migrate | string == '1')
+        or (('vtest' in group_names) and (shared_pool_vtest_fixture_enabled | default(false) | bool))
       tags: vecta-app
     - import_tasks: backup.yml
       when: >-
         (vtest_allow_migrate | string == '1')
         or (fruit_vtest_bootstrap | default(false) | bool)
+        or (('vtest' in group_names) and (shared_pool_vtest_fixture_enabled | default(false) | bool))
       tags:
         - vecta-app
         - fruit-vtest
     - import_tasks: migrate.yml
       when: vtest_allow_migrate | string == '1'
+      tags: vecta-app
+    - import_tasks: shared_pool_fixture.yml
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
       tags: vecta-app
     - import_tasks: deploy.yml
       tags: always

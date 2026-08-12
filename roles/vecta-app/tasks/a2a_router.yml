@@ -27,3 +27,4 @@
       - name: "{{ docker_network }}"
     memory: "256m"
     cpus: "0.25"
+  no_log: true
