@@ -60,7 +60,7 @@ function checkToken(token, expectedAudience, expectedScopes, expectedTenants, pu
   }
 }
 
-const publicPem = (process.env.VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY || '').replace(/\\n/g, '\n').trim();
+const publicPem = (process.env.VTEST_BUNDLE_PUBLIC_KEY || '').replace(/\\n/g, '\n').trim();
 if (!publicPem) fail('public_key_missing');
 let publicKey;
 try {
@@ -81,7 +81,7 @@ try {
 } catch {
   fail('expected_tenants');
 }
-checkToken(process.env.VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN, 'channel-gateway', ['channel:internal'], expectedTenants, publicKey, 'channel');
-checkToken(process.env.VTEST_FLEET_PLATFORM_SERVICE_TOKEN, 'fleet-gateway', ['fleet:internal'], expectedTenants, publicKey, 'fleet');
-checkToken(process.env.VTEST_FLEET_FRUIT_PLATFORM_TOKEN, 'fleet-gateway', ['fleet:internal', 'fleet:scenario-pack-publish'], expectedTenants, publicKey, 'fruit');
+checkToken(process.env.VTEST_BUNDLE_CHANNEL_TOKEN, 'channel-gateway', ['channel:internal'], expectedTenants, publicKey, 'channel');
+checkToken(process.env.VTEST_BUNDLE_FLEET_TOKEN, 'fleet-gateway', ['fleet:internal'], expectedTenants, publicKey, 'fleet');
+checkToken(process.env.VTEST_BUNDLE_FRUIT_TOKEN, 'fleet-gateway', ['fleet:internal', 'fleet:scenario-pack-publish'], expectedTenants, publicKey, 'fruit');
 console.log('SHARED_POOL_PLATFORM_TOKEN_SIGNATURES_OK');
