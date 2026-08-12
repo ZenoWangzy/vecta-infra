@@ -18,6 +18,7 @@ MAIN = (ROOT / "roles/deploy-vtest/tasks/main.yml").read_text()
 PREFLIGHT = (ROOT / "roles/deploy-vtest/tasks/preflight.yml").read_text()
 BACKUP = (ROOT / "roles/deploy-vtest/tasks/backup_shared_pool_bundle.yml").read_text()
 PRE_SHARED = (ROOT / "roles/deploy-vtest/tasks/preflight_shared_pool_bundle.yml").read_text()
+INSPECT = (ROOT / "roles/deploy-vtest/tasks/inspect_quiesce.yml").read_text()
 ROLLBACK = (ROOT / "roles/deploy-vtest/tasks/rollback_shared_pool_bundle.yml").read_text()
 CLEANUP = (ROOT / "roles/deploy-vtest/tasks/cleanup_shared_pool_bundle.yml").read_text()
 RESTART_PROBE = (ROOT / "roles/deploy-vtest/tasks/shared_pool_restart_probe.yml").read_text()
@@ -156,7 +157,7 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         self.assertNotIn("SELECT DISTINCT tenant_id FROM public.employees WHERE tenant_id IS NOT NULL ORDER BY tenant_id\")\"", WORKFLOW)
 
     def test_atomic_cutover_orders_backup_deploy_health_cleanup_and_rollback(self) -> None:
-        self.assertRegex(MAIN, r"preflight_shared_pool_bundle\.yml[\s\S]+quiesce\.yml[\s\S]+backup_shared_pool_bundle\.yml[\s\S]+backup\.yml")
+        self.assertRegex(MAIN, r"inspect_quiesce\.yml[\s\S]+preflight_shared_pool_bundle\.yml[\s\S]+quiesce\.yml[\s\S]+backup_shared_pool_bundle\.yml[\s\S]+backup\.yml")
         self.assertRegex(MAIN, r"quiesce\.yml[\s\S]+backup_shared_pool_bundle\.yml[\s\S]+backup\.yml")
         self.assertRegex(MAIN, r"backup_shared_pool_bundle\.yml[\s\S]+migrate\.yml[\s\S]+shared_pool_fixture\.yml[\s\S]+deploy\.yml[\s\S]+smoke\.yml[\s\S]+cleanup_shared_pool_bundle\.yml")
         self.assertIn("shared_pool_cutover_complete: true", MAIN)
@@ -260,7 +261,7 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
     def test_shared_pool_preflight_snapshots_before_quiesce_and_parks_after(self) -> None:
         for marker in (
             "shared_pool_partial_cleanup_markers",
-            "vtest_quiesce_containers",
+            "vtest_write_quiesce_services",
             "docker_container_info",
             "shared-pool-rollback",
             "vtest_write_quiesce_services",
@@ -272,14 +273,20 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
             "mv -- \"$temp\" \"$target\"",
             "0600",
         ):
-            self.assertIn(marker, PRE_SHARED)
-        self.assertNotIn("docker rename", PRE_SHARED)
+            self.assertIn(marker, PRE_SHARED + INSPECT)
+        self.assertNotIn("docker rename", PRE_SHARED + INSPECT)
         self.assertIn("- rename", BACKUP)
-        self.assertRegex(MAIN, r"preflight_shared_pool_bundle\.yml[\s\S]+quiesce\.yml")
+        self.assertRegex(MAIN, r"inspect_quiesce\.yml[\s\S]+preflight_shared_pool_bundle\.yml[\s\S]+quiesce\.yml")
         self.assertRegex(MAIN, r"quiesce\.yml[\s\S]+backup_shared_pool_bundle\.yml[\s\S]+backup\.yml")
         self.assertIn("Require complete quiesce evidence before any parked cleanup", CLEANUP)
         self.assertIn("unknown is not treated as nonexistent", CLEANUP)
         self.assertIn("item.container.State.Running", (ROOT / "roles/deploy-vtest/tasks/quiesce.yml").read_text())
+        self.assertIn("register: vtest_quiesce_stop_results", (ROOT / "roles/deploy-vtest/tasks/quiesce.yml").read_text())
+        self.assertIn("vtest_quiesce_containers.results", (ROOT / "roles/deploy-vtest/tasks/quiesce.yml").read_text())
+        self.assertIn("Inspect write-capable app containers before migration", INSPECT)
+        self.assertIn("register: vtest_quiesce_containers", INSPECT)
+        self.assertNotIn("shared_pool_vtest_fixture_enabled", INSPECT)
+        self.assertNotIn("shared_pool_vtest_fixture_enabled", (ROOT / "roles/deploy-vtest/tasks/quiesce.yml").read_text())
         self.assertIn("when: item.exists | default(false)", BACKUP)
 
     def test_database_backup_failure_can_restore_current_or_parked_containers(self) -> None:

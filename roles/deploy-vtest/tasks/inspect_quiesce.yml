@@ -1,0 +1,26 @@
+- name: Inspect write-capable app containers before migration
+  community.docker.docker_container_info:
+    name: "openclaw-{{ item }}"
+  loop: "{{ vtest_write_quiesce_services }}"
+  register: vtest_quiesce_containers
+  no_log: true
+
+- name: Require a complete pre-quiesce inspect result set
+  ansible.builtin.assert:
+    that:
+      - (vtest_quiesce_containers.results | length) == (vtest_write_quiesce_services | length)
+      - (vtest_quiesce_containers.results | map(attribute='item') | list | sort) == (vtest_write_quiesce_services | sort)
+    fail_msg: "Pre-quiesce shared-pool inspect evidence is incomplete"
+  no_log: true
+
+- name: Require every pre-quiesce inspect result to be explicit and complete
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.item is defined
+      - not (item.failed | default(false) | bool)
+      - item.exists is defined
+      - (not (item.exists | bool)) or (item.container is defined and item.container.Id is defined and item.container.Config is defined and item.container.Config.Env is defined and item.container.State is defined and item.container.State.Running is defined)
+    fail_msg: "Pre-quiesce inspect evidence is missing or failed; unknown is not treated as nonexistent"
+  loop: "{{ vtest_quiesce_containers.results }}"
+  no_log: true

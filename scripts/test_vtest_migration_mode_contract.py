@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ROLE_MAIN = (ROOT / "roles/deploy-vtest/tasks/main.yml").read_text()
 PREFLIGHT = (ROOT / "roles/deploy-vtest/tasks/preflight.yml").read_text()
 QUIESCE = (ROOT / "roles/deploy-vtest/tasks/quiesce.yml").read_text()
+INSPECT_QUIESCE = (ROOT / "roles/deploy-vtest/tasks/inspect_quiesce.yml").read_text()
 BACKUP = (ROOT / "roles/deploy-vtest/tasks/backup.yml").read_text()
 MIGRATE = (ROOT / "roles/deploy-vtest/tasks/migrate.yml").read_text()
 DEPLOY = (ROOT / "roles/deploy-vtest/tasks/deploy.yml").read_text()
@@ -68,7 +69,7 @@ class VtestMigrationModeContractTest(unittest.TestCase):
         self.assertLess(ROLE_MAIN.index("- import_tasks: migrate.yml"), ROLE_MAIN.index("- import_tasks: deploy.yml"))
 
     def test_quiesce_results_are_redacted_and_running_services_are_recovered_on_failure(self) -> None:
-        inspect = task_block(QUIESCE, "Inspect write-capable app containers before migration")
+        inspect = task_block(INSPECT_QUIESCE, "Inspect write-capable app containers before migration")
         stop = task_block(QUIESCE, "Stop write-capable app containers before migration")
         restore_at = ROLE_MAIN.index("    - name: Restore write-capable app containers after failed deploy")
         audit_at = ROLE_MAIN.index("    - import_tasks: audit_failure.yml")

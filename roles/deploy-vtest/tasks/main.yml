@@ -7,6 +7,11 @@
       tags:
         - vecta-app
         - fruit-vtest
+    - import_tasks: inspect_quiesce.yml
+      when: >-
+        (vtest_allow_migrate | string == '1')
+        or (('vtest' in group_names) and (shared_pool_vtest_fixture_enabled | default(false) | bool))
+      tags: vecta-app
     - import_tasks: preflight_shared_pool_bundle.yml
       when:
         - "'vtest' in group_names"
