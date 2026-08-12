@@ -17,6 +17,7 @@ FIXTURE = (ROOT / "roles/deploy-vtest/tasks/shared_pool_fixture.yml").read_text(
 MAIN = (ROOT / "roles/deploy-vtest/tasks/main.yml").read_text()
 PREFLIGHT = (ROOT / "roles/deploy-vtest/tasks/preflight.yml").read_text()
 BACKUP = (ROOT / "roles/deploy-vtest/tasks/backup_shared_pool_bundle.yml").read_text()
+PRE_SHARED = (ROOT / "roles/deploy-vtest/tasks/preflight_shared_pool_bundle.yml").read_text()
 ROLLBACK = (ROOT / "roles/deploy-vtest/tasks/rollback_shared_pool_bundle.yml").read_text()
 CLEANUP = (ROOT / "roles/deploy-vtest/tasks/cleanup_shared_pool_bundle.yml").read_text()
 RESTART_PROBE = (ROOT / "roles/deploy-vtest/tasks/shared_pool_restart_probe.yml").read_text()
@@ -24,6 +25,7 @@ A2A = (ROOT / "roles/vecta-app/tasks/a2a_router.yml").read_text()
 FLEET = (ROOT / "roles/vecta-app/tasks/fleet_gateway.yml").read_text()
 CHANNEL = (ROOT / "roles/vecta-app/tasks/channel_gateway.yml").read_text()
 FRUIT = (ROOT / "roles/fruit_vtest/tasks/main.yml").read_text()
+WECHAT = (ROOT / "roles/vecta-app/tasks/wechat_contact_sync.yml").read_text()
 WORKFLOW = (ROOT / ".github/workflows/_deploy-vtest-job.yml").read_text()
 MINT = (ROOT / "scripts/mint-vtest-platform-bundle.mjs").read_text()
 VERIFY = (ROOT / "scripts/verify-vtest-platform-bundle.mjs").read_text()
@@ -154,12 +156,13 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         self.assertNotIn("SELECT DISTINCT tenant_id FROM public.employees WHERE tenant_id IS NOT NULL ORDER BY tenant_id\")\"", WORKFLOW)
 
     def test_atomic_cutover_orders_backup_deploy_health_cleanup_and_rollback(self) -> None:
-        self.assertRegex(MAIN, r"quiesce\.yml[\s\S]+backup\.yml[\s\S]+backup_shared_pool_bundle\.yml")
+        self.assertRegex(MAIN, r"preflight_shared_pool_bundle\.yml[\s\S]+quiesce\.yml[\s\S]+backup_shared_pool_bundle\.yml[\s\S]+backup\.yml")
+        self.assertRegex(MAIN, r"quiesce\.yml[\s\S]+backup_shared_pool_bundle\.yml[\s\S]+backup\.yml")
         self.assertRegex(MAIN, r"backup_shared_pool_bundle\.yml[\s\S]+migrate\.yml[\s\S]+shared_pool_fixture\.yml[\s\S]+deploy\.yml[\s\S]+smoke\.yml[\s\S]+cleanup_shared_pool_bundle\.yml")
         self.assertIn("shared_pool_cutover_complete: true", MAIN)
         self.assertRegex(MAIN, r"rescue:[\s\S]+rollback_shared_pool_bundle\.yml[\s\S]+Restore write-capable")
         for marker in ("docker inspect", "chmod 0600", "- rename", "shared-pool-rollback"):
-            self.assertIn(marker, BACKUP)
+            self.assertIn(marker, BACKUP + PRE_SHARED)
         self.assertIn("Remove consumers that did not exist before the cutover", ROLLBACK)
         self.assertIn("state: started", ROLLBACK)
         self.assertIn("state: absent", CLEANUP)
@@ -198,8 +201,8 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
             "irreversible commit point",
         ):
             self.assertIn(marker, CLEANUP + MAIN)
-        self.assertIn("shared_pool_partial_cleanup_markers", BACKUP)
-        self.assertIn("previous partial shared-pool cleanup", BACKUP)
+        self.assertIn("shared_pool_partial_cleanup_markers", PRE_SHARED)
+        self.assertIn("previous partial shared-pool cleanup", PRE_SHARED)
         self.assertRegex(MAIN, r"shared_pool_cutover_committed \| default\(false\) \| bool[\s\S]+shared-pool-partial-cleanup-")
         self.assertNotRegex(MAIN, r"shared_pool_cutover_committed \| default\(false\) \| bool[\s\S]+rollback_shared_pool_bundle\.yml")
 
@@ -209,34 +212,38 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         for task in (A2A, FLEET, CHANNEL, FRUIT):
             self.assertTrue(task.rstrip().endswith("no_log: true"))
 
+    def test_wechat_contact_sync_hides_existing_token_fields(self) -> None:
+        self.assertEqual(WECHAT.count("no_log: true"), 3)
+        for marker in ("FLEET_SERVICE_SECRET", "SERVICE_SECRET", "WECOM_CORP_ID", "WECOM_CONTACTS_SECRET"):
+            self.assertIn(marker, WECHAT)
+
     def test_restart_probe_is_guarded_vtest_only_and_runs_before_cleanup(self) -> None:
         for marker in (
             "VTEST_SHARED_POOL_RESTART_PROBE",
             "openclaw-fleet-gateway",
-            "shared_pool_slots",
-            "shared_pool_lease_requests",
-            "released_at",
-            "finalizing_at",
-            "provisioning",
+            "/app/data/instances/.shared-pool-restart-manifest.json",
+            "manifest_mode",
+            "manifest_owner",
+            "manifest_schema",
+            "manifest_employee",
             "docker_container_exec",
             "wait_for:",
             "shared-pool-restart-probe",
-            "/app/data/instances/.shared-pool-restart-pre",
             "/app/packages/fleet-gateway/dist/vtest/shared-pool-e2e.js",
+            "--tenant-id",
+            "--employee-a",
+            "--employee-b",
+            "--employee-guard",
             "--restart-post",
             "state: absent",
         ):
             self.assertIn(marker, RESTART_PROBE + WORKFLOW)
-        self.assertRegex(MAIN, r"smoke\.yml[\s\S]+shared_pool_restart_probe\.yml[\s\S]+cleanup_shared_pool_bundle\.yml[\s\S]+shared_pool_cutover_complete")
-        self.assertRegex(MAIN, r"shared_pool_restart_probe\.yml[\s\S]+cleanup_shared_pool_bundle\.yml")
+        self.assertRegex(MAIN, r"cleanup_shared_pool_bundle\.yml[\s\S]+shared_pool_restart_probe\.yml")
+        self.assertRegex(MAIN, r"shared_pool_cutover_complete[\s\S]+shared_pool_restart_probe\.yml")
         self.assertIn("'vtest' in group_names", RESTART_PROBE)
         self.assertIn("shared_pool_vtest_fixture_enabled", RESTART_PROBE)
         self.assertIn("vecta-app/tasks/fleet_gateway.yml", RESTART_PROBE)
-        self.assertIn("set_config('app.current_tenant', '__auth__', true)", RESTART_PROBE)
-        self.assertIn("shared_pool_authority_schema_missing", RESTART_PROBE)
-        self.assertIn("shared_pool_authority_columns_missing", RESTART_PROBE)
         self.assertNotIn("FLEET_PLATFORM_SERVICE_TOKEN:", RESTART_PROBE)
-        self.assertNotIn("fleet_instances", RESTART_PROBE)
         self.assertNotIn("docker restart", RESTART_PROBE)
         self.assertNotIn("docker restart", WORKFLOW)
         self.assertNotIn("shared_pool_restart_probe_marker_path", RESTART_PROBE + WORKFLOW)
@@ -249,6 +256,39 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         self.assertNotIn("lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE_MARKER_PATH')", RESTART_PROBE)
         self.assertNotIn("lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE_POST_COMMAND')", RESTART_PROBE)
         self.assertIn("argv:\n      - node", RESTART_PROBE)
+
+    def test_shared_pool_preflight_snapshots_before_quiesce_and_parks_after(self) -> None:
+        for marker in (
+            "shared_pool_partial_cleanup_markers",
+            "vtest_quiesce_containers",
+            "docker_container_info",
+            "shared-pool-rollback",
+            "snapshot already exists",
+            "snapshot_shape",
+            "snapshot_id",
+            "snapshot_env",
+            "mv -- \"$temp\" \"$target\"",
+            "0600",
+        ):
+            self.assertIn(marker, PRE_SHARED)
+        self.assertNotIn("docker rename", PRE_SHARED)
+        self.assertIn("- rename", BACKUP)
+        self.assertRegex(MAIN, r"preflight_shared_pool_bundle\.yml[\s\S]+quiesce\.yml")
+        self.assertRegex(MAIN, r"quiesce\.yml[\s\S]+backup_shared_pool_bundle\.yml[\s\S]+backup\.yml")
+        self.assertIn("Require complete quiesce evidence before any parked cleanup", CLEANUP)
+        self.assertIn("unknown is not treated as nonexistent", CLEANUP)
+
+    def test_database_backup_failure_can_restore_current_or_parked_containers(self) -> None:
+        self.assertRegex(MAIN, r"quiesce\.yml[\s\S]+backup_shared_pool_bundle\.yml[\s\S]+backup\.yml")
+        self.assertIn("- rename", BACKUP)
+        self.assertIn("if docker inspect \"openclaw-{{ item.item }}.shared-pool-rollback\"", ROLLBACK)
+        self.assertIn("Restart the complete old platform consumer set", ROLLBACK)
+
+    def test_restart_is_independent_post_commit_acceptance(self) -> None:
+        self.assertRegex(MAIN, r"shared_pool_cleanup_complete: true[\s\S]+shared_pool_restart_probe_started")
+        self.assertIn("shared-pool-restart-failure-", MAIN)
+        self.assertIn("new_bundle=keep_running", MAIN)
+        self.assertIn("rollback=forbidden", MAIN)
 
     def test_token_preflight_uses_real_ed25519_verifier(self) -> None:
         self.assertIn("verify-vtest-platform-bundle.mjs", PREFLIGHT)

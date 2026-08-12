@@ -3,6 +3,7 @@
     name: "openclaw-{{ item }}"
   loop: "{{ vtest_write_quiesce_services }}"
   register: vtest_quiesce_containers
+  when: not (('vtest' in group_names) and (shared_pool_vtest_fixture_enabled | default(false) | bool))
   no_log: true
 
 - name: Stop write-capable app containers before migration

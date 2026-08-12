@@ -7,10 +7,20 @@
       tags:
         - vecta-app
         - fruit-vtest
+    - import_tasks: preflight_shared_pool_bundle.yml
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+      tags: vecta-app
     - import_tasks: quiesce.yml
       when: >-
         (vtest_allow_migrate | string == '1')
         or (('vtest' in group_names) and (shared_pool_vtest_fixture_enabled | default(false) | bool))
+      tags: vecta-app
+    - import_tasks: backup_shared_pool_bundle.yml
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
       tags: vecta-app
     - import_tasks: backup.yml
       when: >-
@@ -20,11 +30,6 @@
       tags:
         - vecta-app
         - fruit-vtest
-    - import_tasks: backup_shared_pool_bundle.yml
-      when:
-        - "'vtest' in group_names"
-        - shared_pool_vtest_fixture_enabled | default(false) | bool
-      tags: vecta-app
     - import_tasks: migrate.yml
       when: vtest_allow_migrate | string == '1'
       tags: vecta-app
@@ -39,12 +44,6 @@
       tags:
         - vecta-app
         - fruit-vtest
-    - import_tasks: shared_pool_restart_probe.yml
-      when:
-        - "'vtest' in group_names"
-        - shared_pool_vtest_fixture_enabled | default(false) | bool
-        - lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE') | string == '1'
-      tags: shared-pool-restart-probe
     - import_tasks: cleanup_shared_pool_bundle.yml
       when:
         - "'vtest' in group_names"
@@ -52,11 +51,32 @@
       tags: vecta-app
     - name: Mark the shared-pool cutover complete after rollback cleanup succeeds
       ansible.builtin.set_fact:
+        shared_pool_cleanup_complete: true
         shared_pool_cutover_complete: true
       when:
         - "'vtest' in group_names"
         - shared_pool_vtest_fixture_enabled | default(false) | bool
       tags: always
+    - name: Mark the guarded Fleet restart phase as started
+      ansible.builtin.set_fact:
+        shared_pool_restart_probe_started: true
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+        - lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE') | string == '1'
+      tags: shared-pool-restart-probe
+    - import_tasks: shared_pool_restart_probe.yml
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+        - lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE') | string == '1'
+      tags: shared-pool-restart-probe
+    - name: Mark the guarded Fleet restart phase complete
+      ansible.builtin.set_fact:
+        shared_pool_restart_probe_complete: true
+      when:
+        - shared_pool_restart_probe_started | default(false) | bool
+      tags: shared-pool-restart-probe
     - import_tasks: audit_success.yml
       tags:
         - vecta-app
@@ -68,7 +88,7 @@
         - shared_pool_vtest_fixture_enabled | default(false) | bool
         - not (shared_pool_cutover_committed | default(false) | bool)
       tags: always
-    - name: Record partial parked cleanup after the irreversible commit point
+    - name: Record partial parked cleanup before the cleanup commit completes
       ansible.builtin.copy:
         content: "shared_pool_cleanup=partial\nnew_bundle=keep_running\nrollback=forbidden\n"
         dest: "{{ remote_dir }}/backups/shared-pool-partial-cleanup-{{ deploy_sha }}"
@@ -77,6 +97,7 @@
         - "'vtest' in group_names"
         - shared_pool_vtest_fixture_enabled | default(false) | bool
         - shared_pool_cutover_committed | default(false) | bool
+        - not (shared_pool_cleanup_complete | default(false) | bool)
       no_log: true
       tags: always
     - name: Fail closed after partial parked cleanup without rolling back the new bundle
@@ -86,6 +107,30 @@
         - "'vtest' in group_names"
         - shared_pool_vtest_fixture_enabled | default(false) | bool
         - shared_pool_cutover_committed | default(false) | bool
+        - not (shared_pool_cleanup_complete | default(false) | bool)
+      tags: always
+    - name: Record guarded Fleet restart failure after the new-bundle commit point
+      ansible.builtin.copy:
+        content: "shared_pool_restart=failed\nnew_bundle=keep_running\nrollback=forbidden\n"
+        dest: "{{ remote_dir }}/backups/shared-pool-restart-failure-{{ deploy_sha }}"
+        mode: "0600"
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+        - shared_pool_cleanup_complete | default(false) | bool
+        - shared_pool_restart_probe_started | default(false) | bool
+        - not (shared_pool_restart_probe_complete | default(false) | bool)
+      no_log: true
+      tags: always
+    - name: Fail closed after guarded Fleet restart failure without rolling back the new bundle
+      ansible.builtin.fail:
+        msg: "Shared-pool Fleet restart acceptance failed after cleanup commit; new bundle remains running and rollback is forbidden"
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+        - shared_pool_cleanup_complete | default(false) | bool
+        - shared_pool_restart_probe_started | default(false) | bool
+        - not (shared_pool_restart_probe_complete | default(false) | bool)
       tags: always
     - name: Restore write-capable app containers after failed deploy
       community.docker.docker_container:

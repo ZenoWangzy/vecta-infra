@@ -8,97 +8,55 @@
     fail_msg: "The shared-pool restart probe is restricted to the enabled vtest fixture lane"
   no_log: true
 
-- name: Shared-pool restart probe — require the fixed Fleet pre marker
-  ansible.builtin.command:
-    argv:
-      - docker
-      - exec
-      - openclaw-fleet-gateway
-      - test
-      - -f
-      - /app/data/instances/.shared-pool-restart-pre
-  register: shared_pool_restart_probe_marker
-  changed_when: false
-  no_log: true
-
-- name: Shared-pool restart probe — query the authoritative fixture lease state
+- name: Shared-pool restart probe — read and validate the fixed Fleet manifest
   ansible.builtin.shell: |
     set -euo pipefail
-    docker exec openclaw-postgres psql \
-      -X \
-      -q \
-      -v ON_ERROR_STOP=1 \
-      -U {{ postgres_user | default('openclaw') | quote }} \
-      -d {{ postgres_db | default('openclaw') | quote }} \
-      -Atc \
-      "BEGIN;
-       DO \$context\$
-       BEGIN
-         PERFORM set_config('app.current_tenant', '__auth__', true);
-       END
-       \$context\$;
-       DO \$guard\$
-       BEGIN
-         IF to_regclass('public.shared_pool_slots') IS NULL
-            OR to_regclass('public.shared_pool_lease_requests') IS NULL THEN
-           RAISE EXCEPTION 'shared_pool_authority_schema_missing';
-         END IF;
-         IF EXISTS (
-           SELECT 1
-           FROM (VALUES
-             ('shared_pool_slots', 'status'),
-             ('shared_pool_slots', 'lease_tenant_id'),
-             ('shared_pool_slots', 'finalizing_at'),
-             ('shared_pool_slots', 'slot_id'),
-             ('shared_pool_slots', 'generation'),
-             ('shared_pool_lease_requests', 'tenant_id'),
-             ('shared_pool_lease_requests', 'released_at'),
-             ('shared_pool_lease_requests', 'slot_id'),
-             ('shared_pool_lease_requests', 'generation')
-           ) AS required(table_name, column_name)
-           WHERE NOT EXISTS (
-             SELECT 1
-             FROM information_schema.columns column_info
-             WHERE column_info.table_schema = 'public'
-               AND column_info.table_name = required.table_name
-               AND column_info.column_name = required.column_name
-           )
-         ) THEN
-           RAISE EXCEPTION 'shared_pool_authority_columns_missing';
-         END IF;
-       END
-       \$guard\$;
-       SELECT CASE WHEN EXISTS (
-         SELECT 1
-         FROM public.shared_pool_slots slot
-         WHERE slot.lease_tenant_id = 'vtest-shared-pool'
-           AND (
-             slot.status::text IN ('leased', 'provisioning')
-             OR slot.finalizing_at IS NOT NULL
-           )
-       ) OR EXISTS (
-         SELECT 1
-         FROM public.shared_pool_lease_requests request
-         WHERE request.tenant_id = 'vtest-shared-pool'
-           AND request.released_at IS NULL
-       ) THEN 1 ELSE 0 END;
-       COMMIT;"
+    docker exec -i openclaw-fleet-gateway node --input-type=module - <<'NODE'
+    import { constants, fstatSync, openSync, readFileSync, closeSync } from 'node:fs';
+    const path = '/app/data/instances/.shared-pool-restart-manifest.json';
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = fstatSync(fd);
+      if ((stat.mode & 0o777) !== 0o600) throw new Error('manifest_mode');
+      if (stat.uid !== process.getuid()) throw new Error('manifest_owner');
+      const value = JSON.parse(readFileSync(fd, 'utf8'));
+      const expectedKeys = ['employee_a', 'employee_b', 'employee_guard', 'marker', 'schema_version', 'tenant_id'];
+      if (!value || typeof value !== 'object' || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(expectedKeys)) throw new Error('manifest_schema');
+      if (value.schema_version !== 1 || value.tenant_id !== 'vtest-shared-pool' || value.marker !== 'vtest_shared_pool_restart_pre') throw new Error('manifest_marker');
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      for (const key of ['employee_a', 'employee_b', 'employee_guard']) if (typeof value[key] !== 'string' || !uuid.test(value[key])) throw new Error('manifest_employee');
+      process.stdout.write([value.tenant_id, value.employee_a, value.employee_b, value.employee_guard].join('\n') + '\n');
+    } finally {
+      closeSync(fd);
+    }
+    NODE
   args:
     executable: /bin/bash
-  register: shared_pool_restart_probe_active_leases
+  register: shared_pool_restart_probe_manifest
   changed_when: false
   no_log: true
 
-- name: Shared-pool restart probe — fail closed on an active or incomplete fixture lease
+- name: Shared-pool restart probe — require exactly the manifest identity tuple
   ansible.builtin.assert:
     that:
-      - shared_pool_restart_probe_marker.rc | int == 0
-      - shared_pool_restart_probe_active_leases.rc | int == 0
-      - shared_pool_restart_probe_active_leases.stdout | trim == '0'
-    fail_msg: "The restart probe requires the fixed pre marker and no fixture leased/finalizing/provisioning or unreleased request state"
+      - shared_pool_restart_probe_manifest.rc | int == 0
+      - shared_pool_restart_probe_manifest.stdout_lines | length == 4
+      - shared_pool_restart_probe_manifest.stdout_lines[0] == 'vtest-shared-pool'
+      - shared_pool_restart_probe_manifest.stdout_lines[1] is match('^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$')
+      - shared_pool_restart_probe_manifest.stdout_lines[2] is match('^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$')
+      - shared_pool_restart_probe_manifest.stdout_lines[3] is match('^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$')
+    fail_msg: "The fixed Fleet restart manifest is missing, unsafe, or malformed"
   no_log: true
 
-- name: Shared-pool restart probe — remove Fleet without application-side restart
+- name: Shared-pool restart probe — bind runner arguments only to the validated manifest
+  ansible.builtin.set_fact:
+    shared_pool_restart_probe_tenant_id: "{{ shared_pool_restart_probe_manifest.stdout_lines[0] }}"
+    shared_pool_restart_probe_employee_a: "{{ shared_pool_restart_probe_manifest.stdout_lines[1] }}"
+    shared_pool_restart_probe_employee_b: "{{ shared_pool_restart_probe_manifest.stdout_lines[2] }}"
+    shared_pool_restart_probe_employee_guard: "{{ shared_pool_restart_probe_manifest.stdout_lines[3] }}"
+  no_log: true
+
+- name: Shared-pool restart probe — remove Fleet after cleanup commit
   community.docker.docker_container:
     name: openclaw-fleet-gateway
     state: absent
@@ -121,12 +79,20 @@
     timeout: 60
   no_log: true
 
-- name: Shared-pool restart probe — run the fixed Fleet runner post phase
+- name: Shared-pool restart probe — run fixed Fleet post phase with manifest argv
   community.docker.docker_container_exec:
     container: openclaw-fleet-gateway
     argv:
       - node
       - /app/packages/fleet-gateway/dist/vtest/shared-pool-e2e.js
+      - --tenant-id
+      - "{{ shared_pool_restart_probe_tenant_id }}"
+      - --employee-a
+      - "{{ shared_pool_restart_probe_employee_a }}"
+      - --employee-b
+      - "{{ shared_pool_restart_probe_employee_b }}"
+      - --employee-guard
+      - "{{ shared_pool_restart_probe_employee_guard }}"
       - --restart-post
   register: shared_pool_restart_probe_post_result
   changed_when: false
