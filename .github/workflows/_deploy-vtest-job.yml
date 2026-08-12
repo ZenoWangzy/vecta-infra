@@ -38,18 +38,6 @@ on:
         required: true
       NEXUS_ADMIN_PASSWORD:
         required: true
-      # bootstrap-only; unused; remove immediately after Vecta PR454 merges.
-      # These declarations keep pull_request_target startup validation alive
-      # while the Vecta caller removes its obsolete mappings. The deploy job
-      # must never read these inputs; platform JWTs are minted below per run.
-      VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY:
-        required: false
-      VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN:
-        required: false
-      VTEST_FLEET_PLATFORM_SERVICE_TOKEN:
-        required: false
-      VTEST_FLEET_FRUIT_PLATFORM_TOKEN:
-        required: false
       WECOM_CORP_ID:
         required: false
       WECOM_CONTACTS_SECRET:
@@ -199,7 +187,6 @@ jobs:
           set -euo pipefail
           cleanup_ephemeral_platform_bundle() {
             unset PLATFORM_SERVICE_JWT_PUBLIC_KEY CHANNEL_PLATFORM_SERVICE_TOKEN FLEET_PLATFORM_SERVICE_TOKEN FLEET_FRUIT_PLATFORM_TOKEN VTEST_EXPECTED_TENANT_IDS_JSON
-            unset VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN VTEST_FLEET_PLATFORM_SERVICE_TOKEN VTEST_FLEET_FRUIT_PLATFORM_TOKEN
             unset VTEST_SHARED_POOL_RESTART_PROBE
             unset bundle_output bundle_key bundle_value platform_public_key channel_platform_token fleet_platform_token fleet_fruit_platform_token expected_tenant_ids_json tenant_query_output tenant_query_line tenant_ids postgres_user postgres_db deploy_tags
           }
@@ -223,7 +210,6 @@ jobs:
           # Platform JWTs are per-deploy only. Ignore and clear any legacy values
           # loaded from the host env; this job owns one fresh signed bundle.
           unset PLATFORM_SERVICE_JWT_PUBLIC_KEY CHANNEL_PLATFORM_SERVICE_TOKEN FLEET_PLATFORM_SERVICE_TOKEN FLEET_FRUIT_PLATFORM_TOKEN
-          unset VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN VTEST_FLEET_PLATFORM_SERVICE_TOKEN VTEST_FLEET_FRUIT_PLATFORM_TOKEN
           postgres_user="${POSTGRES_USER:-openclaw}"
           postgres_db="${POSTGRES_DB:-openclaw}"
           # Keep an explicit tenant context even when this DB role has BYPASSRLS;

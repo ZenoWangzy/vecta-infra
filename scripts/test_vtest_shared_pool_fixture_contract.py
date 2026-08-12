@@ -58,10 +58,10 @@ def verify_bundle(fields: dict[str, str]) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.update(
         {
-            "VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY": fields["PUBLIC_KEY_ESCAPED"],
-            "VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN": fields["CHANNEL_PLATFORM_SERVICE_TOKEN"],
-            "VTEST_FLEET_PLATFORM_SERVICE_TOKEN": fields["FLEET_PLATFORM_SERVICE_TOKEN"],
-            "VTEST_FLEET_FRUIT_PLATFORM_TOKEN": fields["FLEET_FRUIT_PLATFORM_TOKEN"],
+            "VTEST_BUNDLE_PUBLIC_KEY": fields["PUBLIC_KEY_ESCAPED"],
+            "VTEST_BUNDLE_CHANNEL_TOKEN": fields["CHANNEL_PLATFORM_SERVICE_TOKEN"],
+            "VTEST_BUNDLE_FLEET_TOKEN": fields["FLEET_PLATFORM_SERVICE_TOKEN"],
+            "VTEST_BUNDLE_FRUIT_TOKEN": fields["FLEET_FRUIT_PLATFORM_TOKEN"],
             "VTEST_EXPECTED_TENANT_IDS_JSON": fields["TENANT_IDS_JSON"],
         }
     )
@@ -355,14 +355,8 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         self.assertNotIn("GITHUB_OUTPUT", WORKFLOW)
         self.assertNotIn("GITHUB_ENV", WORKFLOW)
         self.assertNotIn("upload-artifact", WORKFLOW)
-        for legacy_secret in (
-            "VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY",
-            "VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN",
-            "VTEST_FLEET_PLATFORM_SERVICE_TOKEN",
-            "VTEST_FLEET_FRUIT_PLATFORM_TOKEN",
-        ):
-            self.assertRegex(WORKFLOW, rf"{legacy_secret}:\n\s+required: false")
-            self.assertNotIn(f"secrets.{legacy_secret}", WORKFLOW)
+        self.assertNotRegex(WORKFLOW, r"(?m)^\s+VTEST_[A-Z0-9_]*(?:JWT|TOKEN):\n\s+required: false$")
+        self.assertNotRegex(WORKFLOW, r"\$\{\{\s*secrets\.VTEST_[A-Z0-9_]*(?:JWT|TOKEN)\s*\}\}")
 
     def test_mint_emits_three_real_signed_tokens_and_fixture_scope(self) -> None:
         fields = mint_bundle()
