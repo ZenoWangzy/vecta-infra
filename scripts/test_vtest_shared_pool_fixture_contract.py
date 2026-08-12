@@ -221,7 +221,7 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         for marker in (
             "VTEST_SHARED_POOL_RESTART_PROBE",
             "openclaw-fleet-gateway",
-            "/app/data/instances/.shared-pool-restart-manifest.json",
+            "/app/data/instances/vtest-shared-pool-e2e/restart-manifest.json",
             "manifest_mode",
             "manifest_owner",
             "manifest_schema",
@@ -263,6 +263,8 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
             "vtest_quiesce_containers",
             "docker_container_info",
             "shared-pool-rollback",
+            "vtest_write_quiesce_services",
+            "item.container.State.Running",
             "snapshot already exists",
             "snapshot_shape",
             "snapshot_id",
@@ -277,6 +279,8 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         self.assertRegex(MAIN, r"quiesce\.yml[\s\S]+backup_shared_pool_bundle\.yml[\s\S]+backup\.yml")
         self.assertIn("Require complete quiesce evidence before any parked cleanup", CLEANUP)
         self.assertIn("unknown is not treated as nonexistent", CLEANUP)
+        self.assertIn("item.container.State.Running", (ROOT / "roles/deploy-vtest/tasks/quiesce.yml").read_text())
+        self.assertIn("when: item.exists | default(false)", BACKUP)
 
     def test_database_backup_failure_can_restore_current_or_parked_containers(self) -> None:
         self.assertRegex(MAIN, r"quiesce\.yml[\s\S]+backup_shared_pool_bundle\.yml[\s\S]+backup\.yml")
@@ -289,6 +293,22 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         self.assertIn("shared-pool-restart-failure-", MAIN)
         self.assertIn("new_bundle=keep_running", MAIN)
         self.assertIn("rollback=forbidden", MAIN)
+
+    def test_manifest_mount_is_dedicated_and_does_not_chown_deploy_root(self) -> None:
+        for marker in (
+            "deploy/vtest-shared-pool-e2e",
+            "owner: \"1000\"",
+            "group: \"1000\"",
+            "mode: \"0700\"",
+            "shared_pool_manifest_dir_stat",
+            "shared_pool_manifest_dir_writable",
+            'become_user: "#1000"',
+            "UID 1000 cannot write",
+            "vtest-shared-pool-e2e:/app/data/instances/vtest-shared-pool-e2e",
+        ):
+            self.assertIn(marker, PRE_SHARED + FLEET)
+        self.assertNotIn('path: "{{ remote_dir }}/deploy"\n    owner: "1000"', PRE_SHARED)
+        self.assertNotIn('"{{ remote_dir }}/deploy:/app/data/instances"\n    owner:', FLEET)
 
     def test_token_preflight_uses_real_ed25519_verifier(self) -> None:
         self.assertIn("verify-vtest-platform-bundle.mjs", PREFLIGHT)

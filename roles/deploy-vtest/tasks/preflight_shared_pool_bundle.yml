@@ -41,23 +41,79 @@
 
 - name: Inspect parked rollback consumers before quiesce
   community.docker.docker_container_info:
-    name: "openclaw-{{ item.item }}.shared-pool-rollback"
-  loop: "{{ vtest_quiesce_containers.results }}"
-  when: item.exists | bool
+    name: "openclaw-{{ item }}.shared-pool-rollback"
+  loop: "{{ vtest_write_quiesce_services }}"
   register: shared_pool_rollback_containers
   no_log: true
 
-- name: Refuse a stale parked platform consumer before quiesce
+- name: Require every parked rollback inspect result to be explicit
+  ansible.builtin.assert:
+    that:
+      - item.item is defined
+      - not (item.failed | default(false) | bool)
+      - item.exists is defined
+    fail_msg: "Parked rollback inspect evidence is incomplete; refusing a mixed cutover"
+  loop: "{{ shared_pool_rollback_containers.results }}"
+  no_log: true
+
+- name: Refuse any stale parked platform consumer before quiesce
   ansible.builtin.fail:
     msg: "A stale shared-pool rollback container exists; refusing a mixed cutover"
-  loop: "{{ shared_pool_rollback_containers.results | default([]) }}"
-  when: item.exists | default(false) | bool
+  loop: "{{ shared_pool_rollback_containers.results }}"
+  when: item.exists | bool
+  no_log: true
 
 - name: Create the private shared-pool evidence directory before quiesce
   ansible.builtin.file:
     path: "{{ remote_dir }}/backups/shared-pool-platform-bundle-{{ deploy_sha }}"
     state: directory
     mode: "0700"
+
+- name: Create the dedicated vtest restart manifest directory without changing deploy ownership
+  ansible.builtin.file:
+    path: "{{ remote_dir }}/deploy/vtest-shared-pool-e2e"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: "0700"
+
+- name: Inspect the dedicated vtest restart manifest directory
+  ansible.builtin.stat:
+    path: "{{ remote_dir }}/deploy/vtest-shared-pool-e2e"
+    follow: false
+  register: shared_pool_manifest_dir_stat
+  no_log: true
+
+- name: Verify the dedicated vtest restart manifest directory ownership and mode
+  ansible.builtin.assert:
+    that:
+      - shared_pool_manifest_dir_stat.stat.exists | bool
+      - shared_pool_manifest_dir_stat.stat.isdir | bool
+      - not (shared_pool_manifest_dir_stat.stat.islnk | default(false) | bool)
+      - shared_pool_manifest_dir_stat.stat.uid | int == 1000
+      - shared_pool_manifest_dir_stat.stat.gid | int == 1000
+      - shared_pool_manifest_dir_stat.stat.mode == '0700'
+    fail_msg: "The dedicated vtest restart manifest directory is not owned by UID/GID 1000 with mode 0700"
+  no_log: true
+
+- name: Verify the dedicated vtest restart manifest directory is writable
+  ansible.builtin.command:
+    argv:
+      - test
+      - -w
+      - "{{ remote_dir }}/deploy/vtest-shared-pool-e2e"
+  register: shared_pool_manifest_dir_writable
+  changed_when: false
+  become: true
+  become_user: "#1000"
+  no_log: true
+
+- name: Require the dedicated vtest restart manifest directory to be writable
+  ansible.builtin.assert:
+    that:
+      - shared_pool_manifest_dir_writable.rc | int == 0
+    fail_msg: "UID 1000 cannot write the dedicated vtest restart manifest directory"
+  no_log: true
 
 - name: Snapshot old platform consumer environment and image atomically before quiesce
   ansible.builtin.shell: |

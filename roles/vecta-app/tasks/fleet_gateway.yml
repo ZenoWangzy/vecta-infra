@@ -28,6 +28,18 @@
     msg: "PER_USER_CONTAINERS=true requires /var/run/docker.sock on the vtest host"
   when: not fleet_gateway_docker_socket.stat.exists
 
+- name: Compose the base Fleet data mounts
+  ansible.builtin.set_fact:
+    fleet_gateway_volume_mounts:
+      - "{{ remote_dir }}/deploy:/app/data/instances"
+      - "{{ remote_dir }}/data/fleet-gateway/uploads:/app/data/uploads"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+
+- name: Add the dedicated vtest restart manifest mount
+  ansible.builtin.set_fact:
+    fleet_gateway_volume_mounts: "{{ fleet_gateway_volume_mounts + [remote_dir ~ '/deploy/vtest-shared-pool-e2e:/app/data/instances/vtest-shared-pool-e2e'] }}"
+  when: shared_pool_vtest_fixture_enabled | default(false) | bool
+
 - name: Deploy fleet-gateway
   community.docker.docker_container:
     name: openclaw-fleet-gateway
@@ -89,10 +101,7 @@
       INDUSTRY_PACK_RUNTIME_ROOTS: "{{ (fruit_vtest_enabled | default(false) | bool) | ternary('/app/industry-packs/fruit', '') }}"
       FRUIT_PACK_MCP_URL: "{{ (fruit_vtest_enabled | default(false) | bool) | ternary('http://openclaw-fruit-industry-pack:8002/mcp', '') }}"
       FRUIT_SERVICE_SECRET: "{{ (fruit_vtest_enabled | default(false) | bool) | ternary(fruit_vtest_service_secret, '') }}"
-    volumes:
-      - "{{ remote_dir }}/deploy:/app/data/instances"
-      - "{{ remote_dir }}/data/fleet-gateway/uploads:/app/data/uploads"
-      - "/var/run/docker.sock:/var/run/docker.sock"
+    volumes: "{{ fleet_gateway_volume_mounts }}"
     groups:
       - "{{ fleet_gateway_docker_socket.stat.gid | string }}"
     etc_hosts: "{{ fleet_gateway_etc_hosts | default(omit) }}"

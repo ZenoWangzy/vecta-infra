@@ -13,7 +13,7 @@
     set -euo pipefail
     docker exec -i openclaw-fleet-gateway node --input-type=module - <<'NODE'
     import { constants, fstatSync, openSync, readFileSync, closeSync } from 'node:fs';
-    const path = '/app/data/instances/.shared-pool-restart-manifest.json';
+    const path = '/app/data/instances/vtest-shared-pool-e2e/restart-manifest.json';
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const stat = fstatSync(fd);

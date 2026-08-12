@@ -12,5 +12,7 @@
     state: stopped
     stop_timeout: 60
   loop: "{{ vtest_quiesce_containers.results }}"
-  when: item.exists
+  when:
+    - item.exists | bool
+    - item.container.State.Running | default(false) | bool
   no_log: true
