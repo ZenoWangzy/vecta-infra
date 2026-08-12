@@ -69,6 +69,10 @@
       PLATFORM_SERVICE_JWT_PUBLIC_KEY: "{{ lookup('env', 'PLATFORM_SERVICE_JWT_PUBLIC_KEY') }}"
       # Presented by delivery-worker when calling channel-gateway.
       CHANNEL_PLATFORM_SERVICE_TOKEN: "{{ lookup('env', 'CHANNEL_PLATFORM_SERVICE_TOKEN') }}"
+      # Used only by the vtest shared-pool E2E cleanup path for Fleet self-calls.
+      FLEET_PLATFORM_SERVICE_TOKEN: "{{ (shared_pool_vtest_e2e_enabled | default(false) | bool) | ternary(lookup('env', 'FLEET_PLATFORM_SERVICE_TOKEN'), omit) }}"
+      # The vtest Web lane must exercise the real runtime, not synthetic responses.
+      OPENAI_COMPAT_SYNTHETIC_MODE: "{{ (shared_pool_vtest_e2e_enabled | default(false) | bool) | ternary('off', omit) }}"
       PLATFORM_ROOT_EMPLOYEE_IDS: "{{ platform_root_employee_ids | default(['IT001']) | join(',') }}"
       DEFAULT_MODEL: "{{ lookup('env', 'DEFAULT_MODEL') | default('deepseek-chat', true) }}"
       CORS_ORIGINS: "{{ base_url }}"
