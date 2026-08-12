@@ -20,6 +20,11 @@
       tags:
         - vecta-app
         - fruit-vtest
+    - import_tasks: backup_shared_pool_bundle.yml
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+      tags: vecta-app
     - import_tasks: migrate.yml
       when: vtest_allow_migrate | string == '1'
       tags: vecta-app
@@ -34,17 +39,36 @@
       tags:
         - vecta-app
         - fruit-vtest
+    - name: Mark the shared-pool cutover complete after health and smoke gates
+      ansible.builtin.set_fact:
+        shared_pool_cutover_complete: true
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+      tags: always
+    - import_tasks: cleanup_shared_pool_bundle.yml
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+      tags: vecta-app
     - import_tasks: audit_success.yml
       tags:
         - vecta-app
         - fruit-vtest
   rescue:
+    - import_tasks: rollback_shared_pool_bundle.yml
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+        - not (shared_pool_cutover_complete | default(false) | bool)
+      tags: always
     - name: Restore write-capable app containers after failed deploy
       community.docker.docker_container:
         name: "openclaw-{{ item.item }}"
         state: started
       loop: "{{ vtest_quiesce_containers.results | default([]) }}"
       when:
+        - not (('vtest' in group_names) and (shared_pool_vtest_fixture_enabled | default(false) | bool))
         - item.exists | default(false)
         - item.container.State.Running | default(false)
       register: vtest_quiesce_restore

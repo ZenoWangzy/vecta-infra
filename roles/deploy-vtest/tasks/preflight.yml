@@ -44,12 +44,16 @@
   register: nexus_manifest_checks
   no_log: true
 
-- name: Preflight — verify vtest shared-pool platform JWT claims
-  ansible.builtin.script: "{{ playbook_dir }}/../scripts/verify-vtest-platform-token.py"
+- name: Preflight — verify vtest shared-pool platform JWT signatures and claims
+  ansible.builtin.script: "{{ playbook_dir }}/../scripts/verify-vtest-platform-bundle.mjs"
+  args:
+    executable: node
   environment:
     VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY: "{{ lookup('env', 'PLATFORM_SERVICE_JWT_PUBLIC_KEY') }}"
     VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN: "{{ lookup('env', 'CHANNEL_PLATFORM_SERVICE_TOKEN') }}"
     VTEST_FLEET_PLATFORM_SERVICE_TOKEN: "{{ lookup('env', 'FLEET_PLATFORM_SERVICE_TOKEN') }}"
+    VTEST_FLEET_FRUIT_PLATFORM_TOKEN: "{{ lookup('env', 'FLEET_FRUIT_PLATFORM_TOKEN') }}"
+    VTEST_EXPECTED_TENANT_IDS_JSON: "{{ lookup('env', 'VTEST_EXPECTED_TENANT_IDS_JSON') }}"
   when:
     - "'vtest' in group_names"
     - shared_pool_vtest_fixture_enabled | default(false) | bool

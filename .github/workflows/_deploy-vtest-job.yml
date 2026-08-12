@@ -48,16 +48,6 @@ on:
         required: false
       PROXY_PREVIOUS_PASSWORD:
         required: false
-      # vecta #408 platform service JWTs. Optional so an unprovisioned environment still
-      # deploys everything else, but a2a-router will not start without the channel token.
-      VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY:
-        required: false
-      VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN:
-        required: false
-      VTEST_FLEET_PLATFORM_SERVICE_TOKEN:
-        required: false
-      VTEST_FLEET_FRUIT_PLATFORM_TOKEN:
-        required: false
 
 jobs:
   deploy:
@@ -72,11 +62,6 @@ jobs:
       WECOM_CONTACTS_SECRET: ${{ secrets.WECOM_CONTACTS_SECRET }}
       WECOM_BOT_ID: ${{ secrets.WECOM_BOT_ID }}
       WECOM_BOT_SECRET: ${{ secrets.WECOM_BOT_SECRET }}
-      # Ansible reads these through lookup('env', ...) in roles/vecta-app/tasks/*.yml.
-      PLATFORM_SERVICE_JWT_PUBLIC_KEY: ${{ secrets.VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY }}
-      CHANNEL_PLATFORM_SERVICE_TOKEN: ${{ secrets.VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN }}
-      FLEET_PLATFORM_SERVICE_TOKEN: ${{ secrets.VTEST_FLEET_PLATFORM_SERVICE_TOKEN }}
-      FLEET_FRUIT_PLATFORM_TOKEN: ${{ secrets.VTEST_FLEET_FRUIT_PLATFORM_TOKEN }}
       DEPLOY_SHA: ${{ inputs.image_tag }}
       VTEST_ALLOW_MIGRATE: ${{ inputs.run_migrations && '1' || '0' }}
       DEPLOY_TAGS: ${{ inputs.tags || 'open-webui,vecta-app,fruit-vtest' }}
@@ -195,6 +180,12 @@ jobs:
       - name: Deploy via Ansible
         run: |
           set -euo pipefail
+          cleanup_ephemeral_platform_bundle() {
+            unset PLATFORM_SERVICE_JWT_PUBLIC_KEY CHANNEL_PLATFORM_SERVICE_TOKEN FLEET_PLATFORM_SERVICE_TOKEN FLEET_FRUIT_PLATFORM_TOKEN VTEST_EXPECTED_TENANT_IDS_JSON
+            unset VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN VTEST_FLEET_PLATFORM_SERVICE_TOKEN VTEST_FLEET_FRUIT_PLATFORM_TOKEN
+            unset bundle_output bundle_key bundle_value platform_public_key channel_platform_token fleet_platform_token fleet_fruit_platform_token expected_tenant_ids_json tenant_ids postgres_user postgres_db
+          }
+          trap cleanup_ephemeral_platform_bundle EXIT
           ci_nexus_admin_password="${NEXUS_ADMIN_PASSWORD:-}"
           ci_wecom_corp_id="${WECOM_CORP_ID:-}"
           ci_wecom_contacts_secret="${WECOM_CONTACTS_SECRET:-}"
@@ -211,6 +202,40 @@ jobs:
             . /data/ocee/.env
             set +a
           fi
+          # Platform JWTs are per-deploy only. Ignore and clear any legacy values
+          # loaded from the host env; this job owns one fresh signed bundle.
+          unset PLATFORM_SERVICE_JWT_PUBLIC_KEY CHANNEL_PLATFORM_SERVICE_TOKEN FLEET_PLATFORM_SERVICE_TOKEN FLEET_FRUIT_PLATFORM_TOKEN
+          unset VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN VTEST_FLEET_PLATFORM_SERVICE_TOKEN VTEST_FLEET_FRUIT_PLATFORM_TOKEN
+          postgres_user="${POSTGRES_USER:-openclaw}"
+          postgres_db="${POSTGRES_DB:-openclaw}"
+          tenant_ids="$(docker exec openclaw-postgres psql -X -v ON_ERROR_STOP=1 -U "$postgres_user" -d "$postgres_db" -Atc \
+            "SELECT DISTINCT tenant_id FROM public.employees WHERE tenant_id IS NOT NULL ORDER BY tenant_id")"
+          bundle_output="$(printf '%s\n' "$tenant_ids" | node scripts/mint-vtest-platform-bundle.mjs)"
+          bundle_field_count=0
+          while IFS='=' read -r bundle_key bundle_value; do
+            case "$bundle_key" in
+              PUBLIC_KEY_ESCAPED) [ -z "${platform_public_key+x}" ] || { echo "duplicate platform bundle field" >&2; exit 1; }; platform_public_key="$bundle_value"; bundle_field_count=$((bundle_field_count + 1)) ;;
+              CHANNEL_PLATFORM_SERVICE_TOKEN) [ -z "${channel_platform_token+x}" ] || { echo "duplicate platform bundle field" >&2; exit 1; }; channel_platform_token="$bundle_value"; bundle_field_count=$((bundle_field_count + 1)) ;;
+              FLEET_PLATFORM_SERVICE_TOKEN) [ -z "${fleet_platform_token+x}" ] || { echo "duplicate platform bundle field" >&2; exit 1; }; fleet_platform_token="$bundle_value"; bundle_field_count=$((bundle_field_count + 1)) ;;
+              FLEET_FRUIT_PLATFORM_TOKEN) [ -z "${fleet_fruit_platform_token+x}" ] || { echo "duplicate platform bundle field" >&2; exit 1; }; fleet_fruit_platform_token="$bundle_value"; bundle_field_count=$((bundle_field_count + 1)) ;;
+              TENANT_IDS_JSON) [ -z "${expected_tenant_ids_json+x}" ] || { echo "duplicate platform bundle field" >&2; exit 1; }; expected_tenant_ids_json="$bundle_value"; bundle_field_count=$((bundle_field_count + 1)) ;;
+              '') ;;
+              *) echo "unexpected platform bundle field" >&2; exit 1 ;;
+            esac
+          done <<< "$bundle_output"
+          [ "$bundle_field_count" -eq 5 ] || { echo "ephemeral platform bundle has unexpected field count" >&2; exit 1; }
+          for required_bundle_value in platform_public_key channel_platform_token fleet_platform_token fleet_fruit_platform_token expected_tenant_ids_json; do
+            [ -n "${!required_bundle_value:-}" ] || { echo "ephemeral platform bundle incomplete" >&2; exit 1; }
+          done
+          echo "::add-mask::$platform_public_key"
+          echo "::add-mask::$channel_platform_token"
+          echo "::add-mask::$fleet_platform_token"
+          echo "::add-mask::$fleet_fruit_platform_token"
+          export PLATFORM_SERVICE_JWT_PUBLIC_KEY="$platform_public_key"
+          export CHANNEL_PLATFORM_SERVICE_TOKEN="$channel_platform_token"
+          export FLEET_PLATFORM_SERVICE_TOKEN="$fleet_platform_token"
+          export FLEET_FRUIT_PLATFORM_TOKEN="$fleet_fruit_platform_token"
+          export VTEST_EXPECTED_TENANT_IDS_JSON="$expected_tenant_ids_json"
           export NEXUS_ADMIN_PASSWORD="$ci_nexus_admin_password"
           if [ -n "$ci_proxy_username_set" ]; then export PROXY_USERNAME="$ci_proxy_username"; else unset PROXY_USERNAME; fi
           if [ -n "$ci_proxy_password_set" ]; then export PROXY_PASSWORD="$ci_proxy_password"; else unset PROXY_PASSWORD; fi

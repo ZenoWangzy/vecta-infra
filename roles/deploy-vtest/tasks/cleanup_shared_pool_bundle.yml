@@ -1,0 +1,12 @@
+- name: Remove old platform consumers after the complete vtest cutover
+  community.docker.docker_container:
+    name: "openclaw-{{ item.item }}.shared-pool-rollback"
+    state: absent
+  loop: "{{ vtest_quiesce_containers.results | default([]) }}"
+  when: item.exists | default(false)
+  no_log: true
+
+- name: Remove the private old-bundle rollback snapshot after success
+  ansible.builtin.file:
+    path: "{{ remote_dir }}/backups/shared-pool-platform-bundle-{{ deploy_sha }}"
+    state: absent

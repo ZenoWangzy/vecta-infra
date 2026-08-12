@@ -82,9 +82,11 @@ fruit_vtest_bootstrap: false
 vtest_migrator_image_repo: vecta-migrator
 
 vtest_write_quiesce_services:
+  - a2a-router
   - fleet-gateway
   - channel-gateway
   - wechat-contact-sync
+  - fruit-industry-pack
 
 fleet_gateway_image: "{{ nexus_docker_registry }}/fleet-gateway:{{ deploy_sha }}"
 channel_gateway_image: "{{ nexus_docker_registry }}/channel-gateway:{{ deploy_sha }}"

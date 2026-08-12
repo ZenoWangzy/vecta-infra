@@ -14,6 +14,7 @@
       -d {{ postgres_db | default('openclaw') | quote }} <<'SQL'
     BEGIN;
     SELECT pg_advisory_xact_lock(hashtextextended('vtest-shared-pool', 0));
+    SELECT set_config('app.current_tenant', '__auth__', true);
 
     DO $fixture$
     DECLARE
@@ -35,6 +36,24 @@
       END IF;
       IF to_regclass('public.audit_log') IS NULL THEN
         RAISE EXCEPTION 'shared pool fixture requires public.audit_log for audit evidence';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+          FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'audit_log'
+           AND column_name = 'tenant_id'
+      ) THEN
+        RAISE EXCEPTION 'shared pool fixture requires audit_log.tenant_id';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+          FROM pg_class
+         WHERE oid = 'public.audit_log'::regclass
+           AND relrowsecurity
+           AND relforcerowsecurity
+      ) THEN
+        RAISE EXCEPTION 'shared pool fixture requires audit_log FORCE ROW LEVEL SECURITY';
       END IF;
 
       SELECT COALESCE(config->>'vtest_shared_pool_fixture', '')

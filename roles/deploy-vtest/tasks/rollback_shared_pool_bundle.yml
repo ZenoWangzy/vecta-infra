@@ -1,0 +1,40 @@
+- name: Remove consumers that did not exist before the cutover
+  community.docker.docker_container:
+    name: "openclaw-{{ item }}"
+    state: absent
+    force_kill: true
+  loop: "{{ vtest_write_quiesce_services }}"
+  when:
+    - item not in (vtest_quiesce_containers.results | default([]) | selectattr('exists', 'equalto', true) | map(attribute='item') | list)
+  no_log: true
+
+- name: Remove only newly created platform consumers before rollback
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if docker inspect "openclaw-{{ item.item }}.shared-pool-rollback" >/dev/null 2>&1; then
+      if docker inspect "openclaw-{{ item.item }}" >/dev/null 2>&1; then
+        docker rm --force "openclaw-{{ item.item }}" >/dev/null
+      fi
+      docker rename "openclaw-{{ item.item }}.shared-pool-rollback" "openclaw-{{ item.item }}"
+    fi
+  args:
+    executable: /bin/bash
+  loop: "{{ vtest_quiesce_containers.results | default([]) }}"
+  when: item.exists | default(false)
+  no_log: true
+
+- name: Restart the complete old platform consumer set in dependency order
+  community.docker.docker_container:
+    name: "openclaw-{{ item.item }}"
+    state: started
+  loop: "{{ vtest_quiesce_containers.results | default([]) }}"
+  when:
+    - item.exists | default(false)
+    - item.container.State.Running | default(false)
+  no_log: true
+
+- name: Preserve rollback evidence for post-failure inspection
+  ansible.builtin.file:
+    path: "{{ remote_dir }}/backups/shared-pool-platform-bundle-{{ deploy_sha }}"
+    state: directory
+    mode: "0700"
