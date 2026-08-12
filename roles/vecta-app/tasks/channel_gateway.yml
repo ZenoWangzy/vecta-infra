@@ -35,6 +35,7 @@
       FEISHU_CEO_APP_SECRET: "{{ lookup('env', 'FEISHU_CEO_APP_SECRET') }}"
     ports:
       - "9000:9000"
+    etc_hosts: "{{ channel_gateway_etc_hosts | default(omit) }}"
     networks:
       - name: "{{ docker_network }}"
     memory: "512m"

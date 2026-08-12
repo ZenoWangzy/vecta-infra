@@ -21,3 +21,8 @@
         name: nexus
         tasks_from: system_http_proxy
       tags: [nexus]
+    - name: Configure Nexus Docker registry proxies for vtest builds
+      ansible.builtin.import_role:
+        name: nexus
+        tasks_from: docker_registry
+      tags: [nexus]

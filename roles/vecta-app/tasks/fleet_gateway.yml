@@ -95,6 +95,7 @@
       - "/var/run/docker.sock:/var/run/docker.sock"
     groups:
       - "{{ fleet_gateway_docker_socket.stat.gid | string }}"
+    etc_hosts: "{{ fleet_gateway_etc_hosts | default(omit) }}"
     networks:
       - name: "{{ docker_network }}"
     memory: "2g"
