@@ -23,6 +23,9 @@
       CHANNEL_ACTIVE: "{{ channel_active | default('true') }}"
       CHANNEL_OWNER_ID: "{{ channel_owner_id | default('vtest') }}"
       A2A_ROUTER_TOKEN: "{{ lookup('env', 'A2A_ROUTER_TOKEN') }}"
+      # The vtest shared-pool CLI reads the same Postgres state as fleet-gateway.
+      DATABASE_URL: "{{ (shared_pool_vtest_e2e_enabled | default(false) | bool) | ternary('postgresql://' ~ (postgres_user | default('openclaw_poc')) ~ ':' ~ (postgres_password | default('poc-db-password-change-me')) ~ '@openclaw-postgres:5432/' ~ (postgres_db | default('openclaw_poc')), omit) }}"
+      SHARED_POOL_VTEST_E2E_ENABLED: "{{ (shared_pool_vtest_e2e_enabled | default(false) | bool) | ternary('1', omit) }}"
       REDIS_URL: "redis://:{{ redis_password | default('changeme-redis-pw') }}@openclaw-redis:6379"
       FLEET_GATEWAY_URL: "http://openclaw-fleet-gateway:3000"
       FLEET_SERVICE_SECRET: "{{ lookup('env', 'SERVICE_SECRET') | default(lookup('env', 'SERVICE_KEY'), true) }}"
@@ -40,3 +43,4 @@
       - name: "{{ docker_network }}"
     memory: "512m"
     cpus: "0.5"
+  no_log: true
