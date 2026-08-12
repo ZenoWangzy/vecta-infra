@@ -1,0 +1,102 @@
+- name: Shared-pool restart probe — require the guarded vtest fixture lane
+  ansible.builtin.assert:
+    that:
+      - "'vtest' in group_names"
+      - shared_pool_vtest_fixture_enabled | default(false) | bool
+      - lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE') | string == '1'
+    fail_msg: "The shared-pool restart probe is restricted to the enabled vtest fixture lane"
+  no_log: true
+
+- name: Shared-pool restart probe — resolve and validate the pre marker path
+  ansible.builtin.set_fact:
+    shared_pool_restart_probe_marker_path: >-
+      {{ lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE_MARKER_PATH')
+         | default('/app/data/instances/.shared-pool-restart-pre', true) | trim }}
+
+- name: Shared-pool restart probe — reject an unsafe marker path
+  ansible.builtin.assert:
+    that:
+      - "shared_pool_restart_probe_marker_path is match('^/app/data/instances/[A-Za-z0-9._/-]+$')"
+      - "'..' not in shared_pool_restart_probe_marker_path"
+    fail_msg: "The restart probe marker must be a child of Fleet's mounted instances directory"
+  no_log: true
+
+- name: Shared-pool restart probe — require the Vecta pre marker in Fleet state
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - openclaw-fleet-gateway
+      - test
+      - -f
+      - "{{ shared_pool_restart_probe_marker_path }}"
+  register: shared_pool_restart_probe_marker
+  changed_when: false
+  no_log: true
+
+- name: Shared-pool restart probe — require no active fixture lease
+  ansible.builtin.shell: |
+    set -euo pipefail
+    docker exec openclaw-postgres psql \
+      -X \
+      -v ON_ERROR_STOP=1 \
+      -U {{ postgres_user | default('openclaw') | quote }} \
+      -d {{ postgres_db | default('openclaw') | quote }} \
+      -Atc \
+      "SELECT count(*) FROM public.fleet_instances fi JOIN public.employees e ON e.employee_id = fi.employee_id WHERE e.tenant_id = 'vtest-shared-pool' AND fi.status::text IN ('starting', 'running')"
+  args:
+    executable: /bin/bash
+  register: shared_pool_restart_probe_active_leases
+  changed_when: false
+  no_log: true
+
+- name: Shared-pool restart probe — fail closed on an active fixture lease
+  ansible.builtin.assert:
+    that:
+      - shared_pool_restart_probe_marker.rc | int == 0
+      - shared_pool_restart_probe_active_leases.stdout | trim == '0'
+    fail_msg: "The restart probe requires the Vecta pre marker and zero active fixture leases"
+  no_log: true
+
+- name: Shared-pool restart probe — remove Fleet without application-side restart
+  community.docker.docker_container:
+    name: openclaw-fleet-gateway
+    state: absent
+    force_kill: true
+  no_log: true
+  tags: shared-pool-restart-probe
+
+- name: Shared-pool restart probe — recreate Fleet from the current platform bundle
+  ansible.builtin.include_tasks:
+    file: "{{ role_path }}/../vecta-app/tasks/fleet_gateway.yml"
+    apply:
+      tags:
+        - shared-pool-restart-probe
+  tags: shared-pool-restart-probe
+
+- name: Shared-pool restart probe — resolve the Vecta post command
+  ansible.builtin.set_fact:
+    shared_pool_restart_probe_post_command: "{{ lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE_POST_COMMAND') | trim }}"
+
+- name: Shared-pool restart probe — wait for the recreated Fleet health port
+  ansible.builtin.wait_for:
+    host: localhost
+    port: "{{ fleet_port | default(3000) }}"
+    timeout: 60
+  no_log: true
+
+- name: Shared-pool restart probe — require an explicit Vecta post command
+  ansible.builtin.assert:
+    that:
+      - shared_pool_restart_probe_post_command | length > 0
+    fail_msg: "The guarded restart probe requires a Vecta post-restart command"
+  no_log: true
+
+- name: Shared-pool restart probe — run the Vecta post command inside Fleet
+  community.docker.docker_container_exec:
+    container: openclaw-fleet-gateway
+    command: "{{ shared_pool_restart_probe_post_command }}"
+  register: shared_pool_restart_probe_post_result
+  changed_when: false
+  no_log: true
+  tags: shared-pool-restart-probe

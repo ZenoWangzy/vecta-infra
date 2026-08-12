@@ -27,13 +27,13 @@ function readTenants() {
   return tenants;
 }
 
-function signJwt(privateKey, audience, scope, subject, tenants, iat, exp) {
+function signJwt(privateKey, audience, scopes, subject, tenants, iat, exp) {
   const header = base64url(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' }));
   const payload = base64url(JSON.stringify({
     iss: 'vecta',
     aud: audience,
     sub: subject,
-    scope: [scope],
+    scope: scopes,
     tid: tenants[0],
     tenant_ids: tenants.slice(1),
     iat,
@@ -55,7 +55,7 @@ const iat = Math.floor(Date.now() / 1000);
 const exp = iat + TOKEN_TTL_SECONDS;
 
 console.log(`PUBLIC_KEY_ESCAPED=${publicPem}`);
-console.log(`CHANNEL_PLATFORM_SERVICE_TOKEN=${signJwt(privateKey, 'channel-gateway', 'channel:internal', 'vtest-channel', tenants, iat, exp)}`);
-console.log(`FLEET_PLATFORM_SERVICE_TOKEN=${signJwt(privateKey, 'fleet-gateway', 'fleet:internal', 'vtest-fleet', tenants, iat, exp)}`);
-console.log(`FLEET_FRUIT_PLATFORM_TOKEN=${signJwt(privateKey, 'fleet-gateway', 'fleet:internal', 'vtest-fruit', tenants, iat, exp)}`);
+console.log(`CHANNEL_PLATFORM_SERVICE_TOKEN=${signJwt(privateKey, 'channel-gateway', ['channel:internal'], 'vtest-channel', tenants, iat, exp)}`);
+console.log(`FLEET_PLATFORM_SERVICE_TOKEN=${signJwt(privateKey, 'fleet-gateway', ['fleet:internal'], 'vtest-fleet', tenants, iat, exp)}`);
+console.log(`FLEET_FRUIT_PLATFORM_TOKEN=${signJwt(privateKey, 'fleet-gateway', ['fleet:internal', 'fleet:scenario-pack-publish'], 'vtest-fruit', tenants, iat, exp)}`);
 console.log(`TENANT_IDS_JSON=${JSON.stringify(tenants)}`);

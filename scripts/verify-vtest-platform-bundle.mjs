@@ -23,40 +23,40 @@ function decodeJson(segment, reason) {
   }
 }
 
-function checkToken(token, expectedAudience, expectedScope, expectedTenants, publicKey) {
-  if (!token || typeof token !== 'string') fail(`${expectedScope}_missing`);
+function checkToken(token, expectedAudience, expectedScopes, expectedTenants, publicKey, tokenRole) {
+  if (!token || typeof token !== 'string') fail(`${tokenRole}_missing`);
   const parts = token.split('.');
-  if (parts.length !== 3) fail(`${expectedScope}_shape`);
-  const header = decodeJson(parts[0], `${expectedScope}_header`);
-  const payload = decodeJson(parts[1], `${expectedScope}_payload`);
-  if (header.alg !== 'EdDSA' || header.typ !== 'JWT') fail(`${expectedScope}_algorithm`);
-  if (!/^[A-Za-z0-9_-]+$/.test(parts[2])) fail(`${expectedScope}_signature_encoding`);
+  if (parts.length !== 3) fail(`${tokenRole}_shape`);
+  const header = decodeJson(parts[0], `${tokenRole}_header`);
+  const payload = decodeJson(parts[1], `${tokenRole}_payload`);
+  if (header.alg !== 'EdDSA' || header.typ !== 'JWT') fail(`${tokenRole}_algorithm`);
+  if (!/^[A-Za-z0-9_-]+$/.test(parts[2])) fail(`${tokenRole}_signature_encoding`);
   let signature;
   try {
     signature = Buffer.from(parts[2], 'base64url');
-    if (signature.toString('base64url') !== parts[2]) fail(`${expectedScope}_signature_encoding`);
+    if (signature.toString('base64url') !== parts[2]) fail(`${tokenRole}_signature_encoding`);
   } catch {
-    fail(`${expectedScope}_signature_encoding`);
+    fail(`${tokenRole}_signature_encoding`);
   }
-  if (!verify(null, Buffer.from(`${parts[0]}.${parts[1]}`), publicKey, signature)) fail(`${expectedScope}_signature`);
-  if (payload.iss !== 'vecta' || payload.aud !== expectedAudience) fail(`${expectedScope}_audience`);
-  if (typeof payload.sub !== 'string' || payload.sub.trim() === '') fail(`${expectedScope}_subject`);
-  if (!Array.isArray(payload.scope) || payload.scope.some((value) => typeof value !== 'string') || !payload.scope.includes(expectedScope)) {
-    fail(`${expectedScope}_scope`);
+  if (!verify(null, Buffer.from(`${parts[0]}.${parts[1]}`), publicKey, signature)) fail(`${tokenRole}_signature`);
+  if (payload.iss !== 'vecta' || payload.aud !== expectedAudience) fail(`${tokenRole}_audience`);
+  if (typeof payload.sub !== 'string' || payload.sub.trim() === '') fail(`${tokenRole}_subject`);
+  if (!Array.isArray(payload.scope) || payload.scope.some((value) => typeof value !== 'string') || !expectedScopes.every((scope) => payload.scope.includes(scope))) {
+    fail(`${tokenRole}_scope`);
   }
-  if (typeof payload.tid !== 'string' || payload.tid.trim() === '') fail(`${expectedScope}_tid`);
+  if (typeof payload.tid !== 'string' || payload.tid.trim() === '') fail(`${tokenRole}_tid`);
   if (!Array.isArray(payload.tenant_ids) || payload.tenant_ids.some((value) => typeof value !== 'string' || value.trim() === '')) {
-    fail(`${expectedScope}_tenant_ids`);
+    fail(`${tokenRole}_tenant_ids`);
   }
   const actualTenants = [payload.tid, ...payload.tenant_ids];
-  if (new Set(actualTenants).size !== actualTenants.length) fail(`${expectedScope}_tenant_ids_duplicate`);
-  if (JSON.stringify([...actualTenants].sort()) !== JSON.stringify([...expectedTenants].sort())) fail(`${expectedScope}_tenant_scope`);
-  if (!actualTenants.includes(FIXTURE_TENANT)) fail(`${expectedScope}_fixture_scope`);
-  if (typeof payload.iat !== 'number' || !Number.isInteger(payload.iat) || !Number.isFinite(payload.iat)) fail(`${expectedScope}_iat`);
-  if (typeof payload.exp !== 'number' || !Number.isInteger(payload.exp) || !Number.isFinite(payload.exp)) fail(`${expectedScope}_exp`);
+  if (new Set(actualTenants).size !== actualTenants.length) fail(`${tokenRole}_tenant_ids_duplicate`);
+  if (JSON.stringify([...actualTenants].sort()) !== JSON.stringify([...expectedTenants].sort())) fail(`${tokenRole}_tenant_scope`);
+  if (!actualTenants.includes(FIXTURE_TENANT)) fail(`${tokenRole}_fixture_scope`);
+  if (typeof payload.iat !== 'number' || !Number.isInteger(payload.iat) || !Number.isFinite(payload.iat)) fail(`${tokenRole}_iat`);
+  if (typeof payload.exp !== 'number' || !Number.isInteger(payload.exp) || !Number.isFinite(payload.exp)) fail(`${tokenRole}_exp`);
   const now = Math.floor(Date.now() / 1000);
   if (payload.iat > now + 60 || payload.exp <= now || payload.exp <= payload.iat || payload.exp - payload.iat > MAX_TOKEN_TTL_SECONDS) {
-    fail(`${expectedScope}_time`);
+    fail(`${tokenRole}_time`);
   }
 }
 
@@ -81,7 +81,7 @@ try {
 } catch {
   fail('expected_tenants');
 }
-checkToken(process.env.VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN, 'channel-gateway', 'channel:internal', expectedTenants, publicKey);
-checkToken(process.env.VTEST_FLEET_PLATFORM_SERVICE_TOKEN, 'fleet-gateway', 'fleet:internal', expectedTenants, publicKey);
-checkToken(process.env.VTEST_FLEET_FRUIT_PLATFORM_TOKEN, 'fleet-gateway', 'fleet:internal', expectedTenants, publicKey);
+checkToken(process.env.VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN, 'channel-gateway', ['channel:internal'], expectedTenants, publicKey, 'channel');
+checkToken(process.env.VTEST_FLEET_PLATFORM_SERVICE_TOKEN, 'fleet-gateway', ['fleet:internal'], expectedTenants, publicKey, 'fleet');
+checkToken(process.env.VTEST_FLEET_FRUIT_PLATFORM_TOKEN, 'fleet-gateway', ['fleet:internal', 'fleet:scenario-pack-publish'], expectedTenants, publicKey, 'fruit');
 console.log('SHARED_POOL_PLATFORM_TOKEN_SIGNATURES_OK');

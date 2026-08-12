@@ -39,6 +39,12 @@
       tags:
         - vecta-app
         - fruit-vtest
+    - import_tasks: shared_pool_restart_probe.yml
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+        - lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE') | string == '1'
+      tags: shared-pool-restart-probe
     - name: Mark the shared-pool cutover complete after health and smoke gates
       ansible.builtin.set_fact:
         shared_pool_cutover_complete: true

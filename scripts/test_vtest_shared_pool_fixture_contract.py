@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import unittest
+import base64
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +19,7 @@ PREFLIGHT = (ROOT / "roles/deploy-vtest/tasks/preflight.yml").read_text()
 BACKUP = (ROOT / "roles/deploy-vtest/tasks/backup_shared_pool_bundle.yml").read_text()
 ROLLBACK = (ROOT / "roles/deploy-vtest/tasks/rollback_shared_pool_bundle.yml").read_text()
 CLEANUP = (ROOT / "roles/deploy-vtest/tasks/cleanup_shared_pool_bundle.yml").read_text()
+RESTART_PROBE = (ROOT / "roles/deploy-vtest/tasks/shared_pool_restart_probe.yml").read_text()
 A2A = (ROOT / "roles/vecta-app/tasks/a2a_router.yml").read_text()
 FLEET = (ROOT / "roles/vecta-app/tasks/fleet_gateway.yml").read_text()
 CHANNEL = (ROOT / "roles/vecta-app/tasks/channel_gateway.yml").read_text()
@@ -62,6 +64,12 @@ def verify_bundle(fields: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["node", str(VERIFY_PATH)], env=env, capture_output=True, text=True, check=False)
 
 
+def token_payload(token: str) -> dict[str, object]:
+    segment = token.split('.')[1]
+    padded = segment + '=' * (-len(segment) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded).decode())
+
+
 def signed_variant(case: str) -> dict[str, str]:
     """Create a signed JWT with one deliberately malformed claim for verifier tests."""
     node_source = r'''
@@ -72,8 +80,8 @@ const now = Math.floor(Date.now() / 1000);
 const { privateKey, publicKey } = generateKeyPairSync('ed25519');
 const header = { alg: process.env.CASE === 'alg' ? 'none' : 'EdDSA', typ: 'JWT' };
 const pem = publicKey.export({ type: 'spki', format: 'pem' }).toString().trim().replace(/\n/g, '\\n');
-function makeToken(aud, scope) {
-  const payload = { iss: 'vecta', aud, sub: 'contract-test', scope: [scope], tid: tenants[0], tenant_ids: tenants.slice(1), iat: now, exp: now + 300 };
+function makeToken(aud, scopes) {
+  const payload = { iss: 'vecta', aud, sub: 'contract-test', scope: scopes, tid: tenants[0], tenant_ids: tenants.slice(1), iat: now, exp: now + 300 };
   if (process.env.CASE === 'bool') payload.iat = true;
   if (process.env.CASE === 'aud') payload.aud = 'wrong-audience';
   if (process.env.CASE === 'scope') payload.scope = ['wrong-scope'];
@@ -85,7 +93,8 @@ function makeToken(aud, scope) {
   const input = `${b64(JSON.stringify(header))}.${b64(payloadJson)}`;
   return `${input}.${sign(null, Buffer.from(input), privateKey).toString('base64url')}`;
 }
-for (const [key, token] of [['CHANNEL_PLATFORM_SERVICE_TOKEN', makeToken('channel-gateway', 'channel:internal')], ['FLEET_PLATFORM_SERVICE_TOKEN', makeToken('fleet-gateway', 'fleet:internal')], ['FLEET_FRUIT_PLATFORM_TOKEN', makeToken('fleet-gateway', 'fleet:internal')]]) console.log(`${key}=${token}`);
+const fruitScopes = process.env.CASE === 'fruit-generic' ? ['fleet:internal'] : ['fleet:internal', 'fleet:scenario-pack-publish'];
+for (const [key, token] of [['CHANNEL_PLATFORM_SERVICE_TOKEN', makeToken('channel-gateway', ['channel:internal'])], ['FLEET_PLATFORM_SERVICE_TOKEN', makeToken('fleet-gateway', ['fleet:internal'])], ['FLEET_FRUIT_PLATFORM_TOKEN', makeToken('fleet-gateway', fruitScopes)]]) console.log(`${key}=${token}`);
 console.log(`PUBLIC_KEY_ESCAPED=${pem}`);
 console.log(`TENANT_IDS_JSON=${JSON.stringify(tenants)}`);
 '''
@@ -143,6 +152,35 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         for task in (A2A, FLEET, CHANNEL, FRUIT):
             self.assertTrue(task.rstrip().endswith("no_log: true"))
 
+    def test_restart_probe_is_guarded_vtest_only_and_runs_before_cleanup(self) -> None:
+        for marker in (
+            "VTEST_SHARED_POOL_RESTART_PROBE",
+            "VTEST_SHARED_POOL_RESTART_PROBE_MARKER_PATH",
+            "VTEST_SHARED_POOL_RESTART_PROBE_POST_COMMAND",
+            "openclaw-fleet-gateway",
+            "fleet_instances",
+            "active fixture lease",
+            "docker_container_exec",
+            "wait_for:",
+            "shared-pool-restart-probe",
+            "/app/data/instances/",
+            "state: absent",
+        ):
+            self.assertIn(marker, RESTART_PROBE + WORKFLOW)
+        self.assertRegex(MAIN, r"smoke\.yml[\s\S]+shared_pool_restart_probe\.yml[\s\S]+shared_pool_cutover_complete")
+        self.assertRegex(MAIN, r"shared_pool_restart_probe\.yml[\s\S]+cleanup_shared_pool_bundle\.yml")
+        self.assertIn("'vtest' in group_names", RESTART_PROBE)
+        self.assertIn("shared_pool_vtest_fixture_enabled", RESTART_PROBE)
+        self.assertIn("vecta-app/tasks/fleet_gateway.yml", RESTART_PROBE)
+        self.assertNotIn("FLEET_PLATFORM_SERVICE_TOKEN:", RESTART_PROBE)
+        self.assertNotIn("docker restart", RESTART_PROBE)
+        self.assertNotIn("docker restart", WORKFLOW)
+
+    def test_restart_probe_is_default_off_and_requires_post_command(self) -> None:
+        self.assertIn("shared_pool_restart_probe:\n        type: boolean\n        default: false", WORKFLOW)
+        self.assertIn("shared_pool_restart_probe_post_command:\n        type: string\n        default: ''", WORKFLOW)
+        self.assertIn("shared_pool_restart_probe_post_command | length > 0", RESTART_PROBE)
+
     def test_token_preflight_uses_real_ed25519_verifier(self) -> None:
         self.assertIn("verify-vtest-platform-bundle.mjs", PREFLIGHT)
         self.assertIn("executable: node", PREFLIGHT)
@@ -188,6 +226,7 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         self.assertIn("vtest-shared-pool", json.loads(fields["TENANT_IDS_JSON"]))
         for name in ("CHANNEL_PLATFORM_SERVICE_TOKEN", "FLEET_PLATFORM_SERVICE_TOKEN", "FLEET_FRUIT_PLATFORM_TOKEN"):
             self.assertEqual(len(fields[name].split(".")), 3)
+        self.assertEqual(token_payload(fields["FLEET_FRUIT_PLATFORM_TOKEN"])["scope"], ["fleet:internal", "fleet:scenario-pack-publish"])
         self.assertNotIn("console.log(privateKey", MINT)
         self.assertNotIn("PRIVATE_KEY=", MINT)
 
@@ -212,9 +251,15 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
 
     def test_verifier_rejects_each_required_bad_claim_variant(self) -> None:
-        for case in ("bool", "nan", "alg", "aud", "scope", "tid", "tenant_ids", "exp", "iat"):
+        for case in ("bool", "nan", "alg", "aud", "scope", "tid", "tenant_ids", "exp", "iat", "fruit-generic"):
             result = verify_bundle(signed_variant(case))
             self.assertNotEqual(result.returncode, 0, case)
+
+    def test_verifier_accepts_fruit_token_only_with_both_required_scopes(self) -> None:
+        result = verify_bundle(signed_variant("normal"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        generic_only = verify_bundle(signed_variant("fruit-generic"))
+        self.assertNotEqual(generic_only.returncode, 0)
 
 
 if __name__ == "__main__":
