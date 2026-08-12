@@ -24,6 +24,7 @@ CLEANUP = (ROOT / "roles/deploy-vtest/tasks/cleanup_shared_pool_bundle.yml").rea
 RESTART_PROBE = (ROOT / "roles/deploy-vtest/tasks/shared_pool_restart_probe.yml").read_text()
 A2A = (ROOT / "roles/vecta-app/tasks/a2a_router.yml").read_text()
 FLEET = (ROOT / "roles/vecta-app/tasks/fleet_gateway.yml").read_text()
+MYPC_FLEET = (ROOT / "roles/vecta-app/tasks/fleet_gateway_mypc.yml").read_text()
 CHANNEL = (ROOT / "roles/vecta-app/tasks/channel_gateway.yml").read_text()
 FRUIT = (ROOT / "roles/fruit_vtest/tasks/main.yml").read_text()
 WECHAT = (ROOT / "roles/vecta-app/tasks/wechat_contact_sync.yml").read_text()
@@ -212,6 +213,21 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
             self.assertIn(f"  - {service}", INVENTORY)
         for task in (A2A, FLEET, CHANNEL, FRUIT):
             self.assertTrue(task.rstrip().endswith("no_log: true"))
+
+    def test_fleet_e2e_env_is_vtest_only_and_uses_the_fleet_bundle_token(self) -> None:
+        self.assertIn("shared_pool_vtest_e2e_enabled: true", INVENTORY)
+        self.assertIn(
+            "FLEET_PLATFORM_SERVICE_TOKEN: \"{{ (shared_pool_vtest_e2e_enabled | default(false) | bool) | ternary(lookup('env', 'FLEET_PLATFORM_SERVICE_TOKEN'), omit) }}\"",
+            FLEET,
+        )
+        self.assertIn(
+            "OPENAI_COMPAT_SYNTHETIC_MODE: \"{{ (shared_pool_vtest_e2e_enabled | default(false) | bool) | ternary('off', omit) }}\"",
+            FLEET,
+        )
+        self.assertTrue(FLEET.rstrip().endswith("no_log: true"))
+        for production in (MYPC, MYCP, MYPC_FLEET):
+            self.assertNotIn("FLEET_PLATFORM_SERVICE_TOKEN", production)
+            self.assertNotIn("OPENAI_COMPAT_SYNTHETIC_MODE", production)
 
     def test_wechat_contact_sync_hides_existing_token_fields(self) -> None:
         self.assertEqual(WECHAT.count("no_log: true"), 3)
