@@ -38,6 +38,18 @@ on:
         required: true
       NEXUS_ADMIN_PASSWORD:
         required: true
+      # bootstrap-only; unused; remove immediately after Vecta PR454 merges.
+      # These declarations keep pull_request_target startup validation alive
+      # while the Vecta caller removes its obsolete mappings. The deploy job
+      # must never read these inputs; platform JWTs are minted below per run.
+      VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY:
+        required: false
+      VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN:
+        required: false
+      VTEST_FLEET_PLATFORM_SERVICE_TOKEN:
+        required: false
+      VTEST_FLEET_FRUIT_PLATFORM_TOKEN:
+        required: false
       WECOM_CORP_ID:
         required: false
       WECOM_CONTACTS_SECRET:

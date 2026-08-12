@@ -356,12 +356,13 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         self.assertNotIn("GITHUB_ENV", WORKFLOW)
         self.assertNotIn("upload-artifact", WORKFLOW)
         for legacy_secret in (
-            "VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY:",
-            "VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN:",
-            "VTEST_FLEET_PLATFORM_SERVICE_TOKEN:",
-            "VTEST_FLEET_FRUIT_PLATFORM_TOKEN:",
+            "VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY",
+            "VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN",
+            "VTEST_FLEET_PLATFORM_SERVICE_TOKEN",
+            "VTEST_FLEET_FRUIT_PLATFORM_TOKEN",
         ):
-            self.assertNotIn(legacy_secret, WORKFLOW)
+            self.assertRegex(WORKFLOW, rf"{legacy_secret}:\n\s+required: false")
+            self.assertNotIn(f"secrets.{legacy_secret}", WORKFLOW)
 
     def test_mint_emits_three_real_signed_tokens_and_fixture_scope(self) -> None:
         fields = mint_bundle()
