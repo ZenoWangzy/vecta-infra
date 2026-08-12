@@ -68,6 +68,11 @@ class EmployeeRuntimeContractTest(unittest.TestCase):
         self.assertIn('etc_hosts: "{{ channel_gateway_etc_hosts | default(omit) }}"', CHANNEL)
 
     def test_vtest_channel_shares_fleet_database_and_gates_the_e2e_cli(self) -> None:
+        deploy_channel_gateway = task_block(CHANNEL, "Deploy channel-gateway")
+        self.assertTrue(
+            deploy_channel_gateway.rstrip().endswith("  no_log: true"),
+            "channel-gateway DATABASE_URL must be hidden at task level",
+        )
         self.assertIn(
             "DATABASE_URL: \"{{ (shared_pool_vtest_e2e_enabled | default(false) | bool) | ternary('",
             CHANNEL,
