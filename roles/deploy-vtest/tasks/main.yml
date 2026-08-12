@@ -45,18 +45,18 @@
         - shared_pool_vtest_fixture_enabled | default(false) | bool
         - lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE') | string == '1'
       tags: shared-pool-restart-probe
-    - name: Mark the shared-pool cutover complete after health and smoke gates
+    - import_tasks: cleanup_shared_pool_bundle.yml
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+      tags: vecta-app
+    - name: Mark the shared-pool cutover complete after rollback cleanup succeeds
       ansible.builtin.set_fact:
         shared_pool_cutover_complete: true
       when:
         - "'vtest' in group_names"
         - shared_pool_vtest_fixture_enabled | default(false) | bool
       tags: always
-    - import_tasks: cleanup_shared_pool_bundle.yml
-      when:
-        - "'vtest' in group_names"
-        - shared_pool_vtest_fixture_enabled | default(false) | bool
-      tags: vecta-app
     - import_tasks: audit_success.yml
       tags:
         - vecta-app

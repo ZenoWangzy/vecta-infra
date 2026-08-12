@@ -3,25 +3,12 @@
     that:
       - "'vtest' in group_names"
       - shared_pool_vtest_fixture_enabled | default(false) | bool
+      - shared_pool_vtest_fixture_tenant_id | default('') == 'vtest-shared-pool'
       - lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE') | string == '1'
     fail_msg: "The shared-pool restart probe is restricted to the enabled vtest fixture lane"
   no_log: true
 
-- name: Shared-pool restart probe — resolve and validate the pre marker path
-  ansible.builtin.set_fact:
-    shared_pool_restart_probe_marker_path: >-
-      {{ lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE_MARKER_PATH')
-         | default('/app/data/instances/.shared-pool-restart-pre', true) | trim }}
-
-- name: Shared-pool restart probe — reject an unsafe marker path
-  ansible.builtin.assert:
-    that:
-      - "shared_pool_restart_probe_marker_path is match('^/app/data/instances/[A-Za-z0-9._/-]+$')"
-      - "'..' not in shared_pool_restart_probe_marker_path"
-    fail_msg: "The restart probe marker must be a child of Fleet's mounted instances directory"
-  no_log: true
-
-- name: Shared-pool restart probe — require the Vecta pre marker in Fleet state
+- name: Shared-pool restart probe — require the fixed Fleet pre marker
   ansible.builtin.command:
     argv:
       - docker
@@ -29,33 +16,86 @@
       - openclaw-fleet-gateway
       - test
       - -f
-      - "{{ shared_pool_restart_probe_marker_path }}"
+      - /app/data/instances/.shared-pool-restart-pre
   register: shared_pool_restart_probe_marker
   changed_when: false
   no_log: true
 
-- name: Shared-pool restart probe — require no active fixture lease
+- name: Shared-pool restart probe — query the authoritative fixture lease state
   ansible.builtin.shell: |
     set -euo pipefail
     docker exec openclaw-postgres psql \
       -X \
+      -q \
       -v ON_ERROR_STOP=1 \
       -U {{ postgres_user | default('openclaw') | quote }} \
       -d {{ postgres_db | default('openclaw') | quote }} \
       -Atc \
-      "SELECT count(*) FROM public.fleet_instances fi JOIN public.employees e ON e.employee_id = fi.employee_id WHERE e.tenant_id = 'vtest-shared-pool' AND fi.status::text IN ('starting', 'running')"
+      "BEGIN;
+       DO \$context\$
+       BEGIN
+         PERFORM set_config('app.current_tenant', '__auth__', true);
+       END
+       \$context\$;
+       DO \$guard\$
+       BEGIN
+         IF to_regclass('public.shared_pool_slots') IS NULL
+            OR to_regclass('public.shared_pool_lease_requests') IS NULL THEN
+           RAISE EXCEPTION 'shared_pool_authority_schema_missing';
+         END IF;
+         IF EXISTS (
+           SELECT 1
+           FROM (VALUES
+             ('shared_pool_slots', 'status'),
+             ('shared_pool_slots', 'lease_tenant_id'),
+             ('shared_pool_slots', 'finalizing_at'),
+             ('shared_pool_slots', 'slot_id'),
+             ('shared_pool_slots', 'generation'),
+             ('shared_pool_lease_requests', 'tenant_id'),
+             ('shared_pool_lease_requests', 'released_at'),
+             ('shared_pool_lease_requests', 'slot_id'),
+             ('shared_pool_lease_requests', 'generation')
+           ) AS required(table_name, column_name)
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM information_schema.columns column_info
+             WHERE column_info.table_schema = 'public'
+               AND column_info.table_name = required.table_name
+               AND column_info.column_name = required.column_name
+           )
+         ) THEN
+           RAISE EXCEPTION 'shared_pool_authority_columns_missing';
+         END IF;
+       END
+       \$guard\$;
+       SELECT CASE WHEN EXISTS (
+         SELECT 1
+         FROM public.shared_pool_slots slot
+         WHERE slot.lease_tenant_id = 'vtest-shared-pool'
+           AND (
+             slot.status::text IN ('leased', 'provisioning')
+             OR slot.finalizing_at IS NOT NULL
+           )
+       ) OR EXISTS (
+         SELECT 1
+         FROM public.shared_pool_lease_requests request
+         WHERE request.tenant_id = 'vtest-shared-pool'
+           AND request.released_at IS NULL
+       ) THEN 1 ELSE 0 END;
+       COMMIT;"
   args:
     executable: /bin/bash
   register: shared_pool_restart_probe_active_leases
   changed_when: false
   no_log: true
 
-- name: Shared-pool restart probe — fail closed on an active fixture lease
+- name: Shared-pool restart probe — fail closed on an active or incomplete fixture lease
   ansible.builtin.assert:
     that:
       - shared_pool_restart_probe_marker.rc | int == 0
+      - shared_pool_restart_probe_active_leases.rc | int == 0
       - shared_pool_restart_probe_active_leases.stdout | trim == '0'
-    fail_msg: "The restart probe requires the Vecta pre marker and zero active fixture leases"
+    fail_msg: "The restart probe requires the fixed pre marker and no fixture leased/finalizing/provisioning or unreleased request state"
   no_log: true
 
 - name: Shared-pool restart probe — remove Fleet without application-side restart
@@ -74,10 +114,6 @@
         - shared-pool-restart-probe
   tags: shared-pool-restart-probe
 
-- name: Shared-pool restart probe — resolve the Vecta post command
-  ansible.builtin.set_fact:
-    shared_pool_restart_probe_post_command: "{{ lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE_POST_COMMAND') | trim }}"
-
 - name: Shared-pool restart probe — wait for the recreated Fleet health port
   ansible.builtin.wait_for:
     host: localhost
@@ -85,17 +121,13 @@
     timeout: 60
   no_log: true
 
-- name: Shared-pool restart probe — require an explicit Vecta post command
-  ansible.builtin.assert:
-    that:
-      - shared_pool_restart_probe_post_command | length > 0
-    fail_msg: "The guarded restart probe requires a Vecta post-restart command"
-  no_log: true
-
-- name: Shared-pool restart probe — run the Vecta post command inside Fleet
+- name: Shared-pool restart probe — run the fixed Fleet runner post phase
   community.docker.docker_container_exec:
     container: openclaw-fleet-gateway
-    command: "{{ shared_pool_restart_probe_post_command }}"
+    argv:
+      - node
+      - /app/packages/fleet-gateway/dist/vtest/shared-pool-e2e.js
+      - --restart-post
   register: shared_pool_restart_probe_post_result
   changed_when: false
   no_log: true

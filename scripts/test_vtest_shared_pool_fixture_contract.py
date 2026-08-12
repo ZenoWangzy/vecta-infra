@@ -145,6 +145,8 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         self.assertIn("Remove consumers that did not exist before the cutover", ROLLBACK)
         self.assertIn("state: started", ROLLBACK)
         self.assertIn("state: absent", CLEANUP)
+        self.assertIn("docker_container_info", CLEANUP)
+        self.assertIn("parked rollback container", CLEANUP)
 
     def test_all_shared_pool_consumers_are_quiesced_and_hidden(self) -> None:
         for service in ("a2a-router", "fleet-gateway", "channel-gateway", "fruit-industry-pack"):
@@ -155,31 +157,43 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
     def test_restart_probe_is_guarded_vtest_only_and_runs_before_cleanup(self) -> None:
         for marker in (
             "VTEST_SHARED_POOL_RESTART_PROBE",
-            "VTEST_SHARED_POOL_RESTART_PROBE_MARKER_PATH",
-            "VTEST_SHARED_POOL_RESTART_PROBE_POST_COMMAND",
             "openclaw-fleet-gateway",
-            "fleet_instances",
-            "active fixture lease",
+            "shared_pool_slots",
+            "shared_pool_lease_requests",
+            "released_at",
+            "finalizing_at",
+            "provisioning",
             "docker_container_exec",
             "wait_for:",
             "shared-pool-restart-probe",
-            "/app/data/instances/",
+            "/app/data/instances/.shared-pool-restart-pre",
+            "/app/packages/fleet-gateway/dist/vtest/shared-pool-e2e.js",
+            "--restart-post",
             "state: absent",
         ):
             self.assertIn(marker, RESTART_PROBE + WORKFLOW)
-        self.assertRegex(MAIN, r"smoke\.yml[\s\S]+shared_pool_restart_probe\.yml[\s\S]+shared_pool_cutover_complete")
+        self.assertRegex(MAIN, r"smoke\.yml[\s\S]+shared_pool_restart_probe\.yml[\s\S]+cleanup_shared_pool_bundle\.yml[\s\S]+shared_pool_cutover_complete")
         self.assertRegex(MAIN, r"shared_pool_restart_probe\.yml[\s\S]+cleanup_shared_pool_bundle\.yml")
         self.assertIn("'vtest' in group_names", RESTART_PROBE)
         self.assertIn("shared_pool_vtest_fixture_enabled", RESTART_PROBE)
         self.assertIn("vecta-app/tasks/fleet_gateway.yml", RESTART_PROBE)
+        self.assertIn("set_config('app.current_tenant', '__auth__', true)", RESTART_PROBE)
+        self.assertIn("shared_pool_authority_schema_missing", RESTART_PROBE)
+        self.assertIn("shared_pool_authority_columns_missing", RESTART_PROBE)
         self.assertNotIn("FLEET_PLATFORM_SERVICE_TOKEN:", RESTART_PROBE)
+        self.assertNotIn("fleet_instances", RESTART_PROBE)
         self.assertNotIn("docker restart", RESTART_PROBE)
         self.assertNotIn("docker restart", WORKFLOW)
+        self.assertNotIn("shared_pool_restart_probe_marker_path", RESTART_PROBE + WORKFLOW)
+        self.assertNotIn("shared_pool_restart_probe_post_command", RESTART_PROBE + WORKFLOW)
 
-    def test_restart_probe_is_default_off_and_requires_post_command(self) -> None:
+    def test_restart_probe_is_default_off_and_has_no_command_inputs(self) -> None:
         self.assertIn("shared_pool_restart_probe:\n        type: boolean\n        default: false", WORKFLOW)
-        self.assertIn("shared_pool_restart_probe_post_command:\n        type: string\n        default: ''", WORKFLOW)
-        self.assertIn("shared_pool_restart_probe_post_command | length > 0", RESTART_PROBE)
+        self.assertNotIn("shared_pool_restart_probe_marker_path:", WORKFLOW)
+        self.assertNotIn("shared_pool_restart_probe_post_command:", WORKFLOW)
+        self.assertNotIn("lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE_MARKER_PATH')", RESTART_PROBE)
+        self.assertNotIn("lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE_POST_COMMAND')", RESTART_PROBE)
+        self.assertIn("argv:\n      - node", RESTART_PROBE)
 
     def test_token_preflight_uses_real_ed25519_verifier(self) -> None:
         self.assertIn("verify-vtest-platform-bundle.mjs", PREFLIGHT)

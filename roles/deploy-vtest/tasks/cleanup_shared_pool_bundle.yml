@@ -6,6 +6,21 @@
   when: item.exists | default(false)
   no_log: true
 
+- name: Refuse cleanup success while a parked rollback container remains
+  community.docker.docker_container_info:
+    name: "openclaw-{{ item }}.shared-pool-rollback"
+  loop: "{{ vtest_write_quiesce_services }}"
+  register: shared_pool_parked_rollback_containers
+  no_log: true
+
+- name: Fail closed on a parked rollback container
+  ansible.builtin.assert:
+    that:
+      - not (item.exists | default(false) | bool)
+    fail_msg: "A parked shared-pool rollback container remains after cleanup"
+  loop: "{{ shared_pool_parked_rollback_containers.results | default([]) }}"
+  no_log: true
+
 - name: Remove the private old-bundle rollback snapshot after success
   ansible.builtin.file:
     path: "{{ remote_dir }}/backups/shared-pool-platform-bundle-{{ deploy_sha }}"
