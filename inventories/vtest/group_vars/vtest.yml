@@ -24,7 +24,7 @@ vtest_pinned_third_party_images:
 
 openclaw_image: "{{ nexus_docker_registry }}/alpine/openclaw:2026.5.18"
 baidu_search_image: "{{ nexus_docker_registry }}/baidu-search-service:{{ deploy_sha }}"
-hermes_runtime_image_version: "{{ nexus_docker_registry }}/vecta-hermes-withopenclaw:v2026.5.16"
+hermes_runtime_image_version: "{{ nexus_docker_registry }}/employee-runtime:{{ deploy_sha }}"
 
 # Public vtest nginx vhost. The host nginx config must route browser paths into
 # the infra-owned Open WebUI proxy on :3002, not directly to app containers.
@@ -60,6 +60,7 @@ vtest_required_image_repos:
   - admin-console
   - wechat-contact-sync
   - baidu-search-service
+  - employee-runtime
 
 # Fruit remains an explicitly scoped vtest-only service. Its canary identity is
 # discovered from the platform database so no tenant ID or credential is stored
@@ -102,6 +103,12 @@ debian_mirror: "{{ nexus_base_url }}/repository/{{ nexus_debian_proxy_repo }}"
 debian_security_mirror: "{{ nexus_base_url }}/repository/{{ nexus_debian_security_proxy_repo }}"
 docker_base_image_registry: "{{ nexus_docker_registry }}"
 docker_network: "openclaw-enterprise_openclaw-net"
+# Linux vtest containers need Docker's host gateway to let Fleet-managed
+# employee runtimes and Channel resolve host.docker.internal consistently.
+fleet_gateway_etc_hosts:
+  host.docker.internal: host-gateway
+channel_gateway_etc_hosts:
+  host.docker.internal: host-gateway
 
 # Docker-network endpoints consumed by app containers. These must be infra-owned
 # because host-published ports from /data/ocee/.env are not valid inside Docker.

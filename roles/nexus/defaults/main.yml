@@ -22,10 +22,15 @@ nexus_docker_hosted_connector_port: "{{ nexus_docker_connector_port }}"
 nexus_docker_group_connector_port: 8083
 nexus_docker_hosted_repo: vecta-docker-local
 nexus_docker_proxy_repo: vecta-docker-remote
+nexus_ghcr_proxy_repo: vecta-ghcr-remote
 nexus_docker_group_repo: vecta-docker-virtual
 # Official Docker Hub registry API endpoint for the Nexus Docker proxy.
 nexus_docker_remote_index_url: "https://index.docker.io/"
 nexus_docker_remote_url: "https://registry-1.docker.io"
+# GitHub Container Registry is a distinct OCI registry and must be a separate
+# Nexus Docker proxy; Docker Hub cannot serve the OpenClaw runtime base image.
+nexus_ghcr_remote_index_url: "https://ghcr.io"
+nexus_ghcr_remote_url: "https://ghcr.io"
 
 # Nexus 3.94 uses its System HTTP setting for both HTTP and HTTPS CONNECT.
 nexus_outbound_proxy_version: "3.94.0-12"

@@ -1,0 +1,5 @@
+- name: Ensure GitHub Container Registry Docker proxy
+  ansible.builtin.import_tasks: ghcr_proxy.yml
+
+- name: Ensure Nexus Docker group includes GitHub Container Registry
+  ansible.builtin.import_tasks: docker_group.yml
