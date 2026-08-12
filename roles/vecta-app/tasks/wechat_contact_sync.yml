@@ -3,11 +3,13 @@
     host: localhost
     port: "{{ fleet_port | default(3000) }}"
     timeout: 30
+  no_log: true
 
 - name: Remove legacy non-Nexus WeCom contact sync container
   community.docker.docker_container:
     name: openclaw-wecom-contact-sync
     state: absent
+  no_log: true
 
 - name: Deploy wechat-contact-sync
   community.docker.docker_container:
@@ -30,3 +32,4 @@
     networks:
       - name: "{{ docker_network }}"
     memory: "256m"
+  no_log: true

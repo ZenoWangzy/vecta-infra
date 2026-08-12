@@ -27,6 +27,10 @@ on:
         type: boolean
         default: false
         description: "Run the reviewed Fruit schema and runtime-role bootstrap before service deployment"
+      shared_pool_restart_probe:
+        type: boolean
+        default: false
+        description: "Run the guarded vtest-only shared-pool Fleet restart probe after the standard deploy"
     secrets:
       VTEST_DATABASE_URL:
         required: true
@@ -48,16 +52,6 @@ on:
         required: false
       PROXY_PREVIOUS_PASSWORD:
         required: false
-      # vecta #408 platform service JWTs. Optional so an unprovisioned environment still
-      # deploys everything else, but a2a-router will not start without the channel token.
-      VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY:
-        required: false
-      VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN:
-        required: false
-      VTEST_FLEET_PLATFORM_SERVICE_TOKEN:
-        required: false
-      VTEST_FLEET_FRUIT_PLATFORM_TOKEN:
-        required: false
 
 jobs:
   deploy:
@@ -72,15 +66,11 @@ jobs:
       WECOM_CONTACTS_SECRET: ${{ secrets.WECOM_CONTACTS_SECRET }}
       WECOM_BOT_ID: ${{ secrets.WECOM_BOT_ID }}
       WECOM_BOT_SECRET: ${{ secrets.WECOM_BOT_SECRET }}
-      # Ansible reads these through lookup('env', ...) in roles/vecta-app/tasks/*.yml.
-      PLATFORM_SERVICE_JWT_PUBLIC_KEY: ${{ secrets.VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY }}
-      CHANNEL_PLATFORM_SERVICE_TOKEN: ${{ secrets.VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN }}
-      FLEET_PLATFORM_SERVICE_TOKEN: ${{ secrets.VTEST_FLEET_PLATFORM_SERVICE_TOKEN }}
-      FLEET_FRUIT_PLATFORM_TOKEN: ${{ secrets.VTEST_FLEET_FRUIT_PLATFORM_TOKEN }}
       DEPLOY_SHA: ${{ inputs.image_tag }}
       VTEST_ALLOW_MIGRATE: ${{ inputs.run_migrations && '1' || '0' }}
       DEPLOY_TAGS: ${{ inputs.tags || 'open-webui,vecta-app,fruit-vtest' }}
       VTEST_FRUIT_BOOTSTRAP: ${{ inputs.fruit_bootstrap && '1' || '0' }}
+      VTEST_SHARED_POOL_RESTART_PROBE: ${{ inputs.shared_pool_restart_probe && '1' || '0' }}
     steps:
       - name: Configure git proxy and check out vecta-infra
         run: |
@@ -195,6 +185,13 @@ jobs:
       - name: Deploy via Ansible
         run: |
           set -euo pipefail
+          cleanup_ephemeral_platform_bundle() {
+            unset PLATFORM_SERVICE_JWT_PUBLIC_KEY CHANNEL_PLATFORM_SERVICE_TOKEN FLEET_PLATFORM_SERVICE_TOKEN FLEET_FRUIT_PLATFORM_TOKEN VTEST_EXPECTED_TENANT_IDS_JSON
+            unset VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN VTEST_FLEET_PLATFORM_SERVICE_TOKEN VTEST_FLEET_FRUIT_PLATFORM_TOKEN
+            unset VTEST_SHARED_POOL_RESTART_PROBE
+            unset bundle_output bundle_key bundle_value platform_public_key channel_platform_token fleet_platform_token fleet_fruit_platform_token expected_tenant_ids_json tenant_query_output tenant_query_line tenant_ids postgres_user postgres_db deploy_tags
+          }
+          trap cleanup_ephemeral_platform_bundle EXIT
           ci_nexus_admin_password="${NEXUS_ADMIN_PASSWORD:-}"
           ci_wecom_corp_id="${WECOM_CORP_ID:-}"
           ci_wecom_contacts_secret="${WECOM_CONTACTS_SECRET:-}"
@@ -211,6 +208,49 @@ jobs:
             . /data/ocee/.env
             set +a
           fi
+          # Platform JWTs are per-deploy only. Ignore and clear any legacy values
+          # loaded from the host env; this job owns one fresh signed bundle.
+          unset PLATFORM_SERVICE_JWT_PUBLIC_KEY CHANNEL_PLATFORM_SERVICE_TOKEN FLEET_PLATFORM_SERVICE_TOKEN FLEET_FRUIT_PLATFORM_TOKEN
+          unset VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN VTEST_FLEET_PLATFORM_SERVICE_TOKEN VTEST_FLEET_FRUIT_PLATFORM_TOKEN
+          postgres_user="${POSTGRES_USER:-openclaw}"
+          postgres_db="${POSTGRES_DB:-openclaw}"
+          # Keep an explicit tenant context even when this DB role has BYPASSRLS;
+          # the query must exercise the same __auth__ context as the guarded preflight.
+          tenant_query_output="$(docker exec openclaw-postgres psql -X -q -v ON_ERROR_STOP=1 -U "$postgres_user" -d "$postgres_db" -Atc \
+            "BEGIN; SET LOCAL app.current_tenant = '__auth__'; DO \$context\$ BEGIN IF current_setting('app.current_tenant', true) <> '__auth__' THEN RAISE EXCEPTION 'vtest tenant context was not applied'; END IF; END \$context\$; SELECT DISTINCT tenant_id FROM public.employees WHERE tenant_id IS NOT NULL ORDER BY tenant_id; COMMIT;")"
+          tenant_ids=''
+          while IFS= read -r tenant_query_line; do
+            case "$tenant_query_line" in
+              ''|BEGIN|COMMIT|SET|DO|"SET LOCAL") ;;
+              *) tenant_ids="${tenant_ids}${tenant_query_line}"$'\n' ;;
+            esac
+          done <<< "$tenant_query_output"
+          bundle_output="$(printf '%s' "$tenant_ids" | node scripts/mint-vtest-platform-bundle.mjs)"
+          bundle_field_count=0
+          while IFS='=' read -r bundle_key bundle_value; do
+            case "$bundle_key" in
+              PUBLIC_KEY_ESCAPED) [ -z "${platform_public_key+x}" ] || { echo "duplicate platform bundle field" >&2; exit 1; }; platform_public_key="$bundle_value"; bundle_field_count=$((bundle_field_count + 1)) ;;
+              CHANNEL_PLATFORM_SERVICE_TOKEN) [ -z "${channel_platform_token+x}" ] || { echo "duplicate platform bundle field" >&2; exit 1; }; channel_platform_token="$bundle_value"; bundle_field_count=$((bundle_field_count + 1)) ;;
+              FLEET_PLATFORM_SERVICE_TOKEN) [ -z "${fleet_platform_token+x}" ] || { echo "duplicate platform bundle field" >&2; exit 1; }; fleet_platform_token="$bundle_value"; bundle_field_count=$((bundle_field_count + 1)) ;;
+              FLEET_FRUIT_PLATFORM_TOKEN) [ -z "${fleet_fruit_platform_token+x}" ] || { echo "duplicate platform bundle field" >&2; exit 1; }; fleet_fruit_platform_token="$bundle_value"; bundle_field_count=$((bundle_field_count + 1)) ;;
+              TENANT_IDS_JSON) [ -z "${expected_tenant_ids_json+x}" ] || { echo "duplicate platform bundle field" >&2; exit 1; }; expected_tenant_ids_json="$bundle_value"; bundle_field_count=$((bundle_field_count + 1)) ;;
+              '') ;;
+              *) echo "unexpected platform bundle field" >&2; exit 1 ;;
+            esac
+          done <<< "$bundle_output"
+          [ "$bundle_field_count" -eq 5 ] || { echo "ephemeral platform bundle has unexpected field count" >&2; exit 1; }
+          for required_bundle_value in platform_public_key channel_platform_token fleet_platform_token fleet_fruit_platform_token expected_tenant_ids_json; do
+            [ -n "${!required_bundle_value:-}" ] || { echo "ephemeral platform bundle incomplete" >&2; exit 1; }
+          done
+          echo "::add-mask::$platform_public_key"
+          echo "::add-mask::$channel_platform_token"
+          echo "::add-mask::$fleet_platform_token"
+          echo "::add-mask::$fleet_fruit_platform_token"
+          export PLATFORM_SERVICE_JWT_PUBLIC_KEY="$platform_public_key"
+          export CHANNEL_PLATFORM_SERVICE_TOKEN="$channel_platform_token"
+          export FLEET_PLATFORM_SERVICE_TOKEN="$fleet_platform_token"
+          export FLEET_FRUIT_PLATFORM_TOKEN="$fleet_fruit_platform_token"
+          export VTEST_EXPECTED_TENANT_IDS_JSON="$expected_tenant_ids_json"
           export NEXUS_ADMIN_PASSWORD="$ci_nexus_admin_password"
           if [ -n "$ci_proxy_username_set" ]; then export PROXY_USERNAME="$ci_proxy_username"; else unset PROXY_USERNAME; fi
           if [ -n "$ci_proxy_password_set" ]; then export PROXY_PASSWORD="$ci_proxy_password"; else unset PROXY_PASSWORD; fi
@@ -220,6 +260,10 @@ jobs:
           [ -n "$ci_wecom_contacts_secret" ] && export WECOM_CONTACTS_SECRET="$ci_wecom_contacts_secret"
           [ -n "$ci_wecom_bot_id" ] && export WECOM_BOT_ID="$ci_wecom_bot_id"
           [ -n "$ci_wecom_bot_secret" ] && export WECOM_BOT_SECRET="$ci_wecom_bot_secret"
+          deploy_tags="${DEPLOY_TAGS:-open-webui,vecta-app,fruit-vtest}"
+          if [ "${VTEST_SHARED_POOL_RESTART_PROBE:-0}" = "1" ]; then
+            deploy_tags="${deploy_tags},shared-pool-restart-probe"
+          fi
           echo "$NEXUS_ADMIN_PASSWORD" | docker login 127.0.0.1:8082 -u admin --password-stdin
           ansible-playbook playbooks/deploy.yml \
             -i inventories/vtest/hosts.ini \
@@ -227,7 +271,7 @@ jobs:
             -e "vtest_allow_migrate=$VTEST_ALLOW_MIGRATE" \
             -e "fruit_vtest_bootstrap=$VTEST_FRUIT_BOOTSTRAP" \
             -e "vtest_migration_files=$(ls /tmp/migration-sqls/*.sql 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo '')" \
-            --tags "${DEPLOY_TAGS:-open-webui,vecta-app,fruit-vtest}"
+            --tags "$deploy_tags"
           unset NEXUS_ADMIN_PASSWORD PROXY_USERNAME PROXY_PASSWORD PROXY_PREVIOUS_PASSWORD ci_nexus_admin_password ci_proxy_username ci_proxy_password ci_proxy_previous_password
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.NEXUS_ADMIN_PASSWORD }}

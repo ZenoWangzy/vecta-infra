@@ -82,9 +82,11 @@ fruit_vtest_bootstrap: false
 vtest_migrator_image_repo: vecta-migrator
 
 vtest_write_quiesce_services:
+  - a2a-router
   - fleet-gateway
   - channel-gateway
   - wechat-contact-sync
+  - fruit-industry-pack
 
 fleet_gateway_image: "{{ nexus_docker_registry }}/fleet-gateway:{{ deploy_sha }}"
 channel_gateway_image: "{{ nexus_docker_registry }}/channel-gateway:{{ deploy_sha }}"
@@ -140,6 +142,8 @@ redis_password: "{{ lookup('env', 'REDIS_PASSWORD') | default('changeme-redis-pw
 # The shared-pool CLI is opt-in and only passed by the non-mypc vtest role.
 # It is disabled by default in the role and is not part of the production mypc task.
 shared_pool_vtest_e2e_enabled: true
+shared_pool_vtest_fixture_enabled: true
+shared_pool_vtest_fixture_tenant_id: "vtest-shared-pool"
 
 # Open WebUI trusted-header users. The role derives tenant_id from employees in
 # the target DB and upserts channel_user_mapping(channel='open-webui').

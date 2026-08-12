@@ -1,0 +1,100 @@
+- name: Shared-pool restart probe — require the guarded vtest fixture lane
+  ansible.builtin.assert:
+    that:
+      - "'vtest' in group_names"
+      - shared_pool_vtest_fixture_enabled | default(false) | bool
+      - shared_pool_vtest_fixture_tenant_id | default('') == 'vtest-shared-pool'
+      - lookup('env', 'VTEST_SHARED_POOL_RESTART_PROBE') | string == '1'
+    fail_msg: "The shared-pool restart probe is restricted to the enabled vtest fixture lane"
+  no_log: true
+
+- name: Shared-pool restart probe — read and validate the fixed Fleet manifest
+  ansible.builtin.shell: |
+    set -euo pipefail
+    docker exec -i openclaw-fleet-gateway node --input-type=module - <<'NODE'
+    import { constants, fstatSync, openSync, readFileSync, closeSync } from 'node:fs';
+    const path = '/app/data/instances/vtest-shared-pool-e2e/restart-manifest.json';
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = fstatSync(fd);
+      if ((stat.mode & 0o777) !== 0o600) throw new Error('manifest_mode');
+      if (stat.uid !== process.getuid()) throw new Error('manifest_owner');
+      const value = JSON.parse(readFileSync(fd, 'utf8'));
+      const expectedKeys = ['employee_a', 'employee_b', 'employee_guard', 'marker', 'schema_version', 'tenant_id'];
+      if (!value || typeof value !== 'object' || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(expectedKeys)) throw new Error('manifest_schema');
+      if (value.schema_version !== 1 || value.tenant_id !== 'vtest-shared-pool' || value.marker !== 'vtest_shared_pool_restart_pre') throw new Error('manifest_marker');
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      for (const key of ['employee_a', 'employee_b', 'employee_guard']) if (typeof value[key] !== 'string' || !uuid.test(value[key])) throw new Error('manifest_employee');
+      process.stdout.write([value.tenant_id, value.employee_a, value.employee_b, value.employee_guard].join('\n') + '\n');
+    } finally {
+      closeSync(fd);
+    }
+    NODE
+  args:
+    executable: /bin/bash
+  register: shared_pool_restart_probe_manifest
+  changed_when: false
+  no_log: true
+
+- name: Shared-pool restart probe — require exactly the manifest identity tuple
+  ansible.builtin.assert:
+    that:
+      - shared_pool_restart_probe_manifest.rc | int == 0
+      - shared_pool_restart_probe_manifest.stdout_lines | length == 4
+      - shared_pool_restart_probe_manifest.stdout_lines[0] == 'vtest-shared-pool'
+      - shared_pool_restart_probe_manifest.stdout_lines[1] is match('^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$')
+      - shared_pool_restart_probe_manifest.stdout_lines[2] is match('^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$')
+      - shared_pool_restart_probe_manifest.stdout_lines[3] is match('^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$')
+    fail_msg: "The fixed Fleet restart manifest is missing, unsafe, or malformed"
+  no_log: true
+
+- name: Shared-pool restart probe — bind runner arguments only to the validated manifest
+  ansible.builtin.set_fact:
+    shared_pool_restart_probe_tenant_id: "{{ shared_pool_restart_probe_manifest.stdout_lines[0] }}"
+    shared_pool_restart_probe_employee_a: "{{ shared_pool_restart_probe_manifest.stdout_lines[1] }}"
+    shared_pool_restart_probe_employee_b: "{{ shared_pool_restart_probe_manifest.stdout_lines[2] }}"
+    shared_pool_restart_probe_employee_guard: "{{ shared_pool_restart_probe_manifest.stdout_lines[3] }}"
+  no_log: true
+
+- name: Shared-pool restart probe — remove Fleet after cleanup commit
+  community.docker.docker_container:
+    name: openclaw-fleet-gateway
+    state: absent
+    force_kill: true
+  no_log: true
+  tags: shared-pool-restart-probe
+
+- name: Shared-pool restart probe — recreate Fleet from the current platform bundle
+  ansible.builtin.include_tasks:
+    file: "{{ role_path }}/../vecta-app/tasks/fleet_gateway.yml"
+    apply:
+      tags:
+        - shared-pool-restart-probe
+  tags: shared-pool-restart-probe
+
+- name: Shared-pool restart probe — wait for the recreated Fleet health port
+  ansible.builtin.wait_for:
+    host: localhost
+    port: "{{ fleet_port | default(3000) }}"
+    timeout: 60
+  no_log: true
+
+- name: Shared-pool restart probe — run fixed Fleet post phase with manifest argv
+  community.docker.docker_container_exec:
+    container: openclaw-fleet-gateway
+    argv:
+      - node
+      - /app/packages/fleet-gateway/dist/vtest/shared-pool-e2e.js
+      - --tenant-id
+      - "{{ shared_pool_restart_probe_tenant_id }}"
+      - --employee-a
+      - "{{ shared_pool_restart_probe_employee_a }}"
+      - --employee-b
+      - "{{ shared_pool_restart_probe_employee_b }}"
+      - --employee-guard
+      - "{{ shared_pool_restart_probe_employee_guard }}"
+      - --restart-post
+  register: shared_pool_restart_probe_post_result
+  changed_when: false
+  no_log: true
+  tags: shared-pool-restart-probe
