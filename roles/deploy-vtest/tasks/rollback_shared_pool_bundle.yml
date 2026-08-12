@@ -1,3 +1,60 @@
+- name: Ensure the rollback evidence directory exists before validation
+  ansible.builtin.file:
+    path: "{{ remote_dir }}/backups/shared-pool-platform-bundle-{{ deploy_sha }}"
+    state: directory
+    mode: "0700"
+
+- name: Record that rollback validation is required before any destructive action
+  ansible.builtin.copy:
+    content: "shared_pool_rollback_validation=started\n"
+    dest: "{{ remote_dir }}/backups/shared-pool-platform-bundle-{{ deploy_sha }}/ROLLBACK_VALIDATION_STARTED"
+    mode: "0600"
+
+- name: Require a complete quiesce inspect result set before rollback
+  ansible.builtin.assert:
+    that:
+      - vtest_quiesce_containers is defined
+      - vtest_quiesce_containers.results is defined
+      - (vtest_quiesce_containers.results | length) == (vtest_write_quiesce_services | length)
+      - (vtest_quiesce_containers.results | map(attribute='item') | list | sort) == (vtest_write_quiesce_services | sort)
+    fail_msg: "Rollback evidence is incomplete; preserving the failed deployment and refusing all container changes"
+  no_log: true
+
+- name: Require every quiesce inspect result to be explicit and complete
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.item is defined
+      - not (item.failed | default(false) | bool)
+      - item.exists is defined
+      - (not (item.exists | bool)) or (item.container is defined and item.container.Id is defined and item.container.Config is defined and item.container.Config.Env is defined and item.container.State is defined and item.container.State.Running is defined)
+    fail_msg: "Rollback inspect evidence is missing or failed; unknown is not treated as nonexistent"
+  loop: "{{ vtest_quiesce_containers.results }}"
+  no_log: true
+
+- name: Verify the old environment snapshots exist before rollback
+  ansible.builtin.stat:
+    path: "{{ remote_dir }}/backups/shared-pool-platform-bundle-{{ deploy_sha }}/{{ item.item }}.json"
+  loop: "{{ vtest_quiesce_containers.results }}"
+  when: item.exists | bool
+  register: shared_pool_rollback_snapshot_stats
+  no_log: true
+
+- name: Refuse rollback without complete old environment snapshots
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | default(false) | bool
+      - item.stat.size | default(0) | int > 0
+    fail_msg: "Rollback environment snapshot is missing; preserving the failed deployment and refusing all container changes"
+  loop: "{{ shared_pool_rollback_snapshot_stats.results | default([]) }}"
+  no_log: true
+
+- name: Mark rollback evidence as validated
+  ansible.builtin.copy:
+    content: "shared_pool_rollback_validation=passed\n"
+    dest: "{{ remote_dir }}/backups/shared-pool-platform-bundle-{{ deploy_sha }}/ROLLBACK_VALIDATION_PASSED"
+    mode: "0600"
+
 - name: Remove consumers that did not exist before the cutover
   community.docker.docker_container:
     name: "openclaw-{{ item }}"
@@ -29,7 +86,7 @@
     state: started
   loop: "{{ vtest_quiesce_containers.results | default([]) }}"
   when:
-    - item.exists | default(false)
+    - item.exists | bool
     - item.container.State.Running | default(false)
   no_log: true
 

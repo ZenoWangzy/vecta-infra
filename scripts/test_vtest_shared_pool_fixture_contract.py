@@ -166,6 +166,43 @@ class VtestSharedPoolFixtureContractTest(unittest.TestCase):
         self.assertIn("docker_container_info", CLEANUP)
         self.assertIn("parked rollback container", CLEANUP)
 
+    def test_rollback_requires_complete_inspect_and_snapshot_evidence_before_mutation(self) -> None:
+        for marker in (
+            "ROLLBACK_VALIDATION_STARTED",
+            "vtest_quiesce_containers.results | length",
+            "item.failed | default(false)",
+            "item.exists is defined",
+            "item.container.Id is defined",
+            "item.container.Config.Env is defined",
+            "shared_pool_rollback_snapshot_stats",
+            "ROLLBACK_VALIDATION_PASSED",
+            "unknown is not treated as nonexistent",
+        ):
+            self.assertIn(marker, ROLLBACK)
+        validation_end = ROLLBACK.index("ROLLBACK_VALIDATION_PASSED")
+        mutation_start = ROLLBACK.index("Remove consumers that did not exist before the cutover")
+        self.assertLess(validation_end, mutation_start)
+        self.assertIn("not (shared_pool_cutover_committed | default(false) | bool)", MAIN)
+
+    def test_cleanup_commit_point_forbids_mixed_restore_after_partial_deletion(self) -> None:
+        for marker in (
+            "Require complete quiesce evidence before any parked cleanup",
+            "Quiesce evidence is missing or failed",
+            "shared_pool_new_bundle_containers",
+            "shared_pool_parked_before_cleanup",
+            "CUTOVER_COMMITTED",
+            "shared_pool_cutover_committed: true",
+            "shared-pool-partial-cleanup-",
+            "new_bundle=keep_running",
+            "rollback=forbidden",
+            "irreversible commit point",
+        ):
+            self.assertIn(marker, CLEANUP + MAIN)
+        self.assertIn("shared_pool_partial_cleanup_markers", BACKUP)
+        self.assertIn("previous partial shared-pool cleanup", BACKUP)
+        self.assertRegex(MAIN, r"shared_pool_cutover_committed \| default\(false\) \| bool[\s\S]+shared-pool-partial-cleanup-")
+        self.assertNotRegex(MAIN, r"shared_pool_cutover_committed \| default\(false\) \| bool[\s\S]+rollback_shared_pool_bundle\.yml")
+
     def test_all_shared_pool_consumers_are_quiesced_and_hidden(self) -> None:
         for service in ("a2a-router", "fleet-gateway", "channel-gateway", "fruit-industry-pack"):
             self.assertIn(f"  - {service}", INVENTORY)

@@ -1,3 +1,17 @@
+- name: Refuse a new cutover while a previous shared-pool cleanup is partial
+  ansible.builtin.find:
+    paths: "{{ remote_dir }}/backups"
+    patterns: "shared-pool-partial-cleanup-*"
+    file_type: file
+    recurse: false
+  register: shared_pool_partial_cleanup_markers
+  no_log: true
+
+- name: Fail closed on a previous partial shared-pool cleanup
+  ansible.builtin.fail:
+    msg: "A previous shared-pool cleanup was partial; manual recovery is required before another cutover"
+  when: (shared_pool_partial_cleanup_markers.matched | default(0) | int) > 0
+
 - name: Create private vtest platform bundle rollback directory
   ansible.builtin.file:
     path: "{{ remote_dir }}/backups/shared-pool-platform-bundle-{{ deploy_sha }}"

@@ -66,7 +66,26 @@
       when:
         - "'vtest' in group_names"
         - shared_pool_vtest_fixture_enabled | default(false) | bool
-        - not (shared_pool_cutover_complete | default(false) | bool)
+        - not (shared_pool_cutover_committed | default(false) | bool)
+      tags: always
+    - name: Record partial parked cleanup after the irreversible commit point
+      ansible.builtin.copy:
+        content: "shared_pool_cleanup=partial\nnew_bundle=keep_running\nrollback=forbidden\n"
+        dest: "{{ remote_dir }}/backups/shared-pool-partial-cleanup-{{ deploy_sha }}"
+        mode: "0600"
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+        - shared_pool_cutover_committed | default(false) | bool
+      no_log: true
+      tags: always
+    - name: Fail closed after partial parked cleanup without rolling back the new bundle
+      ansible.builtin.fail:
+        msg: "Shared-pool cleanup crossed its irreversible commit point and was partial; new bundle remains running and rollback is forbidden"
+      when:
+        - "'vtest' in group_names"
+        - shared_pool_vtest_fixture_enabled | default(false) | bool
+        - shared_pool_cutover_committed | default(false) | bool
       tags: always
     - name: Restore write-capable app containers after failed deploy
       community.docker.docker_container:
