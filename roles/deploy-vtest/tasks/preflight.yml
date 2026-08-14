@@ -53,7 +53,10 @@
     VTEST_BUNDLE_CHANNEL_TOKEN: "{{ lookup('env', 'CHANNEL_PLATFORM_SERVICE_TOKEN') }}"
     VTEST_BUNDLE_FLEET_TOKEN: "{{ lookup('env', 'FLEET_PLATFORM_SERVICE_TOKEN') }}"
     VTEST_BUNDLE_FRUIT_TOKEN: "{{ lookup('env', 'FLEET_FRUIT_PLATFORM_TOKEN') }}"
-    VTEST_EXPECTED_TENANT_IDS_JSON: "{{ lookup('env', 'VTEST_EXPECTED_TENANT_IDS_JSON') }}"
+    # | string is load-bearing: without it the JSON array is re-typed to a
+    # Python list and the script receives its repr ("['a', 'b']"), which
+    # JSON.parse rejects (SHARED_POOL_PLATFORM_TOKEN_INVALID:expected_tenants).
+    VTEST_EXPECTED_TENANT_IDS_JSON: "{{ lookup('env', 'VTEST_EXPECTED_TENANT_IDS_JSON') | string }}"
   when:
     - "'vtest' in group_names"
     - shared_pool_vtest_fixture_enabled | default(false) | bool
