@@ -70,15 +70,20 @@
   no_log: true
 
 - name: Verify the dedicated vtest restart manifest directory is writable
+  # Explicit sudo instead of become_user: "#1000": ansible's unprivileged-become
+  # temp-file ACL (chmod A+user:#1000:rx:allow) is not supported on this
+  # filesystem and fails the task before the check even runs.
   ansible.builtin.command:
     argv:
+      - sudo
+      - -n
+      - -u
+      - "#1000"
       - test
       - -w
       - "{{ remote_dir }}/deploy/vtest-shared-pool-e2e"
   register: shared_pool_manifest_dir_writable
   changed_when: false
-  become: true
-  become_user: "#1000"
   no_log: true
 
 - name: Require the dedicated vtest restart manifest directory to be writable
