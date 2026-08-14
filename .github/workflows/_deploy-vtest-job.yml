@@ -38,6 +38,20 @@ on:
         required: true
       NEXUS_ADMIN_PASSWORD:
         required: true
+      # bootstrap-only; unused by this job; platform JWTs are minted below per run.
+      # DO NOT REMOVE: proven twice on 2026-08-12/13 that deleting these
+      # declarations makes every vecta pull_request_target run fail at startup
+      # validation (startup_failure, jobs=[]) while push runs stay healthy.
+      # Removal gate: understand the GitHub cross-repo reusable-workflow
+      # contract check, or stop calling this workflow from pull_request_target.
+      VTEST_PLATFORM_SERVICE_JWT_PUBLIC_KEY:
+        required: false
+      VTEST_CHANNEL_PLATFORM_SERVICE_TOKEN:
+        required: false
+      VTEST_FLEET_PLATFORM_SERVICE_TOKEN:
+        required: false
+      VTEST_FLEET_FRUIT_PLATFORM_TOKEN:
+        required: false
       WECOM_CORP_ID:
         required: false
       WECOM_CONTACTS_SECRET:
