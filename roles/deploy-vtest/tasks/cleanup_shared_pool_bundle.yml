@@ -44,7 +44,10 @@
       - item.container.State.Running | default(false) | bool
     fail_msg: "A new shared-pool platform consumer is not healthy; refusing irreversible cleanup"
   loop: "{{ shared_pool_new_bundle_containers.results }}"
-  no_log: true
+  loop_control:
+    label: "{{ item.item }}"
+  # no_log lifted temporarily for diagnosis: assert output names only the service item, no secrets
+
 
 - name: Verify every parked old consumer and snapshot before the cleanup commit point
   community.docker.docker_container_info:
