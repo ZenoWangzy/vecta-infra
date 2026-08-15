@@ -81,12 +81,22 @@ fruit_vtest_bootstrap: false
 
 vtest_migrator_image_repo: vecta-migrator
 
+# wechat-contact-sync removed 2026-08-14: the WeCom contact assistant API
+# rejects the vtest IP (48009) and the WeCom integration is retired on vtest
+# in favour of the personal-WeChat lane; it must not gate deploys.
 vtest_write_quiesce_services:
   - a2a-router
   - fleet-gateway
   - channel-gateway
-  - wechat-contact-sync
   - fruit-industry-pack
+
+vecta_app_enabled_services:
+  - a2a-router
+  - directory-service
+  - admin-console
+  - fleet-gateway
+  - rag-service
+  - channel-gateway
 
 fleet_gateway_image: "{{ nexus_docker_registry }}/fleet-gateway:{{ deploy_sha }}"
 channel_gateway_image: "{{ nexus_docker_registry }}/channel-gateway:{{ deploy_sha }}"
