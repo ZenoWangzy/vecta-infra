@@ -44,11 +44,24 @@ normalize_networks() {
   printf '%s' "$result"
 }
 
-network_has() { [[ ",${1}," == *",${2},"* ]]; }
 state_is_temporary() { [[ "$1" == "$TEMP_PROXY_NETWORKS" && "$2" == "$TEMP_ADMIN_NETWORKS" ]]; }
+state_is_intermediate() { [[ "$1" == "$CANONICAL_PROXY_NETWORKS" && "$2" == "$TEMP_ADMIN_NETWORKS" ]]; }
 state_is_canonical() { [[ "$1" == "$CANONICAL_PROXY_NETWORKS" && "$2" == "$CANONICAL_ADMIN_NETWORKS" ]]; }
-should_reconnect_admin() { network_has "$1" "$WEBUI_NETWORK" && ! network_has "$2" "$WEBUI_NETWORK"; }
-should_disconnect_proxy() { ! network_has "$1" "$CORE_NETWORK" && network_has "$2" "$CORE_NETWORK"; }
+
+rollback_plan() {
+  if state_is_temporary "$1" "$2"; then
+    return 0
+  fi
+  if state_is_intermediate "$1" "$2"; then
+    printf 'disconnect-proxy'
+    return 0
+  fi
+  if state_is_canonical "$1" "$2"; then
+    printf 'reconnect-admin\ndisconnect-proxy'
+    return 0
+  fi
+  return 1
+}
 
 inspect_container() {
   local container="$1" output container_id network_names=''
@@ -124,34 +137,49 @@ require_approvals() {
 
 rollback_refresh() { inspect_state && ids_match_baseline; }
 
-current_networks() {
-  case "$1" in
-    admin) printf '%s' "$CURRENT_ADMIN_NETWORKS" ;;
-    proxy) printf '%s' "$CURRENT_PROXY_NETWORKS" ;;
-    *) return 1 ;;
-  esac
+rollback_reconnect_admin() {
+  local rc
+  rollback_refresh || return 1
+  state_is_canonical "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS" || {
+    fail 'rollback Admin reconnect requires exact canonical state'
+    return 1
+  }
+  docker network connect "$BASE_WEBUI_NETWORK_ID" "$BASE_ADMIN_CONTAINER_ID" >/dev/null 2>&1
+  rc=$?
+  if (( rc != 0 )); then
+    printf 'FAIL: rollback Admin reconnect returned non-zero; inspecting resulting state\n' >&2
+  fi
+  rollback_refresh || return 1
+  state_is_intermediate "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS" || {
+    fail 'rollback Admin reconnect did not produce exact intermediate state'
+    return 1
+  }
 }
 
-rollback_step() {
-  local decision="$1" operation="$2" kind="$3" baseline_set="$4" network_id="$5" container_id="$6" current
+rollback_disconnect_proxy() {
+  local rc
   rollback_refresh || return 1
-  current="$(current_networks "$kind")"
-  "$decision" "$baseline_set" "$current" || return 0
-  rollback_refresh || return 1
-  current="$(current_networks "$kind")"
-  if "$decision" "$baseline_set" "$current"; then
-    case "$operation" in
-      connect) docker network connect "$network_id" "$container_id" >/dev/null 2>&1; rc=$? ;;
-      disconnect) docker network disconnect "$network_id" "$container_id" >/dev/null 2>&1; rc=$? ;;
-      *) return 1 ;;
-    esac
-    (( rc == 0 )) || ROLLBACK_FAILED=1
-    rollback_refresh || return 1
+  if state_is_temporary "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS"; then
+    return 0
   fi
+  state_is_intermediate "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS" || {
+    fail 'rollback Proxy disconnect requires exact intermediate state'
+    return 1
+  }
+  docker network disconnect "$BASE_CORE_NETWORK_ID" "$BASE_PROXY_CONTAINER_ID" >/dev/null 2>&1
+  rc=$?
+  if (( rc != 0 )); then
+    printf 'FAIL: rollback Proxy disconnect returned non-zero; inspecting resulting state\n' >&2
+  fi
+  rollback_refresh || return 1
+  state_is_temporary "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS" || {
+    fail 'rollback Proxy disconnect did not produce exact temporary state'
+    return 1
+  }
 }
 
 rollback() {
-  local original_status="$1"
+  local original_status="$1" plan operation
   trap - ERR INT TERM
   set +e
   if (( MUTATION_STARTED == 0 )); then
@@ -160,14 +188,31 @@ rollback() {
   fi
 
   ROLLBACK_FAILED=0
-  rollback_step should_reconnect_admin connect admin "$BASE_ADMIN_NETWORKS" "$BASE_WEBUI_NETWORK_ID" "$BASE_ADMIN_CONTAINER_ID" || {
-    printf 'FAIL: rollback stopped before or after reconnecting Admin\n' >&2
+  rollback_refresh || {
+    printf 'FAIL: rollback stopped during initial ID revalidation\n' >&2
     exit 1
   }
-  rollback_step should_disconnect_proxy disconnect proxy "$BASE_PROXY_NETWORKS" "$BASE_CORE_NETWORK_ID" "$BASE_PROXY_CONTAINER_ID" || {
-    printf 'FAIL: rollback stopped before or after disconnecting Proxy\n' >&2
+  plan="$(rollback_plan "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS")" || {
+    printf 'FAIL: rollback stopped on an unexpected exact network state\n' >&2
     exit 1
   }
+  while IFS= read -r operation; do
+    [[ -n "$operation" ]] || continue
+    case "$operation" in
+      reconnect-admin) rollback_reconnect_admin || {
+        printf 'FAIL: rollback stopped before or after reconnecting Admin\n' >&2
+        exit 1
+      } ;;
+      disconnect-proxy) rollback_disconnect_proxy || {
+        printf 'FAIL: rollback stopped before or after disconnecting Proxy\n' >&2
+        exit 1
+      } ;;
+      *)
+        printf 'FAIL: rollback produced an unknown operation\n' >&2
+        exit 1
+        ;;
+    esac
+  done <<< "$plan"
   rollback_refresh || ROLLBACK_FAILED=1
   state_matches_baseline || ROLLBACK_FAILED=1
   if (( ROLLBACK_FAILED != 0 )); then
@@ -183,10 +228,10 @@ run_check() {
   require_hostname
   inspect_state || { fail 'Docker identity or network-set inspection failed'; return 1; }
   if state_is_canonical "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS"; then
-    printf 'OK: canonical network state; no mutation required\n'; return 0
+    printf 'RESULT=noop\n'; return 0
   fi
   if state_is_temporary "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS"; then
-    printf 'OK: temporary network state is eligible for execute\n'; return 0
+    printf 'RESULT=noop\n'; return 0
   fi
   fail 'refusing a starting topology other than exact temporary or canonical state'
 }
@@ -197,7 +242,7 @@ run_execute() {
   inspect_state || { fail 'Docker identity or network-set inspection failed'; return 1; }
   capture_baseline
   if state_is_canonical "$BASE_PROXY_NETWORKS" "$BASE_ADMIN_NETWORKS"; then
-    printf 'OK: canonical network state; no mutation required\n'; return 0
+    printf 'RESULT=noop\n'; return 0
   fi
   state_is_temporary "$BASE_PROXY_NETWORKS" "$BASE_ADMIN_NETWORKS" || {
     fail 'refusing a starting topology other than exact temporary or canonical state'
@@ -211,11 +256,10 @@ run_execute() {
   MUTATION_STARTED=1
   docker network connect "$BASE_CORE_NETWORK_ID" "$BASE_PROXY_CONTAINER_ID" >/dev/null 2>&1
   assert_current_state "$CANONICAL_PROXY_NETWORKS" "$TEMP_ADMIN_NETWORKS"
-  assert_current_state "$CANONICAL_PROXY_NETWORKS" "$TEMP_ADMIN_NETWORKS"
   docker network disconnect "$BASE_WEBUI_NETWORK_ID" "$BASE_ADMIN_CONTAINER_ID" >/dev/null 2>&1
   assert_current_state "$CANONICAL_PROXY_NETWORKS" "$CANONICAL_ADMIN_NETWORKS"
   trap - ERR INT TERM
-  printf 'OK: temporary network state reconciled to canonical\n'
+  printf 'RESULT=changed\n'
 }
 
 self_test_expect() {
@@ -225,17 +269,25 @@ self_test_expect() {
   [[ "$actual" == "$expected" ]] || { fail "self-test mismatch: ${label}"; return 1; }
 }
 
+self_test_plan_expect() {
+  local expected="$1" label="$2" actual
+  shift 2
+  actual="$("$@")" || { fail "self-test plan rejected: ${label}"; return 1; }
+  [[ "$actual" == "$expected" ]] || { fail "self-test plan mismatch: ${label}"; return 1; }
+}
+
 run_self_test() {
   self_test_expect 0 temporary-state state_is_temporary "$TEMP_PROXY_NETWORKS" "$TEMP_ADMIN_NETWORKS"
+  self_test_expect 0 intermediate-state state_is_intermediate "$CANONICAL_PROXY_NETWORKS" "$TEMP_ADMIN_NETWORKS"
   self_test_expect 0 canonical-state state_is_canonical "$CANONICAL_PROXY_NETWORKS" "$CANONICAL_ADMIN_NETWORKS"
   self_test_expect 1 in-progress-state state_is_temporary "$CANONICAL_PROXY_NETWORKS" "$TEMP_ADMIN_NETWORKS"
   self_test_expect 1 extra-network state_is_temporary "${TEMP_PROXY_NETWORKS},unexpected" "$TEMP_ADMIN_NETWORKS"
   self_test_expect 1 missing-network state_is_canonical '' "$CANONICAL_ADMIN_NETWORKS"
-  self_test_expect 0 reconnect-admin should_reconnect_admin "$TEMP_ADMIN_NETWORKS" "$CANONICAL_ADMIN_NETWORKS"
-  self_test_expect 0 disconnect-proxy should_disconnect_proxy "$TEMP_PROXY_NETWORKS" "$CANONICAL_PROXY_NETWORKS"
-  self_test_expect 1 reconnect-admin-noop should_reconnect_admin "$TEMP_ADMIN_NETWORKS" "$TEMP_ADMIN_NETWORKS"
-  self_test_expect 1 disconnect-proxy-noop should_disconnect_proxy "$TEMP_PROXY_NETWORKS" "$TEMP_PROXY_NETWORKS"
-  printf 'OK: transaction self-test\n'
+  self_test_plan_expect '' temporary-noop rollback_plan "$TEMP_PROXY_NETWORKS" "$TEMP_ADMIN_NETWORKS"
+  self_test_plan_expect 'disconnect-proxy' intermediate-after-connect-failure rollback_plan "$CANONICAL_PROXY_NETWORKS" "$TEMP_ADMIN_NETWORKS"
+  self_test_plan_expect $'reconnect-admin\ndisconnect-proxy' canonical-after-disconnect-failure rollback_plan "$CANONICAL_PROXY_NETWORKS" "$CANONICAL_ADMIN_NETWORKS"
+  self_test_expect 1 unexpected-extra-network rollback_plan "${CANONICAL_PROXY_NETWORKS},unexpected" "$TEMP_ADMIN_NETWORKS"
+  printf 'RESULT=noop\n'
 }
 
 [[ "$#" == 1 ]] || usage

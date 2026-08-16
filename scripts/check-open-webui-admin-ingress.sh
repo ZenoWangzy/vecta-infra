@@ -58,7 +58,8 @@ done
 
 # The transaction is the only Docker state machine; its self-test is Docker-free.
 bash -n "$TRANSACTION"
-"$TRANSACTION" --self-test
+self_test_output="$("$TRANSACTION" --self-test)" || fail 'transaction self-test failed'
+[ "$self_test_output" = 'RESULT=noop' ] || fail 'transaction self-test did not emit the safe noop marker'
 require_literal "$TRANSACTION" 'set -euo pipefail'
 for literal in \
   "readonly EXPECTED_HOSTNAME='mypc'" \
@@ -73,9 +74,33 @@ done
 for literal in --check --execute --self-test; do
   require_literal "$TRANSACTION" "$literal"
 done
-require_absent "$TRANSACTION" '.Config.Env'
+for literal in \
+  'state_is_intermediate()' \
+  'rollback_plan()' \
+  'rollback_refresh || return 1' \
+  'state_is_temporary "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS"' \
+  'state_is_intermediate "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS"' \
+  'state_is_canonical "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS"' \
+  'state_matches_baseline || ROLLBACK_FAILED=1' \
+  'RESULT=changed' \
+  'RESULT=noop'; do
+  require_literal "$TRANSACTION" "$literal"
+done
+require_absent "$TRANSACTION" '.Config'
 require_absent "$TRANSACTION" 'docker compose'
 require_absent "$TRANSACTION" 'docker-compose'
+if grep -Eiq -- '(\{\{[[:space:]]*json|--format=[^[:space:]]*json|\{\{[[:space:]]*\.[[:space:]]*\}\})' "$TRANSACTION"; then
+  fail 'transaction contains a JSON or full-object Go template'
+fi
+container_format='--format='\''{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}'\'''
+network_format="--format='{{.Id}}'"
+require_literal "$TRANSACTION" "$container_format"
+require_literal "$TRANSACTION" "$network_format"
+if grep -F -- '--format=' "$TRANSACTION" |
+  grep -vF -- "$container_format" |
+  grep -vF -- "$network_format" >/dev/null; then
+  fail 'transaction contains an unapproved Docker inspect format'
+fi
 if grep -F 'docker inspect' "$TRANSACTION" | grep -vF -- '--format=' >/dev/null; then
   fail 'transaction contains an unformatted docker inspect'
 fi

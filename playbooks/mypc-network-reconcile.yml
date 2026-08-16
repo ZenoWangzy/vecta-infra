@@ -20,5 +20,6 @@
         MYPC_DEPLOY_ENABLED: "{{ mypc_deploy_enabled | default('') }}"
         MYPC_NETWORK_RECONCILE_APPROVAL: "{{ mypc_network_reconcile_approval | default('') }}"
       check_mode: false
-      changed_when: false
+      register: mypc_network_reconcile_result
+      changed_when: "'RESULT=changed' in mypc_network_reconcile_result.stdout"
       when: not ansible_check_mode
