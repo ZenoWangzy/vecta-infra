@@ -410,8 +410,10 @@
           FLEET_ID="$(read_running_container_id "$FLEET_NAME")"
 
           if [ "$PROXY_NETWORKS" = "$EXPECTED_PROXY_TEMPORARY_NETWORKS" ]; then
+            set +e
             docker network connect "$CORE_NETWORK_ID" "$PROXY_ID" >/dev/null 2>&1
             attach_rc="$?"
+            set -e
             inspect_container "$PROXY_NAME"
             [ "$container_id" = "$PROXY_ID" ] || fail "proxy ID changed during attach"
             PROXY_NETWORKS="$(read_network_set "$PROXY_NAME")"
@@ -431,8 +433,10 @@
           printf "%s\n" "PASS: proxy can reach Admin, Fleet health, and /login"
 
           if [ "$BASELINE_ADMIN_NETWORKS" = "$EXPECTED_ADMIN_TEMPORARY_NETWORKS" ]; then
+            set +e
             docker network disconnect "$WEBUI_NETWORK_ID" "$ADMIN_ID" >/dev/null 2>&1
             detach_rc="$?"
+            set -e
             inspect_container "$ADMIN_NAME"
             [ "$container_id" = "$ADMIN_ID" ] || fail "admin ID changed during detach"
             ADMIN_NETWORKS="$(read_network_set "$ADMIN_NAME")"
