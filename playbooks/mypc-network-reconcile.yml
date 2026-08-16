@@ -3,6 +3,22 @@
   hosts: mypc
   gather_facts: false
 
+  vars:
+    mypc_reconcile_core_network_name: openclaw-enterprise_openclaw-net
+    mypc_reconcile_webui_network_name: openclaw-enterprise_open-webui-net
+    mypc_reconcile_proxy_name: openclaw-webui-proxy
+    mypc_reconcile_admin_name: openclaw-admin-console
+    mypc_reconcile_temporary_proxy_networks:
+      - "{{ mypc_reconcile_webui_network_name }}"
+    mypc_reconcile_temporary_admin_networks:
+      - "{{ mypc_reconcile_webui_network_name }}"
+      - "{{ mypc_reconcile_core_network_name }}"
+    mypc_reconcile_expected_proxy_networks:
+      - "{{ mypc_reconcile_webui_network_name }}"
+      - "{{ mypc_reconcile_core_network_name }}"
+    mypc_reconcile_expected_admin_networks:
+      - "{{ mypc_reconcile_core_network_name }}"
+
   pre_tasks:
     - name: Require the mypc deployment lane to be explicitly enabled
       ansible.builtin.assert:
@@ -10,7 +26,6 @@
           - mypc_deploy_enabled is defined
           - mypc_deploy_enabled | bool
         fail_msg: "Refusing network reconciliation unless mypc_deploy_enabled=true"
-      tags: [always]
 
     - name: Require the independent network-reconcile approval
       ansible.builtin.assert:
@@ -20,16 +35,13 @@
         fail_msg: >-
           Refusing network reconciliation without the independent approval
           -e mypc_network_reconcile_approval=true
-      tags: [always]
 
     - name: Read the remote hostname for the target guard
       ansible.builtin.command:
-        argv:
-          - /bin/hostname
+        argv: [/bin/hostname]
       register: mypc_reconcile_remote_hostname
       changed_when: false
       check_mode: false
-      tags: [always]
 
     - name: Require the remote hostname to be exactly mypc
       ansible.builtin.assert:
@@ -37,440 +49,339 @@
           - mypc_reconcile_remote_hostname.rc == 0
           - mypc_reconcile_remote_hostname.stdout | trim == 'mypc'
         fail_msg: "Refusing network reconciliation unless /bin/hostname is exactly mypc"
-      tags: [always]
 
   tasks:
-    - name: Run the read-only fixed-target preflight in check mode
-      ansible.builtin.shell:
-        cmd: |
-          /bin/sh -ec '
-          CORE_NETWORK_NAME="openclaw-enterprise_openclaw-net"
-          WEBUI_NETWORK_NAME="openclaw-enterprise_open-webui-net"
-          PROXY_NAME="openclaw-webui-proxy"
-          ADMIN_NAME="openclaw-admin-console"
-          FLEET_NAME="openclaw-fleet-gateway"
+    - name: Reconcile only the measured network topology
+      block:
+        - name: Inspect fixed Docker networks as JSON
+          ansible.builtin.command:
+            argv:
+              - docker
+              - network
+              - inspect
+              - "{{ mypc_reconcile_core_network_name }}"
+              - "{{ mypc_reconcile_webui_network_name }}"
+          register: mypc_reconcile_network_inspect
+          changed_when: false
+          check_mode: false
 
-          fail() {
-            printf "%s\n" "FAIL: $1" >&2
-            exit 1
-          }
+        - name: Inspect Proxy and Admin as JSON
+          ansible.builtin.command:
+            argv:
+              - docker
+              - inspect
+              - --type=container
+              - "{{ mypc_reconcile_proxy_name }}"
+              - "{{ mypc_reconcile_admin_name }}"
+          register: mypc_reconcile_container_inspect
+          changed_when: false
+          check_mode: false
 
-          valid_id() {
-            value="$1"
-            case "$value" in
-              ""|*[!0-9A-Fa-f]*) return 1 ;;
-            esac
-            [ "${#value}" -ge 12 ] && [ "${#value}" -le 64 ]
-          }
+        - name: Parse measured JSON and exact network sets
+          ansible.builtin.set_fact:
+            mypc_reconcile_networks: "{{ mypc_reconcile_network_inspect.stdout | from_json }}"
+            mypc_reconcile_containers: "{{ mypc_reconcile_container_inspect.stdout | from_json }}"
 
-          read_network_id() {
-            network_name="$1"
-            network_info="$(docker network inspect --format="{{ "{{.Id}}|{{.Name}}" }}" "$network_name" 2>/dev/null)" || fail "network preflight failed"
-            network_id="${network_info%%|*}"
-            network_actual="${network_info#*|}"
-            [ "$network_info" != "$network_id" ] || fail "network preflight output was incomplete"
-            [ "$network_actual" = "$network_name" ] || fail "network preflight name mismatch"
-            valid_id "$network_id" || fail "network preflight ID was invalid"
-            printf "%s\n" "$network_id"
-          }
+        - name: Set measured IDs and network sets
+          ansible.builtin.set_fact:
+            mypc_reconcile_core_network_id: "{{ mypc_reconcile_networks[0]['Id'] }}"
+            mypc_reconcile_webui_network_id: "{{ mypc_reconcile_networks[1]['Id'] }}"
+            mypc_reconcile_proxy_id: "{{ mypc_reconcile_containers[0]['Id'] }}"
+            mypc_reconcile_admin_id: "{{ mypc_reconcile_containers[1]['Id'] }}"
+            mypc_reconcile_proxy_networks: >-
+              {{ mypc_reconcile_containers[0]['NetworkSettings']['Networks'].keys() | list | sort }}
+            mypc_reconcile_admin_networks: >-
+              {{ mypc_reconcile_containers[1]['NetworkSettings']['Networks'].keys() | list | sort }}
 
-          inspect_container() {
-            container_name="$1"
-            container_info="$(docker inspect --type=container --format="{{ "{{.Id}}|{{.State.Running}}|{{json .NetworkSettings.Networks}}" }}" "$container_name" 2>/dev/null)" || fail "container preflight failed"
-            container_id="${container_info%%|*}"
-            container_rest="${container_info#*|}"
-            container_running="${container_rest%%|*}"
-            container_networks="${container_rest#*|}"
-            [ "$container_info" != "$container_id" ] || fail "container preflight ID was missing"
-            [ "$container_rest" != "$container_running" ] || fail "container preflight state was missing"
-            [ "$container_networks" != "$container_rest" ] || fail "container preflight networks were missing"
-            valid_id "$container_id" || fail "container preflight ID was invalid"
-            [ "$container_running" = "true" ] || fail "required container is not running"
-            [ -n "$container_networks" ] || fail "container preflight networks were empty"
-          }
+        - name: Require fixed identities and only temporary or canonical starting state
+          ansible.builtin.assert:
+            that:
+              - mypc_reconcile_networks | length == 2
+              - mypc_reconcile_networks[0]['Name'] == mypc_reconcile_core_network_name
+              - mypc_reconcile_networks[1]['Name'] == mypc_reconcile_webui_network_name
+              - mypc_reconcile_containers | length == 2
+              - mypc_reconcile_containers[0]['Name'] == ('/' ~ mypc_reconcile_proxy_name)
+              - mypc_reconcile_containers[1]['Name'] == ('/' ~ mypc_reconcile_admin_name)
+              - mypc_reconcile_containers[0]['State']['Running'] | bool
+              - mypc_reconcile_containers[1]['State']['Running'] | bool
+              - mypc_reconcile_networks[0]['Id'] | length > 0
+              - mypc_reconcile_networks[1]['Id'] | length > 0
+              - mypc_reconcile_containers[0]['Id'] | length > 0
+              - mypc_reconcile_containers[1]['Id'] | length > 0
+              - >-
+                (mypc_reconcile_proxy_networks == mypc_reconcile_temporary_proxy_networks and
+                 mypc_reconcile_admin_networks == mypc_reconcile_temporary_admin_networks) or
+                (mypc_reconcile_proxy_networks == mypc_reconcile_expected_proxy_networks and
+                 mypc_reconcile_admin_networks == mypc_reconcile_expected_admin_networks)
+            fail_msg: >-
+              Refusing a starting topology other than temporary or canonical; extra, missing,
+              and already-in-progress attachments are not accepted
 
-          read_network_set() {
-            container_name="$1"
-            network_names="$(docker inspect --type=container --format='{{ "{{range $name, $network := .NetworkSettings.Networks}}{{printf \"%s\\n\" $name}}{{end}}" }}' "$container_name" 2>/dev/null)" || fail "container network-set inspection failed"
-            [ -n "$network_names" ] || fail "container network set was empty"
-            printf "%s\n" "$network_names" | LC_ALL=C sort
-          }
+        - name: Save the measured baseline before any mutation
+          ansible.builtin.set_fact:
+            mypc_reconcile_baseline_proxy_networks: "{{ mypc_reconcile_proxy_networks }}"
+            mypc_reconcile_baseline_admin_networks: "{{ mypc_reconcile_admin_networks }}"
 
-          read_running_container_id() {
-            container_name="$1"
-            container_info="$(docker inspect --type=container --format="{{ "{{.Id}}|{{.State.Running}}" }}" "$container_name" 2>/dev/null)" || fail "Fleet container preflight failed"
-            container_id="${container_info%%|*}"
-            container_running="${container_info#*|}"
-            [ "$container_info" != "$container_id" ] || fail "Fleet container ID was missing"
-            valid_id "$container_id" || fail "Fleet container ID was invalid"
-            [ "$container_running" = "true" ] || fail "Fleet container is not running"
-            printf "%s\n" "$container_id"
-          }
+        - name: Attach Proxy to core from the temporary state
+          ansible.builtin.command:
+            argv: [docker, network, connect, "{{ mypc_reconcile_core_network_id }}", "{{ mypc_reconcile_proxy_id }}"]
+          register: mypc_reconcile_attach
+          changed_when: mypc_reconcile_attach.rc == 0
+          failed_when: >-
+            mypc_deploy_enabled is not defined or not (mypc_deploy_enabled | bool) or
+            mypc_network_reconcile_approval is not defined or not (mypc_network_reconcile_approval | bool) or
+            mypc_reconcile_attach.rc != 0
+          when:
+            - not ansible_check_mode
+            - mypc_reconcile_baseline_proxy_networks == mypc_reconcile_temporary_proxy_networks
+            - mypc_deploy_enabled is defined
+            - mypc_deploy_enabled | bool
+            - mypc_network_reconcile_approval is defined
+            - mypc_network_reconcile_approval | bool
 
-          hostname_value="$(/bin/hostname 2>/dev/null)" || fail "remote hostname probe failed"
-          [ "$hostname_value" = "mypc" ] || fail "remote hostname is not mypc"
-          core_network_id="$(read_network_id "$CORE_NETWORK_NAME")"
-          webui_network_id="$(read_network_id "$WEBUI_NETWORK_NAME")"
-          expected_proxy_networks="$(printf "%s\n%s\n" "$CORE_NETWORK_NAME" "$WEBUI_NETWORK_NAME" | LC_ALL=C sort)"
-          expected_admin_networks="$CORE_NETWORK_NAME"
-          expected_temporary_proxy_networks="$WEBUI_NETWORK_NAME"
-          expected_temporary_admin_networks="$expected_proxy_networks"
-          inspect_container "$PROXY_NAME"
-          proxy_id="$container_id"
-          proxy_networks="$(read_network_set "$PROXY_NAME")"
-          inspect_container "$ADMIN_NAME"
-          admin_id="$container_id"
-          admin_networks="$(read_network_set "$ADMIN_NAME")"
-          fleet_id="$(read_running_container_id "$FLEET_NAME")"
-          if [ "$proxy_networks" = "$expected_temporary_proxy_networks" ] && [ "$admin_networks" = "$expected_temporary_admin_networks" ]; then
-            printf "%s\n" "PASS: measured temporary topology is allowed"
-          elif [ "$proxy_networks" = "$expected_proxy_networks" ] && [ "$admin_networks" = "$expected_temporary_admin_networks" ]; then
-            printf "%s\n" "PASS: measured in-progress topology is allowed"
-          elif [ "$proxy_networks" = "$expected_proxy_networks" ] && [ "$admin_networks" = "$expected_admin_networks" ]; then
-            printf "%s\n" "PASS: canonical topology is exact"
-          else
-            fail "initial network topology is outside the allowed temporary or canonical states"
-          fi
-          docker exec "$proxy_id" /bin/sh -ec "wget -q -O /dev/null -T 5 http://127.0.0.1/login" >/dev/null 2>&1 || fail "current proxy /login probe failed"
-          printf "%s\n" "PASS: fixed target, exact networks, containers, and current /login verified"
-          printf "%s\n" "changed=false"
-          '
-      args:
-        executable: /bin/sh
-      register: mypc_reconcile_preflight
-      changed_when: false
-      check_mode: false
-      when: ansible_check_mode
+        - name: Inspect the exact state after Proxy attach
+          ansible.builtin.command:
+            argv:
+              - docker
+              - inspect
+              - --type=container
+              - "{{ mypc_reconcile_proxy_name }}"
+              - "{{ mypc_reconcile_admin_name }}"
+          register: mypc_reconcile_after_attach
+          changed_when: false
+          check_mode: false
+          when:
+            - not ansible_check_mode
+            - mypc_reconcile_baseline_proxy_networks == mypc_reconcile_temporary_proxy_networks
 
-    - name: Run the fixed network mutation transaction outside check mode
-      ansible.builtin.shell:
-        cmd: |
-          /bin/sh -ec '
-          CORE_NETWORK_NAME="openclaw-enterprise_openclaw-net"
-          WEBUI_NETWORK_NAME="openclaw-enterprise_open-webui-net"
-          PROXY_NAME="openclaw-webui-proxy"
-          ADMIN_NAME="openclaw-admin-console"
-          FLEET_NAME="openclaw-fleet-gateway"
-          FLEET_HEALTH_URL="http://openclaw-fleet-gateway:3000/healthz"
-          ADMIN_LOGIN_URL="http://openclaw-admin-console:5173/login"
-          PROXY_LOGIN_URL="http://127.0.0.1/login"
-          changed=false
-          BASELINE_PROXY_NETWORKS=""
-          BASELINE_ADMIN_NETWORKS=""
-          PROXY_ID=""
-          ADMIN_ID=""
-          CORE_NETWORK_ID=""
-          WEBUI_NETWORK_ID=""
+        - name: Require the exact post-attach state
+          ansible.builtin.assert:
+            that:
+              - (mypc_reconcile_after_attach.stdout | from_json)[0]['Id'] == mypc_reconcile_proxy_id
+              - (mypc_reconcile_after_attach.stdout | from_json)[1]['Id'] == mypc_reconcile_admin_id
+              - >-
+                ((mypc_reconcile_after_attach.stdout | from_json)[0]['NetworkSettings']['Networks'].keys() | list | sort) ==
+                mypc_reconcile_expected_proxy_networks
+              - >-
+                ((mypc_reconcile_after_attach.stdout | from_json)[1]['NetworkSettings']['Networks'].keys() | list | sort) ==
+                mypc_reconcile_temporary_admin_networks
+            fail_msg: "Proxy attach was not observed as the exact expected transition state"
+          when:
+            - not ansible_check_mode
+            - mypc_reconcile_baseline_proxy_networks == mypc_reconcile_temporary_proxy_networks
 
-          fail() {
-            printf "%s\n" "FAIL: $1" >&2
-            exit 1
-          }
+        - name: Detach Admin from WebUI from the temporary state
+          ansible.builtin.command:
+            argv: [docker, network, disconnect, "{{ mypc_reconcile_webui_network_id }}", "{{ mypc_reconcile_admin_id }}"]
+          register: mypc_reconcile_detach
+          changed_when: mypc_reconcile_detach.rc == 0
+          failed_when: >-
+            mypc_deploy_enabled is not defined or not (mypc_deploy_enabled | bool) or
+            mypc_network_reconcile_approval is not defined or not (mypc_network_reconcile_approval | bool) or
+            mypc_reconcile_detach.rc != 0
+          when:
+            - not ansible_check_mode
+            - mypc_reconcile_baseline_admin_networks == mypc_reconcile_temporary_admin_networks
+            - mypc_deploy_enabled is defined
+            - mypc_deploy_enabled | bool
+            - mypc_network_reconcile_approval is defined
+            - mypc_network_reconcile_approval | bool
 
-          valid_id() {
-            value="$1"
-            case "$value" in
-              ""|*[!0-9A-Fa-f]*) return 1 ;;
-            esac
-            [ "${#value}" -ge 12 ] && [ "${#value}" -le 64 ]
-          }
+        - name: Inspect the exact state after Admin detach
+          ansible.builtin.command:
+            argv:
+              - docker
+              - inspect
+              - --type=container
+              - "{{ mypc_reconcile_proxy_name }}"
+              - "{{ mypc_reconcile_admin_name }}"
+          register: mypc_reconcile_after_detach
+          changed_when: false
+          check_mode: false
+          when:
+            - not ansible_check_mode
+            - mypc_reconcile_baseline_admin_networks == mypc_reconcile_temporary_admin_networks
 
-          read_network_id() {
-            network_name="$1"
-            network_info="$(docker network inspect --format="{{ "{{.Id}}|{{.Name}}" }}" "$network_name" 2>/dev/null)" || fail "network inspection failed"
-            network_id="${network_info%%|*}"
-            network_actual="${network_info#*|}"
-            [ "$network_info" != "$network_id" ] || fail "network ID was not returned"
-            [ "$network_actual" = "$network_name" ] || fail "network name did not match"
-            valid_id "$network_id" || fail "network ID was invalid"
-            printf "%s\n" "$network_id"
-          }
+        - name: Require the exact post-detach canonical state
+          ansible.builtin.assert:
+            that:
+              - (mypc_reconcile_after_detach.stdout | from_json)[0]['Id'] == mypc_reconcile_proxy_id
+              - (mypc_reconcile_after_detach.stdout | from_json)[1]['Id'] == mypc_reconcile_admin_id
+              - >-
+                ((mypc_reconcile_after_detach.stdout | from_json)[0]['NetworkSettings']['Networks'].keys() | list | sort) ==
+                mypc_reconcile_expected_proxy_networks
+              - >-
+                ((mypc_reconcile_after_detach.stdout | from_json)[1]['NetworkSettings']['Networks'].keys() | list | sort) ==
+                mypc_reconcile_expected_admin_networks
+            fail_msg: "Admin detach was not observed as the exact canonical state"
+          when:
+            - not ansible_check_mode
+            - mypc_reconcile_baseline_admin_networks == mypc_reconcile_temporary_admin_networks
 
-          inspect_container() {
-            container_name="$1"
-            container_info="$(docker inspect --type=container --format="{{ "{{.Id}}|{{.State.Running}}|{{json .NetworkSettings.Networks}}" }}" "$container_name" 2>/dev/null)" || fail "container inspection failed"
-            container_id="${container_info%%|*}"
-            container_rest="${container_info#*|}"
-            container_running="${container_rest%%|*}"
-            container_networks="${container_rest#*|}"
-            [ "$container_info" != "$container_id" ] || fail "container ID was not returned"
-            [ "$container_rest" != "$container_running" ] || fail "container state was not returned"
-            [ "$container_networks" != "$container_rest" ] || fail "container networks were not returned"
-            valid_id "$container_id" || fail "container ID was invalid"
-            [ "$container_running" = "true" ] || fail "required container is not running"
-            [ -n "$container_networks" ] || fail "container networks were empty"
-          }
+        - name: Inspect final networks and containers
+          ansible.builtin.command:
+            argv:
+              - docker
+              - network
+              - inspect
+              - "{{ mypc_reconcile_core_network_name }}"
+              - "{{ mypc_reconcile_webui_network_name }}"
+          register: mypc_reconcile_final_networks
+          changed_when: false
+          check_mode: false
 
-          read_network_set() {
-            container_name="$1"
-            network_names="$(docker inspect --type=container --format='{{ "{{range $name, $network := .NetworkSettings.Networks}}{{printf \"%s\\n\" $name}}{{end}}" }}' "$container_name" 2>/dev/null)" || fail "container network-set inspection failed"
-            [ -n "$network_names" ] || fail "container network set was empty"
-            printf "%s\n" "$network_names" | LC_ALL=C sort
-          }
+        - name: Inspect final Proxy and Admin
+          ansible.builtin.command:
+            argv:
+              - docker
+              - inspect
+              - --type=container
+              - "{{ mypc_reconcile_proxy_name }}"
+              - "{{ mypc_reconcile_admin_name }}"
+          register: mypc_reconcile_final_containers
+          changed_when: false
+          check_mode: false
 
-          read_running_container_id() {
-            container_name="$1"
-            container_info="$(docker inspect --type=container --format="{{ "{{.Id}}|{{.State.Running}}" }}" "$container_name" 2>/dev/null)" || fail "Fleet container inspection failed"
-            container_id="${container_info%%|*}"
-            container_running="${container_info#*|}"
-            [ "$container_info" != "$container_id" ] || fail "Fleet container ID was not returned"
-            valid_id "$container_id" || fail "Fleet container ID was invalid"
-            [ "$container_running" = "true" ] || fail "Fleet container is not running"
-            printf "%s\n" "$container_id"
-          }
+        - name: Require final identity and exact state
+          ansible.builtin.assert:
+            that:
+              - (mypc_reconcile_final_networks.stdout | from_json)[0]['Id'] == mypc_reconcile_core_network_id
+              - (mypc_reconcile_final_networks.stdout | from_json)[1]['Id'] == mypc_reconcile_webui_network_id
+              - (mypc_reconcile_final_containers.stdout | from_json)[0]['Id'] == mypc_reconcile_proxy_id
+              - (mypc_reconcile_final_containers.stdout | from_json)[1]['Id'] == mypc_reconcile_admin_id
+              - >-
+                ansible_check_mode or
+                (((mypc_reconcile_final_containers.stdout | from_json)[0]['NetworkSettings']['Networks'].keys() | list | sort) == mypc_reconcile_expected_proxy_networks and
+                 ((mypc_reconcile_final_containers.stdout | from_json)[1]['NetworkSettings']['Networks'].keys() | list | sort) == mypc_reconcile_expected_admin_networks)
+              - >-
+                not ansible_check_mode or
+                (((mypc_reconcile_final_containers.stdout | from_json)[0]['NetworkSettings']['Networks'].keys() | list | sort) in [mypc_reconcile_temporary_proxy_networks, mypc_reconcile_expected_proxy_networks] and
+                 ((mypc_reconcile_final_containers.stdout | from_json)[1]['NetworkSettings']['Networks'].keys() | list | sort) in [mypc_reconcile_temporary_admin_networks, mypc_reconcile_expected_admin_networks])
+            fail_msg: "Final network identity or exact topology check failed"
 
-          rescue_fail() {
-            printf "%s\n" "FAIL: $1" >&2
-            rescue_ok=false
-          }
+      rescue:
+        - name: Rescue first re-inspects current Proxy and Admin JSON
+          ansible.builtin.command:
+            argv:
+              - docker
+              - inspect
+              - --type=container
+              - "{{ mypc_reconcile_proxy_name }}"
+              - "{{ mypc_reconcile_admin_name }}"
+          register: mypc_reconcile_rescue_inspect
+          changed_when: false
+          failed_when: false
+          check_mode: false
 
-          rescue_network_check() {
-            rescue_network_name="$1"
-            rescue_expected_id="$2"
-            rescue_network_info="$(docker network inspect --format="{{ "{{.Id}}|{{.Name}}" }}" "$rescue_network_name" 2>/dev/null)"
-            rescue_rc="$?"
-            if [ "$rescue_rc" -ne 0 ]; then
-              rescue_fail "rescue network inspection failed"
-              return
-            fi
-            rescue_network_id="${rescue_network_info%%|*}"
-            rescue_network_actual="${rescue_network_info#*|}"
-            if [ "$rescue_network_actual" != "$rescue_network_name" ] || [ "$rescue_network_id" != "$rescue_expected_id" ] || ! valid_id "$rescue_network_id"; then
-              rescue_fail "rescue network identity check failed"
-            else
-              printf "%s\n" "PASS: rescue network identity verified"
-            fi
-          }
+        - name: Parse current rescue network sets when available
+          ansible.builtin.set_fact:
+            mypc_reconcile_rescue_containers: "{{ mypc_reconcile_rescue_inspect.stdout | from_json }}"
+            mypc_reconcile_rescue_proxy_networks: >-
+              {{ (mypc_reconcile_rescue_inspect.stdout | from_json)[0]['NetworkSettings']['Networks'].keys() | list | sort }}
+            mypc_reconcile_rescue_admin_networks: >-
+              {{ (mypc_reconcile_rescue_inspect.stdout | from_json)[1]['NetworkSettings']['Networks'].keys() | list | sort }}
+          when: mypc_reconcile_rescue_inspect.rc == 0
+          ignore_errors: true
 
-          rescue_read_network_set() {
-            rescue_container_name="$1"
-            rescue_network_names="$(docker inspect --type=container --format='{{ "{{range $name, $network := .NetworkSettings.Networks}}{{printf \"%s\\n\" $name}}{{end}}" }}' "$rescue_container_name" 2>/dev/null)"
-            rescue_rc="$?"
-            if [ "$rescue_rc" -ne 0 ] || [ -z "$rescue_network_names" ]; then
-              rescue_fail "rescue container network-set inspection failed"
-              return 1
-            fi
-            rescue_container_network_set="$(printf "%s\n" "$rescue_network_names" | LC_ALL=C sort)"
-            return 0
-          }
+        - name: Reconnect Admin when baseline had WebUI and current state lacks it
+          ansible.builtin.command:
+            argv: [docker, network, connect, "{{ mypc_reconcile_webui_network_id }}", "{{ mypc_reconcile_admin_id }}"]
+          register: mypc_reconcile_rescue_admin_reconnect
+          changed_when: mypc_reconcile_rescue_admin_reconnect.rc == 0
+          failed_when: >-
+            mypc_deploy_enabled is not defined or not (mypc_deploy_enabled | bool) or
+            mypc_network_reconcile_approval is not defined or not (mypc_network_reconcile_approval | bool) or
+            mypc_reconcile_rescue_admin_reconnect.rc != 0
+          when:
+            - not ansible_check_mode
+            - >-
+              mypc_reconcile_baseline_admin_networks is defined and
+              mypc_reconcile_rescue_admin_networks is defined and
+              mypc_reconcile_webui_network_name in mypc_reconcile_baseline_admin_networks and
+              mypc_reconcile_webui_network_name not in mypc_reconcile_rescue_admin_networks
+            - mypc_reconcile_webui_network_id is defined
+            - mypc_reconcile_admin_id is defined
+            - mypc_deploy_enabled is defined
+            - mypc_deploy_enabled | bool
+            - mypc_network_reconcile_approval is defined
+            - mypc_network_reconcile_approval | bool
+          ignore_errors: true
 
-          rescue_reinspect_container() {
-            rescue_container_name="$1"
-            rescue_expected_id="$2"
-            rescue_container_info="$(docker inspect --type=container --format="{{ "{{.Id}}|{{.State.Running}}|{{json .NetworkSettings.Networks}}" }}" "$rescue_container_name" 2>/dev/null)"
-            rescue_rc="$?"
-            if [ "$rescue_rc" -ne 0 ]; then
-              rescue_fail "rescue container inspection failed"
-              return 1
-            fi
-            rescue_container_id="${rescue_container_info%%|*}"
-            rescue_container_rest="${rescue_container_info#*|}"
-            rescue_container_running="${rescue_container_rest%%|*}"
-            rescue_container_networks="${rescue_container_rest#*|}"
-            rescue_container_ok=true
-            if [ "$rescue_container_id" != "$rescue_expected_id" ] || [ "$rescue_container_running" != "true" ] || ! valid_id "$rescue_container_id" || [ -z "$rescue_container_networks" ]; then
-              rescue_fail "rescue container ID or state check failed"
-              rescue_container_ok=false
-            fi
-            rescue_read_network_set "$rescue_container_name"
-            rescue_rc="$?"
-            [ "$rescue_rc" -eq 0 ] || rescue_container_ok=false
-            if [ "$rescue_container_ok" = "true" ]; then
-              printf "%s\n" "PASS: rescue container identity and exact network set collected"
-              return 0
-            fi
-            return 1
-          }
+        - name: Re-inspect Admin and assert its exact measured baseline
+          ansible.builtin.command:
+            argv: [docker, inspect, --type=container, "{{ mypc_reconcile_admin_name }}"]
+          register: mypc_reconcile_rescue_admin_after
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          when: mypc_reconcile_baseline_admin_networks is defined
 
-          rescue_probe() {
-            rescue_probe_name="$1"
-            rescue_probe_url="$2"
-            docker exec "$PROXY_ID" /bin/sh -ec "wget -q -O /dev/null -T 5 $rescue_probe_url" >/dev/null 2>&1
-            rescue_rc="$?"
-            if [ "$rescue_rc" -eq 0 ]; then
-              printf "%s\n" "PASS: rescue ${rescue_probe_name} verified"
-            else
-              printf "%s\n" "FAIL: rescue ${rescue_probe_name} failed" >&2
-              rescue_ok=false
-            fi
-          }
+        - name: Require Admin to match the measured baseline
+          ansible.builtin.assert:
+            that:
+              - mypc_reconcile_rescue_admin_after.rc == 0
+              - >-
+                ((mypc_reconcile_rescue_admin_after.stdout | from_json)[0]['NetworkSettings']['Networks'].keys() | list | sort) ==
+                mypc_reconcile_baseline_admin_networks
+            fail_msg: "Rescue Admin topology does not match the measured baseline"
+          when: mypc_reconcile_baseline_admin_networks is defined
+          ignore_errors: true
 
-          rescue() {
-            trap - EXIT
-            set +e
-            rescue_ok=true
-            printf "%s\n" "FAIL: network transaction failed; collecting rollback evidence" >&2
+        - name: Disconnect Proxy when baseline lacked core and current state has it
+          ansible.builtin.command:
+            argv: [docker, network, disconnect, "{{ mypc_reconcile_core_network_id }}", "{{ mypc_reconcile_proxy_id }}"]
+          register: mypc_reconcile_rescue_proxy_disconnect
+          changed_when: mypc_reconcile_rescue_proxy_disconnect.rc == 0
+          failed_when: >-
+            mypc_deploy_enabled is not defined or not (mypc_deploy_enabled | bool) or
+            mypc_network_reconcile_approval is not defined or not (mypc_network_reconcile_approval | bool) or
+            mypc_reconcile_rescue_proxy_disconnect.rc != 0
+          when:
+            - not ansible_check_mode
+            - >-
+              mypc_reconcile_baseline_proxy_networks is defined and
+              mypc_reconcile_rescue_proxy_networks is defined and
+              mypc_reconcile_core_network_name not in mypc_reconcile_baseline_proxy_networks and
+              mypc_reconcile_core_network_name in mypc_reconcile_rescue_proxy_networks
+            - mypc_reconcile_core_network_id is defined
+            - mypc_reconcile_proxy_id is defined
+            - mypc_deploy_enabled is defined
+            - mypc_deploy_enabled | bool
+            - mypc_network_reconcile_approval is defined
+            - mypc_network_reconcile_approval | bool
+          ignore_errors: true
 
-            if [ -z "$BASELINE_PROXY_NETWORKS" ] || [ -z "$BASELINE_ADMIN_NETWORKS" ] || [ -z "$PROXY_ID" ] || [ -z "$ADMIN_ID" ]; then
-              rescue_fail "measured baseline or container identity is unavailable"
-            else
-              rescue_reinspect_container "$ADMIN_NAME" "$ADMIN_ID"
-              admin_reinspect_rc="$?"
-              admin_current_networks="$rescue_container_network_set"
-              if [ "$admin_reinspect_rc" -eq 0 ] && [ "$admin_current_networks" != "$BASELINE_ADMIN_NETWORKS" ]; then
-                changed=true
-              fi
-              if [ "$BASELINE_ADMIN_NETWORKS" = "$EXPECTED_ADMIN_TEMPORARY_NETWORKS" ] && [ "$admin_reinspect_rc" -eq 0 ] && [ "$admin_current_networks" = "$EXPECTED_ADMIN_NETWORKS" ]; then
-                printf "%s\n" "FAIL: restoring Admin to its measured WebUI membership" >&2
-                docker network connect "$WEBUI_NETWORK_ID" "$ADMIN_ID" >/dev/null 2>&1
-                reconnect_rc="$?"
-                rescue_reinspect_container "$ADMIN_NAME" "$ADMIN_ID"
-                admin_restore_rc="$?"
-                admin_restored_networks="$rescue_container_network_set"
-                if [ "$reconnect_rc" -ne 0 ]; then
-                  rescue_fail "Admin WebUI reconnect command failed"
-                fi
-                if [ "$admin_restore_rc" -ne 0 ] || [ "$admin_restored_networks" != "$BASELINE_ADMIN_NETWORKS" ]; then
-                  rescue_fail "Admin WebUI membership was not restored to baseline"
-                else
-                  printf "%s\n" "PASS: Admin WebUI membership restored to baseline"
-                fi
-              elif [ "$admin_reinspect_rc" -eq 0 ] && [ "$admin_current_networks" != "$BASELINE_ADMIN_NETWORKS" ]; then
-                rescue_fail "Admin membership differs from the measured baseline"
-              fi
+        - name: Rescue re-inspects both containers and asserts the exact baseline
+          ansible.builtin.command:
+            argv:
+              - docker
+              - inspect
+              - --type=container
+              - "{{ mypc_reconcile_proxy_name }}"
+              - "{{ mypc_reconcile_admin_name }}"
+          register: mypc_reconcile_rescue_final
+          changed_when: false
+          failed_when: false
+          check_mode: false
 
-              rescue_reinspect_container "$PROXY_NAME" "$PROXY_ID"
-              proxy_reinspect_rc="$?"
-              proxy_current_networks="$rescue_container_network_set"
-              if [ "$proxy_reinspect_rc" -eq 0 ] && [ "$proxy_current_networks" != "$BASELINE_PROXY_NETWORKS" ]; then
-                changed=true
-              fi
-              if [ "$BASELINE_PROXY_NETWORKS" = "$EXPECTED_PROXY_TEMPORARY_NETWORKS" ] && [ "$proxy_reinspect_rc" -eq 0 ] && [ "$proxy_current_networks" = "$EXPECTED_PROXY_NETWORKS" ]; then
-                printf "%s\n" "FAIL: restoring Proxy to its measured lack of core membership" >&2
-                docker network disconnect "$CORE_NETWORK_ID" "$PROXY_ID" >/dev/null 2>&1
-                disconnect_rc="$?"
-                rescue_reinspect_container "$PROXY_NAME" "$PROXY_ID"
-                proxy_restore_rc="$?"
-                proxy_restored_networks="$rescue_container_network_set"
-                if [ "$disconnect_rc" -ne 0 ]; then
-                  rescue_fail "Proxy core disconnect command failed"
-                fi
-                if [ "$proxy_restore_rc" -ne 0 ] || [ "$proxy_restored_networks" != "$BASELINE_PROXY_NETWORKS" ]; then
-                  rescue_fail "Proxy membership was not restored to the measured baseline"
-                else
-                  printf "%s\n" "PASS: Proxy membership restored to baseline"
-                fi
-              elif [ "$proxy_reinspect_rc" -eq 0 ] && [ "$proxy_current_networks" != "$BASELINE_PROXY_NETWORKS" ]; then
-                rescue_fail "Proxy membership differs from the measured baseline"
-              fi
-            fi
+        - name: Require both rescue network sets to match the measured baseline
+          ansible.builtin.assert:
+            that:
+              - mypc_reconcile_rescue_final.rc == 0
+              - >-
+                ((mypc_reconcile_rescue_final.stdout | from_json)[0]['NetworkSettings']['Networks'].keys() | list | sort) ==
+                mypc_reconcile_baseline_proxy_networks
+              - >-
+                ((mypc_reconcile_rescue_final.stdout | from_json)[1]['NetworkSettings']['Networks'].keys() | list | sort) ==
+                mypc_reconcile_baseline_admin_networks
+            fail_msg: "Rescue topology does not match the measured baseline"
+          when:
+            - mypc_reconcile_baseline_proxy_networks is defined
+            - mypc_reconcile_baseline_admin_networks is defined
+          ignore_errors: true
 
-            rescue_network_check "$CORE_NETWORK_NAME" "$CORE_NETWORK_ID"
-            rescue_network_check "$WEBUI_NETWORK_NAME" "$WEBUI_NETWORK_ID"
-            rescue_reinspect_container "$ADMIN_NAME" "$ADMIN_ID"
-            final_admin_rc="$?"
-            final_admin_networks="$rescue_container_network_set"
-            rescue_reinspect_container "$PROXY_NAME" "$PROXY_ID"
-            final_proxy_rc="$?"
-            final_proxy_networks="$rescue_container_network_set"
-            if [ -n "$BASELINE_ADMIN_NETWORKS" ] && { [ "$final_admin_rc" -ne 0 ] || [ "$final_admin_networks" != "$BASELINE_ADMIN_NETWORKS" ]; }; then
-              rescue_fail "final Admin topology does not match the measured baseline"
-            fi
-            if [ -n "$BASELINE_PROXY_NETWORKS" ] && { [ "$final_proxy_rc" -ne 0 ] || [ "$final_proxy_networks" != "$BASELINE_PROXY_NETWORKS" ]; }; then
-              rescue_fail "final Proxy topology does not match the measured baseline"
-            fi
-            rescue_probe "Admin /login" "$ADMIN_LOGIN_URL"
-            rescue_probe "Fleet /healthz" "$FLEET_HEALTH_URL"
-            rescue_probe "proxy /login" "$PROXY_LOGIN_URL"
-            if [ "$rescue_ok" = "true" ]; then
-              printf "%s\n" "PASS: rescue checks completed"
-            else
-              printf "%s\n" "FAIL: rescue checks incomplete" >&2
-            fi
-            printf "%s\n" "changed=$changed"
-            exit 1
-          }
-
-          trap rescue EXIT
-          hostname_value="$(/bin/hostname 2>/dev/null)" || fail "remote hostname probe failed"
-          [ "$hostname_value" = "mypc" ] || fail "remote hostname is not mypc"
-          CORE_NETWORK_ID="$(read_network_id "$CORE_NETWORK_NAME")"
-          WEBUI_NETWORK_ID="$(read_network_id "$WEBUI_NETWORK_NAME")"
-          EXPECTED_PROXY_NETWORKS="$(printf "%s\n%s\n" "$CORE_NETWORK_NAME" "$WEBUI_NETWORK_NAME" | LC_ALL=C sort)"
-          EXPECTED_ADMIN_NETWORKS="$CORE_NETWORK_NAME"
-          EXPECTED_PROXY_TEMPORARY_NETWORKS="$WEBUI_NETWORK_NAME"
-          EXPECTED_ADMIN_TEMPORARY_NETWORKS="$EXPECTED_PROXY_NETWORKS"
-          inspect_container "$PROXY_NAME"
-          PROXY_ID="$container_id"
-          PROXY_NETWORKS="$(read_network_set "$PROXY_NAME")"
-          inspect_container "$ADMIN_NAME"
-          ADMIN_ID="$container_id"
-          ADMIN_NETWORKS="$(read_network_set "$ADMIN_NAME")"
-          if [ "$PROXY_NETWORKS" = "$EXPECTED_PROXY_TEMPORARY_NETWORKS" ] && [ "$ADMIN_NETWORKS" = "$EXPECTED_ADMIN_TEMPORARY_NETWORKS" ]; then
-            :
-          elif [ "$PROXY_NETWORKS" = "$EXPECTED_PROXY_NETWORKS" ] && [ "$ADMIN_NETWORKS" = "$EXPECTED_ADMIN_TEMPORARY_NETWORKS" ]; then
-            :
-          elif [ "$PROXY_NETWORKS" = "$EXPECTED_PROXY_NETWORKS" ] && [ "$ADMIN_NETWORKS" = "$EXPECTED_ADMIN_NETWORKS" ]; then
-            :
-          else
-            fail "initial network topology is outside the allowed temporary or canonical states"
-          fi
-          BASELINE_PROXY_NETWORKS="$PROXY_NETWORKS"
-          BASELINE_ADMIN_NETWORKS="$ADMIN_NETWORKS"
-          FLEET_ID="$(read_running_container_id "$FLEET_NAME")"
-
-          if [ "$PROXY_NETWORKS" = "$EXPECTED_PROXY_TEMPORARY_NETWORKS" ]; then
-            set +e
-            docker network connect "$CORE_NETWORK_ID" "$PROXY_ID" >/dev/null 2>&1
-            attach_rc="$?"
-            set -e
-            inspect_container "$PROXY_NAME"
-            [ "$container_id" = "$PROXY_ID" ] || fail "proxy ID changed during attach"
-            PROXY_NETWORKS="$(read_network_set "$PROXY_NAME")"
-            if [ "$PROXY_NETWORKS" != "$BASELINE_PROXY_NETWORKS" ]; then
-              changed=true
-            fi
-            if [ "$PROXY_NETWORKS" != "$EXPECTED_PROXY_NETWORKS" ]; then
-              fail "proxy core attach was not observed as the exact canonical network set"
-            fi
-            [ "$attach_rc" -eq 0 ] || fail "proxy core-network attach command failed after post-command inspection"
-            printf "%s\n" "PASS: proxy core network attached and observed"
-          else
-            printf "%s\n" "PASS: proxy already has the exact canonical network set"
-          fi
-
-          docker exec "$PROXY_ID" /bin/sh -ec "wget -q -O /dev/null -T 5 $ADMIN_LOGIN_URL && wget -q -O /dev/null -T 5 $FLEET_HEALTH_URL && wget -q -O /dev/null -T 5 $PROXY_LOGIN_URL" >/dev/null 2>&1 || fail "dependency or pre-detach /login probe failed"
-          printf "%s\n" "PASS: proxy can reach Admin, Fleet health, and /login"
-
-          if [ "$BASELINE_ADMIN_NETWORKS" = "$EXPECTED_ADMIN_TEMPORARY_NETWORKS" ]; then
-            set +e
-            docker network disconnect "$WEBUI_NETWORK_ID" "$ADMIN_ID" >/dev/null 2>&1
-            detach_rc="$?"
-            set -e
-            inspect_container "$ADMIN_NAME"
-            [ "$container_id" = "$ADMIN_ID" ] || fail "admin ID changed during detach"
-            ADMIN_NETWORKS="$(read_network_set "$ADMIN_NAME")"
-            if [ "$ADMIN_NETWORKS" != "$BASELINE_ADMIN_NETWORKS" ]; then
-              changed=true
-            fi
-            if [ "$ADMIN_NETWORKS" != "$EXPECTED_ADMIN_NETWORKS" ]; then
-              fail "admin detach was not observed as the exact canonical network set"
-            fi
-            [ "$detach_rc" -eq 0 ] || fail "admin Open WebUI-network detach command failed after post-command inspection"
-            printf "%s\n" "PASS: admin Open WebUI network detached and observed"
-          else
-            printf "%s\n" "PASS: admin already has the exact canonical network set"
-          fi
-
-          final_core_network_id="$(read_network_id "$CORE_NETWORK_NAME")"
-          final_webui_network_id="$(read_network_id "$WEBUI_NETWORK_NAME")"
-          [ "$final_core_network_id" = "$CORE_NETWORK_ID" ] || fail "core network ID changed"
-          [ "$final_webui_network_id" = "$WEBUI_NETWORK_ID" ] || fail "Open WebUI network ID changed"
-          inspect_container "$PROXY_NAME"
-          [ "$container_id" = "$PROXY_ID" ] || fail "proxy ID changed after detach"
-          PROXY_NETWORKS="$(read_network_set "$PROXY_NAME")"
-          [ "$PROXY_NETWORKS" = "$EXPECTED_PROXY_NETWORKS" ] || fail "proxy final network set is not exactly core plus WebUI"
-          inspect_container "$ADMIN_NAME"
-          [ "$container_id" = "$ADMIN_ID" ] || fail "admin ID changed after detach"
-          ADMIN_NETWORKS="$(read_network_set "$ADMIN_NAME")"
-          [ "$ADMIN_NETWORKS" = "$EXPECTED_ADMIN_NETWORKS" ] || fail "admin final network set is not exactly core"
-          docker exec "$PROXY_ID" /bin/sh -ec "wget -q -O /dev/null -T 5 $FLEET_HEALTH_URL && wget -q -O /dev/null -T 5 $PROXY_LOGIN_URL" >/dev/null 2>&1 || fail "post-detach Fleet health or /login probe failed"
-          trap - EXIT
-          printf "%s\n" "PASS: fixed network transaction completed"
-          printf "%s\n" "changed=$changed"
-          '
-      args:
-        executable: /bin/sh
-      register: mypc_reconcile_transaction
-      changed_when: "'changed=true' in mypc_reconcile_transaction.stdout"
-      when: not ansible_check_mode
+        - name: Preserve original failure and finish nonzero after rescue evidence
+          ansible.builtin.fail:
+            msg: >-
+              Network reconciliation failed at {{ ansible_failed_task.name | default('unknown task') }}:
+              {{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default('unknown error')) }}

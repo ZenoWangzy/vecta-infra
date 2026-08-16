@@ -170,32 +170,31 @@ Use only `playbooks/mypc-network-reconcile.yml` for this network repair. It is
 mypc-only and fail-closed: both `mypc_deploy_enabled=true` and the independent
 `mypc_network_reconcile_approval=true` extra variables are required, and the
 remote `/bin/hostname` output must be exactly `mypc`. The playbook changes only
-Docker network attachments using IDs read inside one fixed shell transaction;
-it does not own an image, volume, port, or container lifecycle setting. It
-accepts only these measured starting states: the temporary state (Proxy on
-WebUI, Admin on core plus WebUI), the in-progress state (both Proxy networks,
-Admin on core plus WebUI), or the already-canonical state (Proxy exactly on
-core plus WebUI, Admin exactly on core). Network names are sorted and compared
-as exact sets, so extra attachments fail closed. From a temporary state it
-attaches Proxy to core, re-inspects the actual membership, probes Admin/Fleet
-health/login from inside Proxy, then detaches Admin from WebUI and re-inspects
-again. The canonical starting state is a safe no-op.
+Docker network attachments using JSON returned by `docker inspect`; it does
+not own an image, volume, port, or container lifecycle setting. It accepts only
+these measured starting states: temporary (Proxy on WebUI, Admin on core plus
+WebUI) or canonical (Proxy exactly on core plus WebUI, Admin exactly on core).
+The already-in-progress state, extra attachments, and missing attachments fail
+closed. From temporary, it attaches Proxy to core, inspects JSON and requires
+the exact transition state, then detaches Admin from WebUI, inspects JSON again,
+and requires canonical.
+The canonical starting state is a safe no-op. Each mutation has both approval
+guards on the command itself, so skipping pre-tasks cannot authorize a write.
 
-On any failure, rescue first re-inspects the actual memberships. If the
-measured baseline had Admin on WebUI and it is absent, restore that membership
-first; if the measured baseline lacked Proxy on core and it is present, then
-disconnect Proxy from core. Each rollback command is followed by another
-actual inspect, command failures are retained, evidence collection continues,
-and the transaction exits non-zero. No repository, host, or runtime evidence
-identifies the deploy, rebuild, or manual actor that triggered the original
-network change; that actor remains unknown.
-Fleet's network set is not a contract: only the fixed Fleet health URL is
-probed from the proxy.
+On any command or postcondition failure, rescue first re-inspects the actual
+memberships. If the measured baseline had Admin on WebUI and it is absent,
+restore that membership first, regardless of any extra current networks. If
+the measured baseline lacked Proxy on core and it is present, then disconnect
+Proxy from core. Each inverse command is followed by another actual inspect and
+an exact measured-baseline assertion; command failures and the original failure
+are retained, evidence collection continues, and the playbook exits non-zero.
+No repository, host, or runtime evidence identifies the deploy, rebuild, or
+manual actor that triggered the original network change; that actor remains unknown.
+Fleet's network set is not a contract for this network-only repair.
 
-`--check` 仅预检：只运行另一个纯只读 preflight shell（固定目标、精确网络集合、
-容器和当前 `/login`）；它完全跳过 mutation transaction 及其依赖探针，不是成功证据
-（not success evidence）。shell 只输出非敏感的 `PASS`/`FAIL` 和
-`changed=true|false`。
+`--check` 仅预检：它执行只读的 hostname 和 Docker JSON inspect，
+跳过两个 network mutation 及其 post-mutation assertions，不是成功证据
+（not success evidence）。真实命令才会执行 temporary -> canonical 的网络变更。
 
 ```bash
 scripts/check-open-webui-admin-ingress.sh
@@ -206,8 +205,8 @@ ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.
 ```
 
 Manual rollback, only when the measured baseline requires both operations, is
-performed in this order. Inspect after each command; a non-zero command does
-not prove that membership was unchanged:
+performed in this exact order. Inspect after each command; a non-zero command
+does not prove that membership was unchanged:
 
 ```bash
 docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console
