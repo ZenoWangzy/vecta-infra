@@ -121,13 +121,14 @@ for literal in \
   require_literal "$NETWORK_RECONCILE_PLAYBOOK" "$literal"
 done
 starting_block="$(task_block 'Require fixed identities and only temporary or canonical starting state')"
-if awk '
-  /mypc_reconcile_expected_proxy_networks/ { expected=1 }
-  expected && /mypc_reconcile_temporary_admin_networks/ { bad=1 }
-  END { exit !bad }
-' <<<"$starting_block"; then
-  fail "initial topology assertion accepts the in-progress Proxy/Admin pairing"
-fi
+for state_literal in \
+  'mypc_reconcile_proxy_networks == mypc_reconcile_temporary_proxy_networks' \
+  'mypc_reconcile_admin_networks == mypc_reconcile_temporary_admin_networks' \
+  'mypc_reconcile_proxy_networks == mypc_reconcile_expected_proxy_networks' \
+  'mypc_reconcile_admin_networks == mypc_reconcile_expected_admin_networks'; do
+  state_count="$(grep -Foc -- "$state_literal" <<<"$starting_block" || true)"
+  [ "$state_count" = 1 ] || fail "initial topology assertion is not exactly temporary plus canonical"
+done
 if grep -Fq 'mypc_reconcile_after_attach' <<<"$starting_block"; then
   fail "initial topology assertion is coupled to a post-attach state"
 fi
