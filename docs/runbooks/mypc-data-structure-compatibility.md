@@ -205,8 +205,8 @@ is required, use this exact order and inspect after each command; a non-zero
 command does not prove that membership was unchanged:
 
 ```bash
-docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console
-docker inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' openclaw-admin-console
-docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy
-docker inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' openclaw-webui-proxy
+/usr/bin/docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console
+/usr/bin/docker inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' openclaw-admin-console
+/usr/bin/docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy
+/usr/bin/docker inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' openclaw-webui-proxy
 ```

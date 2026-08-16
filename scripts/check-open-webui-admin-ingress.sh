@@ -58,7 +58,9 @@ done
 
 # The transaction is the only Docker state machine; its self-test is Docker-free.
 bash -n "$TRANSACTION"
-self_test_output="$("$TRANSACTION" --self-test)" || fail 'transaction self-test failed'
+[ "$(sed -n '1p' "$TRANSACTION")" = '#!/usr/bin/bash' ] ||
+  fail 'transaction shebang must be exactly #!/usr/bin/bash'
+self_test_output="$(bash "$TRANSACTION" --self-test)" || fail 'transaction self-test failed'
 [ "$self_test_output" = 'RESULT=noop' ] || fail 'transaction self-test did not emit the safe noop marker'
 require_literal "$TRANSACTION" 'set -euo pipefail'
 for literal in \
@@ -160,18 +162,22 @@ for literal in \
   '不是成功证据' \
   'uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --check -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true' \
   'uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true' \
-  'docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console' \
-  'docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy' \
+  '/usr/bin/docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console' \
+  '/usr/bin/docker inspect --type=container --format=' \
+  '/usr/bin/docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy' \
   'that actor remains unknown'; do
   require_literal "$RUNBOOK" "$literal"
 done
-connect_line="$(grep -nF 'docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console' "$RUNBOOK" | tail -n1 | cut -d: -f1)"
-disconnect_line="$(grep -nF 'docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy' "$RUNBOOK" | tail -n1 | cut -d: -f1)"
+if grep -nE '^[[:space:]]*docker[[:space:]]+(inspect|network)' "$RUNBOOK" >/dev/null; then
+  fail 'runbook manual Docker commands must use /usr/bin/docker'
+fi
+connect_line="$(grep -nF '/usr/bin/docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console' "$RUNBOOK" | tail -n1 | cut -d: -f1)"
+disconnect_line="$(grep -nF '/usr/bin/docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy' "$RUNBOOK" | tail -n1 | cut -d: -f1)"
 [ "$connect_line" -lt "$disconnect_line" ] || fail 'manual rollback order is not Admin then Proxy'
 
 run_fake_transaction_probe() {
   local probe_dir probe_bin path_bin test_transaction state_file mutation_log fake_output_file
-  local inspect_count_file path_resolution_log output status captured_fake_output probe_text
+  local inspect_count_file network_inspect_count_file path_resolution_log output status captured_fake_output probe_text
   local probe_core_network='openclaw-enterprise_openclaw-net'
   local probe_webui_network='openclaw-enterprise_open-webui-net'
   local probe_proxy_networks="$probe_webui_network"
@@ -187,6 +193,7 @@ run_fake_transaction_probe() {
   mutation_log="$probe_dir/mutations"
   fake_output_file="$probe_dir/output"
   inspect_count_file="$probe_dir/inspect-count"
+  network_inspect_count_file="$probe_dir/network-inspect-count"
   path_resolution_log="$probe_dir/path-resolution"
   mkdir "$probe_bin" "$path_bin"
   trap 'rm -rf "$probe_dir"' EXIT
@@ -208,6 +215,7 @@ set -euo pipefail
 : "${FAKE_MODE:?}"
 : "${FAKE_OUTPUT:?}"
 : "${FAKE_INSPECT_COUNT:?}"
+: "${FAKE_NETWORK_INSPECT_COUNT:?}"
 
 readonly CORE_NETWORK='openclaw-enterprise_openclaw-net'
 readonly WEBUI_NETWORK='openclaw-enterprise_open-webui-net'
@@ -227,6 +235,13 @@ next_container_inspect() {
   printf '%s\n' "$count" > "$FAKE_INSPECT_COUNT"
   printf '%s' "$count"
 }
+next_network_inspect() {
+  local count
+  count="$(<"$FAKE_NETWORK_INSPECT_COUNT")"
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$FAKE_NETWORK_INSPECT_COUNT"
+  printf '%s' "$count"
+}
 print_container() {
   emit "$1"
   printf '%s\n' "$2" | tr ',' '\n' | tee -a "$FAKE_OUTPUT"
@@ -237,10 +252,23 @@ case "${1:-}" in
     case "${2:-}" in
       inspect)
         [[ "${3:-}" == '--format={{.Id}}' ]] || fail
+        network_inspect_count="$(next_network_inspect)"
         [[ "$FAKE_MODE" != inspect-fail || "${4:-}" != "$WEBUI_NETWORK" ]] || exit 91
         case "${4:-}" in
-          "$CORE_NETWORK") emit core-id ;;
-          "$WEBUI_NETWORK") emit webui-id ;;
+          "$CORE_NETWORK")
+            if [[ "$FAKE_MODE" == core-network-id-drift-before-mutation && "$network_inspect_count" -ge 3 ]]; then
+              emit drifted-core-id
+            else
+              emit core-id
+            fi
+            ;;
+          "$WEBUI_NETWORK")
+            if [[ "$FAKE_MODE" == post-first-mutation-webui-network-drift && -s "$FAKE_LOG" ]]; then
+              emit drifted-webui-id
+            else
+              emit webui-id
+            fi
+            ;;
           *) fail ;;
         esac
         ;;
@@ -293,7 +321,13 @@ case "${1:-}" in
           print_container proxy-id "$proxy_networks"
         fi
         ;;
-      openclaw-admin-console) print_container admin-id "$admin_networks" ;;
+      openclaw-admin-console)
+        if [[ "$FAKE_MODE" == admin-id-drift-before-mutation && "$container_inspect_count" -ge 4 ]]; then
+          print_container drifted-admin-id "$admin_networks"
+        else
+          print_container admin-id "$admin_networks"
+        fi
+        ;;
       *) fail ;;
     esac
     ;;
@@ -333,6 +367,7 @@ EOF
     : > "$mutation_log"
     : > "$fake_output_file"
     printf '0\n' > "$inspect_count_file"
+    printf '0\n' > "$network_inspect_count_file"
     : > "$path_resolution_log"
   }
 
@@ -341,6 +376,7 @@ EOF
     export PATH="$path_bin:/usr/bin:/bin"
     export FAKE_MODE="$mode" FAKE_STATE="$state_file" FAKE_LOG="$mutation_log"
     export FAKE_OUTPUT="$fake_output_file" FAKE_INSPECT_COUNT="$inspect_count_file"
+    export FAKE_NETWORK_INSPECT_COUNT="$network_inspect_count_file"
     export FAKE_PATH_RESOLUTION_LOG="$path_resolution_log"
     if [[ "$deploy_approval" == '__unset__' ]]; then
       unset MYPC_DEPLOY_ENABLED
@@ -352,7 +388,7 @@ EOF
     else
       export MYPC_NETWORK_RECONCILE_APPROVAL="$network_approval"
     fi
-    "$test_transaction" "$operation"
+    bash "$test_transaction" "$operation"
   }
 
   assert_safe_probe_output() {
@@ -381,10 +417,15 @@ EOF
       assert_safe_probe_output "$probe_text"
     done
     case "$label" in
-      wrong-hostname|missing-deploy-approval|wrong-deploy-approval|missing-network-approval|wrong-network-approval|id-drift|inspect-failure)
+      wrong-hostname|missing-deploy-approval|wrong-deploy-approval|missing-network-approval|wrong-network-approval|id-drift|inspect-failure|admin-id-drift-before-mutation|core-network-id-drift-before-mutation)
         expected_status='nonzero'
         expected_state="$initial_proxy"$'\n'"$initial_admin"
         expected_log=''
+        ;;
+      post-first-mutation-webui-network-drift)
+        expected_status='nonzero'
+        expected_state="$probe_canonical_proxy_networks"$'\n'"$probe_admin_networks"
+        expected_log='connect core-id proxy-id'
         ;;
       check-temporary)
         expected_status=0
@@ -447,6 +488,9 @@ EOF
   run_probe_case connect-failure connect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case disconnect-failure disconnect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case unexpected-extra-network extra-network --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case admin-id-drift-before-mutation admin-id-drift-before-mutation --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case core-network-id-drift-before-mutation core-network-id-drift-before-mutation --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case post-first-mutation-webui-network-drift post-first-mutation-webui-network-drift --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   trap - EXIT
   rm -rf "$probe_dir"
 }
