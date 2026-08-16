@@ -87,6 +87,16 @@ done
 require_literal "$NETWORK_RECONCILE_PLAYBOOK" '{{ "{{.Id}}|{{.Name}}" }}'
 require_literal "$NETWORK_RECONCILE_PLAYBOOK" '{{ "{{.Id}}|{{.State.Running}}|{{json .NetworkSettings.Networks}}" }}'
 require_literal "$NETWORK_RECONCILE_PLAYBOOK" '{{ "{{.Id}}|{{.State.Running}}" }}'
+require_literal "$NETWORK_RECONCILE_PLAYBOOK" 'read_network_set()'
+require_literal "$NETWORK_RECONCILE_PLAYBOOK" 'LC_ALL=C sort'
+require_literal "$NETWORK_RECONCILE_PLAYBOOK" 'EXPECTED_PROXY_NETWORKS='
+require_literal "$NETWORK_RECONCILE_PLAYBOOK" 'EXPECTED_ADMIN_NETWORKS='
+if grep -Eq 'has_network[[:space:]]*\(' "$NETWORK_RECONCILE_PLAYBOOK"; then
+  fail "$NETWORK_RECONCILE_PLAYBOOK must compare exact sorted network sets, not contains checks"
+fi
+if grep -Eq 'proxy_core_attached|admin_detached' "$NETWORK_RECONCILE_PLAYBOOK"; then
+  fail "$NETWORK_RECONCILE_PLAYBOOK must not use success-only mutation booleans as state"
+fi
 if grep -Eq 'mypc_reconcile_[A-Za-z0-9_]*(id|ids|network|container)' "$NETWORK_RECONCILE_PLAYBOOK"; then
   fail "$NETWORK_RECONCILE_PLAYBOOK must not expose dynamic IDs as Ansible variables"
 fi
@@ -99,7 +109,7 @@ fi
 connect_count="$(grep -Fc 'docker network connect' "$NETWORK_RECONCILE_PLAYBOOK")"
 disconnect_count="$(grep -Fc 'docker network disconnect' "$NETWORK_RECONCILE_PLAYBOOK")"
 [ "$connect_count" = "2" ] || fail "$NETWORK_RECONCILE_PLAYBOOK must have attach plus rescue reconnect"
-[ "$disconnect_count" = "1" ] || fail "$NETWORK_RECONCILE_PLAYBOOK must have exactly one admin detach"
+[ "$disconnect_count" = "2" ] || fail "$NETWORK_RECONCILE_PLAYBOOK must have admin detach plus rescue proxy rollback"
 echo 'PASS N2 fixed IDs stay inside the shell transaction'
 
 # N3: Fleet is a dependency probe only. Its network set is intentionally not a
@@ -111,41 +121,74 @@ if grep -Eiq 'fleet[^[:space:]]*[[:space:]_]*(network|topology)|fleet.*(differen
 fi
 echo 'PASS N3 Fleet is probe-only'
 
-# N4: rescue is a non-short-circuit shell path. Reconnect failure is recorded,
-# then ID/network/login checks still run and the transaction exits non-zero.
+# N4: rescue is a non-short-circuit shell path. It re-inspects after each
+# rollback command, restores the measured baseline in dependency order, then
+# collects all evidence and exits non-zero.
 require_literal "$NETWORK_RECONCILE_PLAYBOOK" 'rescue() {'
 require_literal "$NETWORK_RECONCILE_PLAYBOOK" 'trap rescue EXIT'
 require_literal "$NETWORK_RECONCILE_PLAYBOOK" 'set +e'
+require_literal "$NETWORK_RECONCILE_PLAYBOOK" 'attach_rc="$?"'
+require_literal "$NETWORK_RECONCILE_PLAYBOOK" 'detach_rc="$?"'
+require_literal "$NETWORK_RECONCILE_PLAYBOOK" 'rescue_reinspect_container()'
 rescue_block="$(sed -n '/rescue() {/,/trap rescue EXIT/p' "$NETWORK_RECONCILE_PLAYBOOK")"
 [ -n "$rescue_block" ] || fail "$NETWORK_RECONCILE_PLAYBOOK is missing the shell rescue block"
 for rescue_literal in \
   'docker network connect "$WEBUI_NETWORK_ID" "$ADMIN_ID"' \
   'reconnect_rc="$?"' \
+  'rescue_reinspect_container "$ADMIN_NAME" "$ADMIN_ID"' \
+  'docker network disconnect "$CORE_NETWORK_ID" "$PROXY_ID"' \
+  'disconnect_rc="$?"' \
+  'rescue_reinspect_container "$PROXY_NAME" "$PROXY_ID"' \
+  'BASELINE_ADMIN_NETWORKS' \
+  'BASELINE_PROXY_NETWORKS' \
   'rescue_network_check "$CORE_NETWORK_NAME" "$CORE_NETWORK_ID"' \
   'rescue_network_check "$WEBUI_NETWORK_NAME" "$WEBUI_NETWORK_ID"' \
-  'rescue_container_check "$ADMIN_NAME" "$ADMIN_ID" true true' \
-  'rescue_container_check "$PROXY_NAME" "$PROXY_ID" true true' \
   'rescue_probe "Admin /login" "$ADMIN_LOGIN_URL"' \
   'rescue_probe "Fleet /healthz" "$FLEET_HEALTH_URL"' \
   'rescue_probe "proxy /login" "$PROXY_LOGIN_URL"' \
   'exit 1'; do
   grep -Fq -- "$rescue_literal" <<<"$rescue_block" || fail "rescue missing: ${rescue_literal}"
 done
-if grep -Fq 'docker network disconnect' <<<"$rescue_block"; then
-  fail "$NETWORK_RECONCILE_PLAYBOOK rescue must not roll back the proxy core attachment"
-fi
+require_after() {
+  local text="$1"
+  local before="$2"
+  local after="$3"
+  local before_line
+  local after_line
+  if [ -f "$text" ]; then
+    before_line="$(grep -nF -- "$before" "$text" | tail -n1 | cut -d: -f1)"
+    after_line="$(grep -nF -- "$after" "$text" | awk -F: -v before="$before_line" '$1 > before { print $1; exit }')"
+  else
+    before_line="$(grep -nF -- "$before" <<<"$text" | tail -n1 | cut -d: -f1)"
+    after_line="$(grep -nF -- "$after" <<<"$text" | awk -F: -v before="$before_line" '$1 > before { print $1; exit }')"
+  fi
+  [ -n "$before_line" ] && [ -n "$after_line" ] || fail "missing post-command inspection: ${before} -> ${after}"
+}
+require_after "$NETWORK_RECONCILE_PLAYBOOK" 'attach_rc="$?"' 'inspect_container "$PROXY_NAME"'
+require_after "$NETWORK_RECONCILE_PLAYBOOK" 'detach_rc="$?"' 'inspect_container "$ADMIN_NAME"'
+require_after "$rescue_block" 'reconnect_rc="$?"' 'rescue_reinspect_container "$ADMIN_NAME" "$ADMIN_ID"'
+require_after "$rescue_block" 'disconnect_rc="$?"' 'rescue_reinspect_container "$PROXY_NAME" "$PROXY_ID"'
 if grep -Eq '\|\|[[:space:]]*(exit|return)|&&[[:space:]]*(exit|return)' <<<"$rescue_block"; then
   fail "$NETWORK_RECONCILE_PLAYBOOK rescue must not short-circuit after reconnect failure"
 fi
 echo 'PASS N4 rescue continues checks and exits non-zero'
 
-# N5: only network attachment mutations are allowed; no lifecycle or role path.
+# N5: only network attachment mutations are allowed; no lifecycle, file, or
+# role path. The proxy-core disconnect is permitted only in rescue above.
 if grep -Eq 'community\.docker|docker_(container|network)|^[[:space:]]+(roles|import_playbook|import_role):' "$NETWORK_RECONCILE_PLAYBOOK"; then
   fail "$NETWORK_RECONCILE_PLAYBOOK contains a module, role, or import path"
+fi
+forbidden_ansible_module_re='ansible\.builtin\.(file|template|service|copy)([[:space:]:]|$)'
+if grep -Eiq "$forbidden_ansible_module_re" "$NETWORK_RECONCILE_PLAYBOOK"; then
+  fail "$NETWORK_RECONCILE_PLAYBOOK contains a forbidden file/template/service/copy module"
 fi
 forbidden_docker_command_re='docker[[:space:]]+((container|image|volume|network|system)[[:space:]]+)?(create|start|restart|recreate|stop|rm|run|pull|build|prune)([[:space:]]|$)'
 if grep -Eq "$forbidden_docker_command_re" "$NETWORK_RECONCILE_PLAYBOOK"; then
   fail "$NETWORK_RECONCILE_PLAYBOOK contains a forbidden Docker lifecycle operation"
+fi
+forbidden_compose_command_re='docker(-compose|[[:space:]]+compose)([[:space:]]+[^[:space:]]+)*[[:space:]]+(up|down)([[:space:]]|$)'
+if grep -Eq "$forbidden_compose_command_re" "$NETWORK_RECONCILE_PLAYBOOK"; then
+  fail "$NETWORK_RECONCILE_PLAYBOOK contains a forbidden Docker Compose lifecycle operation"
 fi
 for forbidden_command in \
   'docker container rm openclaw-admin-console' \
@@ -156,10 +199,29 @@ for forbidden_command in \
     fail "Docker denylist regression self-check missed: ${forbidden_command}"
   fi
 done
+for forbidden_command in \
+  'docker compose up -d' \
+  'docker compose down' \
+  'docker-compose up -d' \
+  'docker-compose down'; do
+  if ! printf '%s\n' "$forbidden_command" | grep -Eq "$forbidden_compose_command_re"; then
+    fail "Docker Compose denylist regression self-check missed: ${forbidden_command}"
+  fi
+done
+for forbidden_module in \
+  ansible.builtin.file \
+  ansible.builtin.template \
+  ansible.builtin.service \
+  ansible.builtin.copy; do
+  if ! printf '%s\n' "$forbidden_module" | grep -Eiq "$forbidden_ansible_module_re"; then
+    fail "Ansible module denylist regression self-check missed: ${forbidden_module}"
+  fi
+done
 for allowed_command in \
   'docker network inspect open-webui-net' \
   'docker network connect open-webui-net openclaw-webui-proxy' \
-  'docker network disconnect open-webui-net openclaw-admin-console'; do
+  'docker network disconnect open-webui-net openclaw-admin-console' \
+  'docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy'; do
   if printf '%s\n' "$allowed_command" | grep -Eq "$forbidden_docker_command_re"; then
     fail "Docker denylist regression self-check overblocked: ${allowed_command}"
   fi
@@ -181,6 +243,10 @@ fi
 require_literal "$RUNBOOK" '仅预检'
 require_literal "$RUNBOOK" '不是成功证据'
 require_literal "$RUNBOOK" '--check'
+require_literal "$RUNBOOK" 'ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true'
+require_literal "$RUNBOOK" 'docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console'
+require_literal "$RUNBOOK" 'docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy'
+require_literal "$RUNBOOK" 'that actor remains unknown'
 echo 'PASS N5 fixed literals and network-only lifecycle boundary'
 
 echo 'OK   mypc Open WebUI/Admin network-only reconcile contract is present'

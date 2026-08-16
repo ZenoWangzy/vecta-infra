@@ -172,20 +172,28 @@ mypc-only and fail-closed: both `mypc_deploy_enabled=true` and the independent
 remote `/bin/hostname` output must be exactly `mypc`. The playbook changes only
 Docker network attachments using IDs read inside one fixed shell transaction;
 it does not own an image, volume, port, or container lifecycle setting. It
-attaches the proxy to the core network, probes Admin/Fleet health/login from
-inside the proxy, then detaches Admin from the temporary Open WebUI network.
-If the target topology already holds (proxy on both core and WebUI, Admin only
-on core), the mutation transaction is a safe no-op. Admin is reconnected by its
-original ID only after a successful WebUI detach; any later failure continues
-to collect Admin/proxy ID, network, and independent login/health checks even if
-reconnect fails, and remains a failure. The proxy core connection is not rolled
-back.
+accepts only these measured starting states: the temporary state (Proxy on
+WebUI, Admin on core plus WebUI), the in-progress state (both Proxy networks,
+Admin on core plus WebUI), or the already-canonical state (Proxy exactly on
+core plus WebUI, Admin exactly on core). Network names are sorted and compared
+as exact sets, so extra attachments fail closed. From a temporary state it
+attaches Proxy to core, re-inspects the actual membership, probes Admin/Fleet
+health/login from inside Proxy, then detaches Admin from WebUI and re-inspects
+again. The canonical starting state is a safe no-op.
+
+On any failure, rescue first re-inspects the actual memberships. If the
+measured baseline had Admin on WebUI and it is absent, restore that membership
+first; if the measured baseline lacked Proxy on core and it is present, then
+disconnect Proxy from core. Each rollback command is followed by another
+actual inspect, command failures are retained, evidence collection continues,
+and the transaction exits non-zero. No repository, host, or runtime evidence
+identifies the deploy, rebuild, or manual actor that triggered the original
+network change; that actor remains unknown.
 Fleet's network set is not a contract: only the fixed Fleet health URL is
 probed from the proxy.
 
-`--check` 仅预检：只运行另一个纯只读 preflight shell（固定目标、网络、容器和当前
-`/login`，并确认 proxy 同时位于既有 core 与 WebUI 网络）；它完全跳过 mutation
-transaction 及其依赖探针，不是成功证据
+`--check` 仅预检：只运行另一个纯只读 preflight shell（固定目标、精确网络集合、
+容器和当前 `/login`）；它完全跳过 mutation transaction 及其依赖探针，不是成功证据
 （not success evidence）。shell 只输出非敏感的 `PASS`/`FAIL` 和
 `changed=true|false`。
 
@@ -194,4 +202,16 @@ scripts/check-open-webui-admin-ingress.sh
 ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --syntax-check
 ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --list-tasks
 ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --check -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
+ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
+```
+
+Manual rollback, only when the measured baseline requires both operations, is
+performed in this order. Inspect after each command; a non-zero command does
+not prove that membership was unchanged:
+
+```bash
+docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console
+docker inspect --type=container --format='{{json .NetworkSettings.Networks}}' openclaw-admin-console
+docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy
+docker inspect --type=container --format='{{json .NetworkSettings.Networks}}' openclaw-webui-proxy
 ```
