@@ -63,6 +63,9 @@ self_test_output="$("$TRANSACTION" --self-test)" || fail 'transaction self-test 
 require_literal "$TRANSACTION" 'set -euo pipefail'
 for literal in \
   "readonly EXPECTED_HOSTNAME='mypc'" \
+  "readonly DOCKER_BIN='/usr/bin/docker'" \
+  "readonly HOSTNAME_BIN='/usr/bin/hostname'" \
+  "export PATH='/usr/bin:/bin'" \
   "readonly PROXY_CONTAINER='openclaw-webui-proxy'" \
   "readonly ADMIN_CONTAINER='openclaw-admin-console'" \
   "readonly CORE_NETWORK='openclaw-enterprise_openclaw-net'" \
@@ -101,17 +104,18 @@ if grep -F -- '--format=' "$TRANSACTION" |
   grep -vF -- "$network_format" >/dev/null; then
   fail 'transaction contains an unapproved Docker inspect format'
 fi
-if grep -F 'docker inspect' "$TRANSACTION" | grep -vF -- '--format=' >/dev/null; then
+if grep -F '"$DOCKER_BIN" inspect' "$TRANSACTION" | grep -vF -- '--format=' >/dev/null; then
   fail 'transaction contains an unformatted docker inspect'
 fi
-if grep -F 'docker network inspect' "$TRANSACTION" | grep -vF -- '--format=' >/dev/null; then
+if grep -F '"$DOCKER_BIN" network inspect' "$TRANSACTION" | grep -vF -- '--format=' >/dev/null; then
   fail 'transaction contains an unformatted docker network inspect'
 fi
-if grep -F 'docker network' "$TRANSACTION" | grep -Ev 'docker network (inspect|connect|disconnect)' >/dev/null; then
+if grep -F '"$DOCKER_BIN" network' "$TRANSACTION" |
+  grep -Ev '"\$DOCKER_BIN" network (inspect|connect|disconnect)' >/dev/null; then
   fail 'transaction contains an unapproved docker network operation'
 fi
 if grep -Eiq \
-  'docker[[:space:]]+(restart|recreate|pull|build|create|start|stop|rm|run|exec|ps|compose)|docker-compose|docker[[:space:]]+(image|volume|system|container)[[:space:]]|(^|[[:space:]])(bash|sh)[[:space:]]+-c|(^|[[:space:]])eval([[:space:]]|$)' \
+  '"\$DOCKER_BIN"[[:space:]]+(restart|recreate|pull|build|create|start|stop|rm|run|exec|ps|compose|image|volume|system|container)|docker-compose|(^|[[:space:]])(bash|sh)[[:space:]]+-c|(^|[[:space:]])eval([[:space:]]|$)' \
   "$TRANSACTION"; then
   fail 'transaction contains a forbidden lifecycle, nested-shell, or Docker path'
 fi
@@ -166,23 +170,34 @@ disconnect_line="$(grep -nF 'docker network disconnect openclaw-enterprise_openc
 [ "$connect_line" -lt "$disconnect_line" ] || fail 'manual rollback order is not Admin then Proxy'
 
 run_fake_transaction_probe() {
-  local probe_dir probe_bin state_file mutation_log fake_output_file output status actual_state actual_log
+  local probe_dir probe_bin path_bin test_transaction state_file mutation_log fake_output_file
+  local inspect_count_file path_resolution_log output status captured_fake_output probe_text
   local probe_core_network='openclaw-enterprise_openclaw-net'
   local probe_webui_network='openclaw-enterprise_open-webui-net'
   local probe_proxy_networks="$probe_webui_network"
   local probe_admin_networks="$probe_webui_network,$probe_core_network"
+  local probe_canonical_proxy_networks="$probe_webui_network,$probe_core_network"
+  local probe_canonical_admin_networks="$probe_core_network"
 
   probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/open-webui-admin-ingress.XXXXXX")"
-  probe_bin="$probe_dir/bin"
+  probe_bin="$probe_dir/fake-bin"
+  path_bin="$probe_dir/path-bin"
+  test_transaction="$probe_dir/reconcile-open-webui-admin-network.sh"
   state_file="$probe_dir/state"
   mutation_log="$probe_dir/mutations"
   fake_output_file="$probe_dir/output"
-  mkdir "$probe_bin"
+  inspect_count_file="$probe_dir/inspect-count"
+  path_resolution_log="$probe_dir/path-resolution"
+  mkdir "$probe_bin" "$path_bin"
   trap 'rm -rf "$probe_dir"' EXIT
 
   cat > "$probe_bin/hostname" <<'EOF'
 #!/bin/sh
-printf 'mypc\n'
+if [ "${FAKE_MODE:-}" = wrong-hostname ]; then
+  printf 'not-mypc\n'
+else
+  printf 'mypc\n'
+fi
 EOF
   cat > "$probe_bin/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -191,6 +206,8 @@ set -euo pipefail
 : "${FAKE_STATE:?}"
 : "${FAKE_LOG:?}"
 : "${FAKE_MODE:?}"
+: "${FAKE_OUTPUT:?}"
+: "${FAKE_INSPECT_COUNT:?}"
 
 readonly CORE_NETWORK='openclaw-enterprise_openclaw-net'
 readonly WEBUI_NETWORK='openclaw-enterprise_open-webui-net'
@@ -203,6 +220,13 @@ read_state() {
 }
 write_state() { printf '%s\n%s\n' "$1" "$2" > "$FAKE_STATE"; }
 record() { printf '%s %s %s\n' "$1" "$2" "$3" >> "$FAKE_LOG"; }
+next_container_inspect() {
+  local count
+  count="$(<"$FAKE_INSPECT_COUNT")"
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$FAKE_INSPECT_COUNT"
+  printf '%s' "$count"
+}
 print_container() {
   emit "$1"
   printf '%s\n' "$2" | tr ',' '\n' | tee -a "$FAKE_OUTPUT"
@@ -213,6 +237,7 @@ case "${1:-}" in
     case "${2:-}" in
       inspect)
         [[ "${3:-}" == '--format={{.Id}}' ]] || fail
+        [[ "$FAKE_MODE" != inspect-fail || "${4:-}" != "$WEBUI_NETWORK" ]] || exit 91
         case "${4:-}" in
           "$CORE_NETWORK") emit core-id ;;
           "$WEBUI_NETWORK") emit webui-id ;;
@@ -259,8 +284,15 @@ case "${1:-}" in
   inspect)
     [[ "${2:-}" == '--type=container' && "${3:-}" == --format=* ]] || fail
     read_state
+    container_inspect_count="$(next_container_inspect)"
     case "${4:-}" in
-      openclaw-webui-proxy) print_container proxy-id "$proxy_networks" ;;
+      openclaw-webui-proxy)
+        if [[ "$FAKE_MODE" == id-drift && "$container_inspect_count" -ge 3 ]]; then
+          print_container drifted-proxy-id "$proxy_networks"
+        else
+          print_container proxy-id "$proxy_networks"
+        fi
+        ;;
       openclaw-admin-console) print_container admin-id "$admin_networks" ;;
       *) fail ;;
     esac
@@ -268,63 +300,153 @@ case "${1:-}" in
   *) fail ;;
 esac
 EOF
-  chmod +x "$probe_bin/hostname" "$probe_bin/docker"
+  cat > "$path_bin/hostname" <<'EOF'
+#!/bin/sh
+printf 'hostname\n' >> "$FAKE_PATH_RESOLUTION_LOG"
+exit 97
+EOF
+  cat > "$path_bin/docker" <<'EOF'
+#!/bin/sh
+printf 'docker\n' >> "$FAKE_PATH_RESOLUTION_LOG"
+exit 97
+EOF
+  chmod +x "$probe_bin/hostname" "$probe_bin/docker" "$path_bin/hostname" "$path_bin/docker"
+
+  cp "$TRANSACTION" "$test_transaction"
+  sed \
+    -e "s|^readonly DOCKER_BIN='/usr/bin/docker'$|readonly DOCKER_BIN='$probe_bin/docker'|" \
+    -e "s|^readonly HOSTNAME_BIN='/usr/bin/hostname'$|readonly HOSTNAME_BIN='$probe_bin/hostname'|" \
+    "$test_transaction" > "$probe_dir/transaction.replaced"
+  mv "$probe_dir/transaction.replaced" "$test_transaction"
+  chmod +x "$test_transaction"
+  [ "$(grep -Fc -- "readonly DOCKER_BIN='$probe_bin/docker'" "$test_transaction")" = 1 ] ||
+    fail 'temporary transaction did not replace the exact Docker constant'
+  [ "$(grep -Fc -- "readonly HOSTNAME_BIN='$probe_bin/hostname'" "$test_transaction")" = 1 ] ||
+    fail 'temporary transaction did not replace the exact hostname constant'
+  [ "$(grep -Fc -- "readonly DOCKER_BIN='/usr/bin/docker'" "$test_transaction")" = 0 ] ||
+    fail 'temporary transaction retained the production Docker constant'
+  [ "$(grep -Fc -- "readonly HOSTNAME_BIN='/usr/bin/hostname'" "$test_transaction")" = 0 ] ||
+    fail 'temporary transaction retained the production hostname constant'
 
   reset_probe_case() {
-    printf '%s\n%s\n' "$probe_proxy_networks" "$probe_admin_networks" > "$state_file"
+    printf '%s\n%s\n' "$1" "$2" > "$state_file"
     : > "$mutation_log"
     : > "$fake_output_file"
+    printf '0\n' > "$inspect_count_file"
+    : > "$path_resolution_log"
+  }
+
+  run_transaction_process() {
+    local operation="$1" mode="$2" deploy_approval="$3" network_approval="$4"
+    export PATH="$path_bin:/usr/bin:/bin"
+    export FAKE_MODE="$mode" FAKE_STATE="$state_file" FAKE_LOG="$mutation_log"
+    export FAKE_OUTPUT="$fake_output_file" FAKE_INSPECT_COUNT="$inspect_count_file"
+    export FAKE_PATH_RESOLUTION_LOG="$path_resolution_log"
+    if [[ "$deploy_approval" == '__unset__' ]]; then
+      unset MYPC_DEPLOY_ENABLED
+    else
+      export MYPC_DEPLOY_ENABLED="$deploy_approval"
+    fi
+    if [[ "$network_approval" == '__unset__' ]]; then
+      unset MYPC_NETWORK_RECONCILE_APPROVAL
+    else
+      export MYPC_NETWORK_RECONCILE_APPROVAL="$network_approval"
+    fi
+    "$test_transaction" "$operation"
+  }
+
+  assert_safe_probe_output() {
+    local text="$1"
+    if printf '%s\n' "$text" |
+      grep -Eiq '(^|[^[:alnum:]_])(env|secret|config|networksettings|openai_api_key|webui_secret_key)([^[:alnum:]_]|$)'; then
+      fail 'fake transaction output exposed environment, secrets, or full inspect data'
+    fi
+    if printf '%s\n' "$text" | grep -Eq '[{}]'; then
+      fail 'fake transaction output exposed structured full inspect data'
+    fi
   }
 
   run_probe_case() {
-    local label="$1" mode="$2" expected_state expected_log captured_fake_output probe_text
-    reset_probe_case
-    if output="$(PATH="$probe_bin:$PATH" FAKE_MODE="$mode" FAKE_STATE="$state_file" FAKE_LOG="$mutation_log" \
-      FAKE_OUTPUT="$fake_output_file" \
-      MYPC_DEPLOY_ENABLED=true MYPC_NETWORK_RECONCILE_APPROVAL=true "$TRANSACTION" --execute 2>&1)"; then
+    local label="$1" mode="$2" operation="$3" deploy_approval="$4" network_approval="$5"
+    local initial_proxy="$6" initial_admin="$7" expected_status expected_output expected_state expected_log
+    local actual_state actual_log
+    reset_probe_case "$initial_proxy" "$initial_admin"
+    if output="$(run_transaction_process "$operation" "$mode" "$deploy_approval" "$network_approval" 2>&1)"; then
       status=0
     else
       status=$?
     fi
     captured_fake_output="$(<"$fake_output_file")"
     for probe_text in "$output" "$captured_fake_output"; do
-      if printf '%s\n' "$probe_text" | grep -Eiq '(^|[^[:alnum:]_])(env|secret|config|networksettings|openai_api_key|webui_secret_key)([^[:alnum:]_]|$)'; then
-        fail 'fake Docker output exposed environment, secrets, or full inspect data'
-      fi
+      assert_safe_probe_output "$probe_text"
     done
-    case "$mode" in
+    case "$label" in
+      wrong-hostname|missing-deploy-approval|wrong-deploy-approval|missing-network-approval|wrong-network-approval|id-drift|inspect-failure)
+        expected_status='nonzero'
+        expected_state="$initial_proxy"$'\n'"$initial_admin"
+        expected_log=''
+        ;;
+      check-temporary)
+        expected_status=0
+        expected_output='RESULT=noop'
+        expected_state="$initial_proxy"$'\n'"$initial_admin"
+        expected_log=''
+        ;;
+      execute-canonical)
+        expected_status=0
+        expected_output='RESULT=noop'
+        expected_state="$initial_proxy"$'\n'"$initial_admin"
+        expected_log=''
+        ;;
       success)
-        [ "$status" = 0 ] || fail "fake Docker ${label} did not succeed"
-        expected_state="${probe_webui_network},${probe_core_network}"$'\n'"$probe_core_network"
+        expected_status=0
+        expected_output='RESULT=changed'
+        expected_state="$probe_canonical_proxy_networks"$'\n'"$probe_canonical_admin_networks"
         expected_log=$'connect core-id proxy-id\ndisconnect webui-id admin-id'
         ;;
-      connect-fail)
-        [ "$status" != 0 ] || fail "fake Docker ${label} unexpectedly succeeded"
-        expected_state="$probe_webui_network"$'\n'"${probe_webui_network},${probe_core_network}"
+      connect-failure)
+        expected_status='nonzero'
+        expected_state="$probe_proxy_networks"$'\n'"$probe_admin_networks"
         expected_log=$'connect core-id proxy-id\ndisconnect core-id proxy-id'
         ;;
-      disconnect-fail)
-        [ "$status" != 0 ] || fail "fake Docker ${label} unexpectedly succeeded"
-        expected_state="$probe_webui_network"$'\n'"${probe_webui_network},${probe_core_network}"
+      disconnect-failure)
+        expected_status='nonzero'
+        expected_state="$probe_proxy_networks"$'\n'"$probe_admin_networks"
         expected_log=$'connect core-id proxy-id\ndisconnect webui-id admin-id\nconnect webui-id admin-id\ndisconnect core-id proxy-id'
         ;;
-      extra-network)
-        [ "$status" != 0 ] || fail "fake Docker ${label} unexpectedly succeeded"
-        expected_state="${probe_webui_network},${probe_core_network},unexpected"$'\n'"${probe_webui_network},${probe_core_network}"
+      unexpected-extra-network)
+        expected_status='nonzero'
+        expected_state="${probe_canonical_proxy_networks},unexpected"$'\n'"$probe_admin_networks"
         expected_log='connect core-id proxy-id'
         ;;
       *) fail "unknown fake Docker probe mode: $mode" ;;
     esac
+    if [[ "$expected_status" == nonzero ]]; then
+      [ "$status" != 0 ] || fail "fake Docker ${label} unexpectedly succeeded"
+    else
+      [ "$status" = "$expected_status" ] || fail "fake Docker ${label} returned status ${status}"
+      [ "$output" = "$expected_output" ] || fail "fake Docker ${label} returned unexpected output"
+    fi
     actual_state="$(<"$state_file")"
     actual_log="$(<"$mutation_log")"
     [ "$actual_state" = "$expected_state" ] || fail "fake Docker ${label} ended in an unexpected state"
     [ "$actual_log" = "$expected_log" ] || fail "fake Docker ${label} recorded an unexpected mutation sequence"
+    [ ! -s "$path_resolution_log" ] || fail "fake Docker ${label} resolved a command through PATH"
   }
 
-  run_probe_case success success
-  run_probe_case connect-failure connect-fail
-  run_probe_case disconnect-failure disconnect-fail
-  run_probe_case unexpected-extra-network extra-network
+  run_probe_case wrong-hostname wrong-hostname --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case missing-deploy-approval success --execute __unset__ true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case wrong-deploy-approval success --execute false true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case missing-network-approval success --execute true __unset__ "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case wrong-network-approval success --execute true false "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case check-temporary success --check __unset__ __unset__ "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case execute-canonical success --execute true true "$probe_canonical_proxy_networks" "$probe_canonical_admin_networks"
+  run_probe_case id-drift id-drift --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case inspect-failure inspect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case success success --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case connect-failure connect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case disconnect-failure disconnect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case unexpected-extra-network extra-network --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   trap - EXIT
   rm -rf "$probe_dir"
 }

@@ -2,8 +2,11 @@
 set -euo pipefail
 
 export LC_ALL=C
+export PATH='/usr/bin:/bin'
 
 readonly EXPECTED_HOSTNAME='mypc'
+readonly DOCKER_BIN='/usr/bin/docker'
+readonly HOSTNAME_BIN='/usr/bin/hostname'
 readonly PROXY_CONTAINER='openclaw-webui-proxy'
 readonly ADMIN_CONTAINER='openclaw-admin-console'
 readonly CORE_NETWORK='openclaw-enterprise_openclaw-net'
@@ -65,7 +68,7 @@ rollback_plan() {
 
 inspect_container() {
   local container="$1" output container_id network_names=''
-  output="$(docker inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' "$container" 2>/dev/null)" || return 1
+  output="$("$DOCKER_BIN" inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' "$container" 2>/dev/null)" || return 1
   if [[ "$output" == *$'\n'* ]]; then
     container_id="${output%%$'\n'*}"
     network_names="${output#*$'\n'}"
@@ -79,7 +82,7 @@ inspect_container() {
 
 inspect_network() {
   local network="$1" output
-  output="$(docker network inspect --format='{{.Id}}' "$network" 2>/dev/null)" || return 1
+  output="$("$DOCKER_BIN" network inspect --format='{{.Id}}' "$network" 2>/dev/null)" || return 1
   if [[ -z "$output" || "$output" == *$'\n'* || "$output" == *[[:space:]]* ]]; then return 1; fi
   INSPECT_NETWORK_ID="$output"
 }
@@ -126,7 +129,7 @@ assert_current_state() {
 
 require_hostname() {
   local actual
-  actual="$(hostname 2>/dev/null)" || { fail 'unable to read the target hostname'; return 1; }
+  actual="$("$HOSTNAME_BIN" 2>/dev/null)" || { fail 'unable to read the target hostname'; return 1; }
   [[ "$actual" == "$EXPECTED_HOSTNAME" ]] || { fail 'refusing reconciliation unless hostname is exactly mypc'; return 1; }
 }
 
@@ -144,7 +147,7 @@ rollback_reconnect_admin() {
     fail 'rollback Admin reconnect requires exact canonical state'
     return 1
   }
-  docker network connect "$BASE_WEBUI_NETWORK_ID" "$BASE_ADMIN_CONTAINER_ID" >/dev/null 2>&1
+  "$DOCKER_BIN" network connect "$BASE_WEBUI_NETWORK_ID" "$BASE_ADMIN_CONTAINER_ID" >/dev/null 2>&1
   rc=$?
   if (( rc != 0 )); then
     printf 'FAIL: rollback Admin reconnect returned non-zero; inspecting resulting state\n' >&2
@@ -166,7 +169,7 @@ rollback_disconnect_proxy() {
     fail 'rollback Proxy disconnect requires exact intermediate state'
     return 1
   }
-  docker network disconnect "$BASE_CORE_NETWORK_ID" "$BASE_PROXY_CONTAINER_ID" >/dev/null 2>&1
+  "$DOCKER_BIN" network disconnect "$BASE_CORE_NETWORK_ID" "$BASE_PROXY_CONTAINER_ID" >/dev/null 2>&1
   rc=$?
   if (( rc != 0 )); then
     printf 'FAIL: rollback Proxy disconnect returned non-zero; inspecting resulting state\n' >&2
@@ -254,9 +257,9 @@ run_execute() {
   assert_current_state "$BASE_PROXY_NETWORKS" "$BASE_ADMIN_NETWORKS"
   # ponytail: Docker has no atomic inspect+connect; revalidate immediately before each mutation.
   MUTATION_STARTED=1
-  docker network connect "$BASE_CORE_NETWORK_ID" "$BASE_PROXY_CONTAINER_ID" >/dev/null 2>&1
+  "$DOCKER_BIN" network connect "$BASE_CORE_NETWORK_ID" "$BASE_PROXY_CONTAINER_ID" >/dev/null 2>&1
   assert_current_state "$CANONICAL_PROXY_NETWORKS" "$TEMP_ADMIN_NETWORKS"
-  docker network disconnect "$BASE_WEBUI_NETWORK_ID" "$BASE_ADMIN_CONTAINER_ID" >/dev/null 2>&1
+  "$DOCKER_BIN" network disconnect "$BASE_WEBUI_NETWORK_ID" "$BASE_ADMIN_CONTAINER_ID" >/dev/null 2>&1
   assert_current_state "$CANONICAL_PROXY_NETWORKS" "$CANONICAL_ADMIN_NETWORKS"
   trap - ERR INT TERM
   printf 'RESULT=changed\n'
