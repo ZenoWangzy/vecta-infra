@@ -126,7 +126,7 @@ assert_current_state() {
 
 require_hostname() {
   local actual
-  actual="$(/bin/hostname 2>/dev/null)" || { fail 'unable to read the target hostname'; return 1; }
+  actual="$(hostname 2>/dev/null)" || { fail 'unable to read the target hostname'; return 1; }
   [[ "$actual" == "$EXPECTED_HOSTNAME" ]] || { fail 'refusing reconciliation unless hostname is exactly mypc'; return 1; }
 }
 

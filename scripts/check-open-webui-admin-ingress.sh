@@ -165,4 +165,170 @@ connect_line="$(grep -nF 'docker network connect openclaw-enterprise_open-webui-
 disconnect_line="$(grep -nF 'docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy' "$RUNBOOK" | tail -n1 | cut -d: -f1)"
 [ "$connect_line" -lt "$disconnect_line" ] || fail 'manual rollback order is not Admin then Proxy'
 
+run_fake_transaction_probe() {
+  local probe_dir probe_bin state_file mutation_log fake_output_file output status actual_state actual_log
+  local probe_core_network='openclaw-enterprise_openclaw-net'
+  local probe_webui_network='openclaw-enterprise_open-webui-net'
+  local probe_proxy_networks="$probe_webui_network"
+  local probe_admin_networks="$probe_webui_network,$probe_core_network"
+
+  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/open-webui-admin-ingress.XXXXXX")"
+  probe_bin="$probe_dir/bin"
+  state_file="$probe_dir/state"
+  mutation_log="$probe_dir/mutations"
+  fake_output_file="$probe_dir/output"
+  mkdir "$probe_bin"
+  trap 'rm -rf "$probe_dir"' EXIT
+
+  cat > "$probe_bin/hostname" <<'EOF'
+#!/bin/sh
+printf 'mypc\n'
+EOF
+  cat > "$probe_bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${FAKE_STATE:?}"
+: "${FAKE_LOG:?}"
+: "${FAKE_MODE:?}"
+
+readonly CORE_NETWORK='openclaw-enterprise_openclaw-net'
+readonly WEBUI_NETWORK='openclaw-enterprise_open-webui-net'
+
+fail() { exit 90; }
+emit() { printf '%s\n' "$1" | tee -a "$FAKE_OUTPUT"; }
+read_state() {
+  IFS= read -r proxy_networks < "$FAKE_STATE"
+  IFS= read -r admin_networks < <(sed -n '2p' "$FAKE_STATE")
+}
+write_state() { printf '%s\n%s\n' "$1" "$2" > "$FAKE_STATE"; }
+record() { printf '%s %s %s\n' "$1" "$2" "$3" >> "$FAKE_LOG"; }
+print_container() {
+  emit "$1"
+  printf '%s\n' "$2" | tr ',' '\n' | tee -a "$FAKE_OUTPUT"
+}
+
+case "${1:-}" in
+  network)
+    case "${2:-}" in
+      inspect)
+        [[ "${3:-}" == '--format={{.Id}}' ]] || fail
+        case "${4:-}" in
+          "$CORE_NETWORK") emit core-id ;;
+          "$WEBUI_NETWORK") emit webui-id ;;
+          *) fail ;;
+        esac
+        ;;
+      connect)
+        read_state
+        case "${3:-}:${4:-}" in
+          core-id:proxy-id)
+            if [[ "$FAKE_MODE" == extra-network ]]; then
+              write_state "$WEBUI_NETWORK,$CORE_NETWORK,unexpected" "$admin_networks"
+            else
+              write_state "$WEBUI_NETWORK,$CORE_NETWORK" "$admin_networks"
+            fi
+            record connect core-id proxy-id
+            [[ "$FAKE_MODE" != connect-fail && "$FAKE_MODE" != extra-network ]] || exit 42
+            ;;
+          webui-id:admin-id)
+            write_state "$proxy_networks" "$WEBUI_NETWORK,$CORE_NETWORK"
+            record connect webui-id admin-id
+            ;;
+          *) fail ;;
+        esac
+        ;;
+      disconnect)
+        read_state
+        case "${3:-}:${4:-}" in
+          webui-id:admin-id)
+            write_state "$proxy_networks" "$CORE_NETWORK"
+            record disconnect webui-id admin-id
+            [[ "$FAKE_MODE" != disconnect-fail ]] || exit 43
+            ;;
+          core-id:proxy-id)
+            write_state "$WEBUI_NETWORK" "$admin_networks"
+            record disconnect core-id proxy-id
+            ;;
+          *) fail ;;
+        esac
+        ;;
+      *) fail ;;
+    esac
+    ;;
+  inspect)
+    [[ "${2:-}" == '--type=container' && "${3:-}" == --format=* ]] || fail
+    read_state
+    case "${4:-}" in
+      openclaw-webui-proxy) print_container proxy-id "$proxy_networks" ;;
+      openclaw-admin-console) print_container admin-id "$admin_networks" ;;
+      *) fail ;;
+    esac
+    ;;
+  *) fail ;;
+esac
+EOF
+  chmod +x "$probe_bin/hostname" "$probe_bin/docker"
+
+  reset_probe_case() {
+    printf '%s\n%s\n' "$probe_proxy_networks" "$probe_admin_networks" > "$state_file"
+    : > "$mutation_log"
+    : > "$fake_output_file"
+  }
+
+  run_probe_case() {
+    local label="$1" mode="$2" expected_state expected_log captured_fake_output probe_text
+    reset_probe_case
+    if output="$(PATH="$probe_bin:$PATH" FAKE_MODE="$mode" FAKE_STATE="$state_file" FAKE_LOG="$mutation_log" \
+      FAKE_OUTPUT="$fake_output_file" \
+      MYPC_DEPLOY_ENABLED=true MYPC_NETWORK_RECONCILE_APPROVAL=true "$TRANSACTION" --execute 2>&1)"; then
+      status=0
+    else
+      status=$?
+    fi
+    captured_fake_output="$(<"$fake_output_file")"
+    for probe_text in "$output" "$captured_fake_output"; do
+      if printf '%s\n' "$probe_text" | grep -Eiq '(^|[^[:alnum:]_])(env|secret|config|networksettings|openai_api_key|webui_secret_key)([^[:alnum:]_]|$)'; then
+        fail 'fake Docker output exposed environment, secrets, or full inspect data'
+      fi
+    done
+    case "$mode" in
+      success)
+        [ "$status" = 0 ] || fail "fake Docker ${label} did not succeed"
+        expected_state="${probe_webui_network},${probe_core_network}"$'\n'"$probe_core_network"
+        expected_log=$'connect core-id proxy-id\ndisconnect webui-id admin-id'
+        ;;
+      connect-fail)
+        [ "$status" != 0 ] || fail "fake Docker ${label} unexpectedly succeeded"
+        expected_state="$probe_webui_network"$'\n'"${probe_webui_network},${probe_core_network}"
+        expected_log=$'connect core-id proxy-id\ndisconnect core-id proxy-id'
+        ;;
+      disconnect-fail)
+        [ "$status" != 0 ] || fail "fake Docker ${label} unexpectedly succeeded"
+        expected_state="$probe_webui_network"$'\n'"${probe_webui_network},${probe_core_network}"
+        expected_log=$'connect core-id proxy-id\ndisconnect webui-id admin-id\nconnect webui-id admin-id\ndisconnect core-id proxy-id'
+        ;;
+      extra-network)
+        [ "$status" != 0 ] || fail "fake Docker ${label} unexpectedly succeeded"
+        expected_state="${probe_webui_network},${probe_core_network},unexpected"$'\n'"${probe_webui_network},${probe_core_network}"
+        expected_log='connect core-id proxy-id'
+        ;;
+      *) fail "unknown fake Docker probe mode: $mode" ;;
+    esac
+    actual_state="$(<"$state_file")"
+    actual_log="$(<"$mutation_log")"
+    [ "$actual_state" = "$expected_state" ] || fail "fake Docker ${label} ended in an unexpected state"
+    [ "$actual_log" = "$expected_log" ] || fail "fake Docker ${label} recorded an unexpected mutation sequence"
+  }
+
+  run_probe_case success success
+  run_probe_case connect-failure connect-fail
+  run_probe_case disconnect-failure disconnect-fail
+  run_probe_case unexpected-extra-network extra-network
+  trap - EXIT
+  rm -rf "$probe_dir"
+}
+
+run_fake_transaction_probe
+
 printf 'OK   Open WebUI ingress and atomic network-reconcile contract is present\n'
