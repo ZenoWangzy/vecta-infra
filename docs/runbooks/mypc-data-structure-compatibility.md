@@ -166,51 +166,47 @@ publish host ports `5173` and `8001` respectively.
 
 ## WebUI/Admin Network Reconcile Boundary
 
-Use only `playbooks/mypc-network-reconcile.yml` for this network repair. It is
-mypc-only and fail-closed: both `mypc_deploy_enabled=true` and the independent
-`mypc_network_reconcile_approval=true` extra variables are required, and the
-remote `/bin/hostname` output must be exactly `mypc`. The playbook changes only
-Docker network attachments using JSON returned by `docker inspect`; it does
-not own an image, volume, port, or container lifecycle setting. It accepts only
-these measured starting states: temporary (Proxy on WebUI, Admin on core plus
-WebUI) or canonical (Proxy exactly on core plus WebUI, Admin exactly on core).
-The already-in-progress state, extra attachments, and missing attachments fail
-closed. From temporary, it attaches Proxy to core, inspects JSON and requires
-the exact transition state, then detaches Admin from WebUI, inspects JSON again,
-and requires canonical.
-The canonical starting state is a safe no-op. Each mutation has both approval
-guards on the command itself, so skipping pre-tasks cannot authorize a write.
+Use only `playbooks/mypc-network-reconcile.yml` for this mypc-only repair. The
+thin playbook calls one transaction script, whose hostname, container names,
+and network names are hardcoded. It accepts only the exact temporary state
+(Proxy on WebUI; Admin on core plus WebUI) or exact canonical state (Proxy on
+core plus WebUI; Admin on core). Canonical is a no-op. In-progress, extra, and
+missing attachments fail-closed.
 
-On any command or postcondition failure, rescue first re-inspects the actual
-memberships. If the measured baseline had Admin on WebUI and it is absent,
-restore that membership first, regardless of any extra current networks. If
-the measured baseline lacked Proxy on core and it is present, then disconnect
-Proxy from core. Each inverse command is followed by another actual inspect and
-an exact measured-baseline assertion; command failures and the original failure
-are retained, evidence collection continues, and the playbook exits non-zero.
-No repository, host, or runtime evidence identifies the deploy, rebuild, or
-manual actor that triggered the original network change; that actor remains unknown.
-Fleet's network set is not a contract for this network-only repair.
+The script uses only narrow formatted Docker inspection: container ID and
+network names, plus network ID. It never requests full inspect output or
+`Config.Env`. Before every mutation and rollback mutation it revalidates the
+baseline container and network IDs; any ID drift fails closed and never touches
+a replacement container. Execute revalidates both approvals internally, so
+`--start-at-task` cannot bypass the guard. It attaches Proxy to core, inspects
+the exact intermediate state, then detaches Admin from WebUI and inspects exact
+canonical state. No image, volume, data, restart, recreate, pull, compose, or
+other deployment change is in scope.
 
-`--check` 仅预检：它执行只读的 hostname 和 Docker JSON inspect，
-跳过两个 network mutation 及其 post-mutation assertions，不是成功证据
-（not success evidence）。真实命令才会执行 temporary -> canonical 的网络变更。
+`--check` 仅预检：它运行 hostname 和窄格式 Docker inspect，跳过 mutation，
+不是成功证据（not success evidence）。真实命令才会执行 temporary ->
+canonical 的网络变更。仓库或运行时证据没有证明触发部署、重建或手工变更的
+actor；that actor remains unknown。
 
 ```bash
 scripts/check-open-webui-admin-ingress.sh
-ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --syntax-check
-ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --list-tasks
-ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --check -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
-ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
+bash -n scripts/reconcile-open-webui-admin-network.sh
+scripts/reconcile-open-webui-admin-network.sh --self-test
+uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --syntax-check
+uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --list-tasks
+uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --check -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
+uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
 ```
 
-Manual rollback, only when the measured baseline requires both operations, is
-performed in this exact order. Inspect after each command; a non-zero command
-does not prove that membership was unchanged:
+Manual rollback is allowed only for a measured temporary baseline; canonical
+is a no-op. Compare the narrow inspect IDs with the saved baseline before each
+operation. If an ID drifts, stop and do not run either mutation. When rollback
+is required, use this exact order and inspect after each command; a non-zero
+command does not prove that membership was unchanged:
 
 ```bash
 docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console
-docker inspect --type=container --format='{{json .NetworkSettings.Networks}}' openclaw-admin-console
+docker inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' openclaw-admin-console
 docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy
-docker inspect --type=container --format='{{json .NetworkSettings.Networks}}' openclaw-webui-proxy
+docker inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' openclaw-webui-proxy
 ```

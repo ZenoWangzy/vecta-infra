@@ -4,12 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROXY_TEMPLATE="${ROOT_DIR}/roles/open-webui/templates/nginx.conf.j2"
 HOST_TEMPLATE="${ROOT_DIR}/roles/open-webui/templates/host-nginx-site.conf.j2"
-NETWORK_RECONCILE_PLAYBOOK="${ROOT_DIR}/playbooks/mypc-network-reconcile.yml"
+TRANSACTION="${ROOT_DIR}/scripts/reconcile-open-webui-admin-network.sh"
+PLAYBOOK="${ROOT_DIR}/playbooks/mypc-network-reconcile.yml"
 RUNBOOK="${ROOT_DIR}/docs/runbooks/mypc-data-structure-compatibility.md"
+INVENTORY="${ROOT_DIR}/inventories/mypc/group_vars/mypc.yml"
 BASE_SHA="${BASE_SHA:-7f6bdcd29d74d8dab80ca1ab17ab63b444fdb0ee}"
 
 fail() {
-  echo "FAIL: $*" >&2
+  printf 'FAIL: %s\n' "$*" >&2
   exit 1
 }
 
@@ -23,30 +25,20 @@ require_literal() {
   grep -Fq -- "$literal" "$file" || fail "${file} missing literal: ${literal}"
 }
 
-task_block() {
-  local task_name="$1"
-  awk -v wanted="$task_name" '
-    index($0, "- name: " wanted) { found=1; next }
-    found && $0 ~ /^[[:space:]]*- name:/ { exit }
-    found { print }
-  ' "$NETWORK_RECONCILE_PLAYBOOK"
-}
-
-require_task_literal() {
-  local task_name="$1"
+require_absent() {
+  local file="$1"
   local literal="$2"
-  local block
-  block="$(task_block "$task_name")"
-  [ -n "$block" ] || fail "missing task: ${task_name}"
-  grep -Fq -- "$literal" <<<"$block" || fail "${task_name} missing: ${literal}"
+  if grep -Fq -- "$literal" "$file"; then
+    fail "${file} contains forbidden literal: ${literal}"
+  fi
 }
 
-require_file "$PROXY_TEMPLATE"
-require_file "$HOST_TEMPLATE"
-require_file "$NETWORK_RECONCILE_PLAYBOOK"
-require_file "$RUNBOOK"
+cd "$ROOT_DIR"
+for file in "$PROXY_TEMPLATE" "$HOST_TEMPLATE" "$TRANSACTION" "$PLAYBOOK" "$RUNBOOK" "$INVENTORY"; do
+  require_file "$file"
+done
 
-# Keep the existing browser ingress contract small and explicit.
+# Existing browser ingress contract.
 for literal in \
   'location = /admin {' \
   'return 301 /admin/;' \
@@ -59,124 +51,86 @@ require_literal "$PROXY_TEMPLATE" 'rewrite ^/admin/(.*)$ /$1 break;'
 require_literal "$PROXY_TEMPLATE" 'proxy_pass http://$admin_console:5173;'
 require_literal "$PROXY_TEMPLATE" 'location ^~ /personal/ {'
 require_literal "$PROXY_TEMPLATE" 'proxy_pass http://$fleet_gateway:3000;'
-
 for template in "$PROXY_TEMPLATE" "$HOST_TEMPLATE"; do
   [ "$(grep -Fc 'location = /admin {' "$template")" = 1 ] ||
     fail "${template} must contain exactly one /admin location"
 done
 
-# The branch diff is deliberately limited to the four authorized artifacts.
+# The transaction is the only Docker state machine; its self-test is Docker-free.
+bash -n "$TRANSACTION"
+"$TRANSACTION" --self-test
+require_literal "$TRANSACTION" 'set -euo pipefail'
+for literal in \
+  "readonly EXPECTED_HOSTNAME='mypc'" \
+  "readonly PROXY_CONTAINER='openclaw-webui-proxy'" \
+  "readonly ADMIN_CONTAINER='openclaw-admin-console'" \
+  "readonly CORE_NETWORK='openclaw-enterprise_openclaw-net'" \
+  "readonly WEBUI_NETWORK='openclaw-enterprise_open-webui-net'" \
+  'MYPC_DEPLOY_ENABLED:-' \
+  'MYPC_NETWORK_RECONCILE_APPROVAL:-'; do
+  require_literal "$TRANSACTION" "$literal"
+done
+for literal in --check --execute --self-test; do
+  require_literal "$TRANSACTION" "$literal"
+done
+require_absent "$TRANSACTION" '.Config.Env'
+require_absent "$TRANSACTION" 'docker compose'
+require_absent "$TRANSACTION" 'docker-compose'
+if grep -F 'docker inspect' "$TRANSACTION" | grep -vF -- '--format=' >/dev/null; then
+  fail 'transaction contains an unformatted docker inspect'
+fi
+if grep -F 'docker network inspect' "$TRANSACTION" | grep -vF -- '--format=' >/dev/null; then
+  fail 'transaction contains an unformatted docker network inspect'
+fi
+if grep -F 'docker network' "$TRANSACTION" | grep -Ev 'docker network (inspect|connect|disconnect)' >/dev/null; then
+  fail 'transaction contains an unapproved docker network operation'
+fi
+if grep -Eiq \
+  'docker[[:space:]]+(restart|recreate|pull|build|create|start|stop|rm|run|exec|ps|compose)|docker-compose|docker[[:space:]]+(image|volume|system|container)[[:space:]]|(^|[[:space:]])(bash|sh)[[:space:]]+-c|(^|[[:space:]])eval([[:space:]]|$)' \
+  "$TRANSACTION"; then
+  fail 'transaction contains a forbidden lifecycle, nested-shell, or Docker path'
+fi
+
+# Thin Ansible wrapper: no command construction, Docker parsing, roles, or deploy wiring.
+require_literal "$PLAYBOOK" 'ansible.builtin.script:'
+require_literal "$PLAYBOOK" 'cmd: ../scripts/reconcile-open-webui-admin-network.sh --check'
+require_literal "$PLAYBOOK" 'cmd: ../scripts/reconcile-open-webui-admin-network.sh --execute'
+require_literal "$PLAYBOOK" 'check_mode: false'
+require_literal "$PLAYBOOK" 'when: not ansible_check_mode'
+require_literal "$PLAYBOOK" 'MYPC_DEPLOY_ENABLED:'
+require_literal "$PLAYBOOK" 'MYPC_NETWORK_RECONCILE_APPROVAL:'
+if grep -Eiq \
+  'ansible\.builtin\.(command|shell|raw)|community\.docker|docker[[:space:]]+(inspect|network)|^[[:space:]]*(roles|import_playbook|import_role|include_role):|cmd:.*\{\{' \
+  "$PLAYBOOK"; then
+  fail 'playbook is not a thin literal script wrapper'
+fi
+
+require_absent "$INVENTORY" 'admin_console_join_open_webui_network'
+
+# Exact base scope excludes roles, workflows, deployment, and CI changes.
 git rev-parse --verify "${BASE_SHA}^{commit}" >/dev/null 2>&1 || fail "base commit is unavailable: ${BASE_SHA}"
-actual_scope="$(git diff --name-only "$BASE_SHA" -- | sort -u)"
+actual_scope="$({ git diff --name-only "$BASE_SHA" --; git diff --cached --name-only --; git ls-files --others --exclude-standard; } | sort -u)"
 expected_scope="$(printf '%s\n' \
   docs/runbooks/mypc-data-structure-compatibility.md \
   inventories/mypc/group_vars/mypc.yml \
   playbooks/mypc-network-reconcile.yml \
-  scripts/check-open-webui-admin-ingress.sh)"
-[ "$actual_scope" = "$expected_scope" ] || fail "diff scope is not exactly the four authorized files"
-[ -z "$(git ls-files --others --exclude-standard)" ] || fail "untracked files are outside the authorized scope"
-
-# Target and approval guards are on the play and on every mutating command.
-for literal in \
-  'hosts: mypc' \
-  'mypc_deploy_enabled is defined' \
-  'mypc_deploy_enabled | bool' \
-  'mypc_network_reconcile_approval is defined' \
-  'mypc_network_reconcile_approval | bool' \
-  '/bin/hostname' \
-  "stdout | trim == 'mypc'"; do
-  require_literal "$NETWORK_RECONCILE_PLAYBOOK" "$literal"
-done
-
-for task in \
-  'Attach Proxy to core from the temporary state' \
-  'Detach Admin from WebUI from the temporary state' \
-  'Reconnect Admin when baseline had WebUI and current state lacks it' \
-  'Disconnect Proxy when baseline lacked core and current state has it'; do
-  require_task_literal "$task" 'ansible.builtin.command:'
-  require_task_literal "$task" 'not ansible_check_mode'
-  require_task_literal "$task" 'mypc_deploy_enabled is defined'
-  require_task_literal "$task" 'mypc_deploy_enabled | bool'
-  require_task_literal "$task" 'mypc_network_reconcile_approval is defined'
-  require_task_literal "$task" 'mypc_network_reconcile_approval | bool'
-  require_task_literal "$task" 'failed_when:'
-done
-
-[ "$(grep -Eo '(^|[^[:alnum:]_])connect([^[:alnum:]_]|$)' "$NETWORK_RECONCILE_PLAYBOOK" | wc -l | tr -d ' ')" = 2 ] ||
-  fail "expected exactly two network connect operations"
-[ "$(grep -Eo '(^|[^[:alnum:]_])disconnect([^[:alnum:]_]|$)' "$NETWORK_RECONCILE_PLAYBOOK" | wc -l | tr -d ' ')" = 2 ] ||
-  fail "expected exactly two network disconnect operations"
-
-# Only the temporary and canonical sets may be accepted initially. The
-# expected-after-attach state is checked in its own post-mutation assertion.
-for literal in \
-  'mypc_reconcile_temporary_proxy_networks:' \
-  'mypc_reconcile_temporary_admin_networks:' \
-  'mypc_reconcile_expected_proxy_networks:' \
-  'mypc_reconcile_expected_admin_networks:' \
-  'mypc_reconcile_proxy_networks == mypc_reconcile_temporary_proxy_networks' \
-  'mypc_reconcile_admin_networks == mypc_reconcile_temporary_admin_networks' \
-  'mypc_reconcile_proxy_networks == mypc_reconcile_expected_proxy_networks' \
-  'mypc_reconcile_admin_networks == mypc_reconcile_expected_admin_networks'; do
-  require_literal "$NETWORK_RECONCILE_PLAYBOOK" "$literal"
-done
-starting_block="$(task_block 'Require fixed identities and only temporary or canonical starting state')"
-for state_literal in \
-  'mypc_reconcile_proxy_networks == mypc_reconcile_temporary_proxy_networks' \
-  'mypc_reconcile_admin_networks == mypc_reconcile_temporary_admin_networks' \
-  'mypc_reconcile_proxy_networks == mypc_reconcile_expected_proxy_networks' \
-  'mypc_reconcile_admin_networks == mypc_reconcile_expected_admin_networks'; do
-  state_count="$(grep -Foc -- "$state_literal" <<<"$starting_block" || true)"
-  [ "$state_count" = 1 ] || fail "initial topology assertion is not exactly temporary plus canonical"
-done
-if grep -Fq 'mypc_reconcile_after_attach' <<<"$starting_block"; then
-  fail "initial topology assertion is coupled to a post-attach state"
+  scripts/check-open-webui-admin-ingress.sh \
+  scripts/reconcile-open-webui-admin-network.sh)"
+[ "$actual_scope" = "$expected_scope" ] || fail 'diff scope is not exactly the authorized five files'
+if printf '%s\n' "$actual_scope" | grep -Eq '(^|/)(roles|\.github/workflows)(/|$)'; then
+  fail 'role or CI wiring changed'
 fi
 
-# Rescue is an inverse state reconciliation, in this order, not an rc-only
-# rollback. Extra current attachments must not suppress either inverse test.
+# Runbook keeps operator evidence separate from transaction guarantees.
 for literal in \
-  'mypc_reconcile_webui_network_name in mypc_reconcile_baseline_admin_networks' \
-  'mypc_reconcile_webui_network_name not in mypc_reconcile_rescue_admin_networks' \
-  'mypc_reconcile_core_network_name not in mypc_reconcile_baseline_proxy_networks' \
-  'mypc_reconcile_core_network_name in mypc_reconcile_rescue_proxy_networks' \
-  'Require Admin to match the measured baseline' \
-  'Require both rescue network sets to match the measured baseline' \
-  'Preserve original failure and finish nonzero after rescue evidence'; do
-  require_literal "$NETWORK_RECONCILE_PLAYBOOK" "$literal"
-done
-admin_rollback_line="$(grep -nF 'Reconnect Admin when baseline had WebUI and current state lacks it' "$NETWORK_RECONCILE_PLAYBOOK" | cut -d: -f1)"
-proxy_rollback_line="$(grep -nF 'Disconnect Proxy when baseline lacked core and current state has it' "$NETWORK_RECONCILE_PLAYBOOK" | cut -d: -f1)"
-[ "$admin_rollback_line" -lt "$proxy_rollback_line" ] || fail "rescue rollback order is not Admin then Proxy"
-
-# No shell/template/module lifecycle escape hatch is allowed in this playbook.
-if grep -Eiq \
-  'ansible\.builtin\.(shell|raw|script|file|template|service|copy)|community\.docker|^[[:space:]]*(roles|import_playbook|import_role):|/bin/sh[[:space:]]+-ec|docker(-compose|[[:space:]]+compose)' \
-  "$NETWORK_RECONCILE_PLAYBOOK"; then
-  fail "playbook contains a forbidden shell, template, role, or Docker module path"
-fi
-if grep -Eiq '^[[:space:]]*-[[:space:]]+(restart|recreate|pull|build|create|start|stop|rm|run|prune|up|down)$' "$NETWORK_RECONCILE_PLAYBOOK"; then
-  fail "playbook contains a forbidden Docker lifecycle command"
-fi
-for forbidden in image volume data; do
-  if grep -Eiq "^[[:space:]]*-[[:space:]]+${forbidden}([[:space:]]|$)" "$NETWORK_RECONCILE_PLAYBOOK"; then
-    fail "playbook contains a forbidden ${forbidden} operation"
-  fi
-done
-
-if grep -Fq 'admin_console_join_open_webui_network' "$ROOT_DIR/inventories/mypc/group_vars/mypc.yml"; then
-  fail "dead admin_console_join_open_webui_network inventory variable remains"
-fi
-
-# Runbook must distinguish preflight from mutation and state that the actor is
-# unknown; exact manual rollback commands are part of the contract.
-for literal in \
-  '仅预检' \
-  '不是成功证据' \
   'temporary' \
   'canonical' \
-  '--check' \
-  'ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true' \
+  'ID drift' \
+  'fail-closed' \
+  '仅预检' \
+  '不是成功证据' \
+  'uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --check -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true' \
+  'uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true' \
   'docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console' \
   'docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy' \
   'that actor remains unknown'; do
@@ -184,6 +138,6 @@ for literal in \
 done
 connect_line="$(grep -nF 'docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console' "$RUNBOOK" | tail -n1 | cut -d: -f1)"
 disconnect_line="$(grep -nF 'docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy' "$RUNBOOK" | tail -n1 | cut -d: -f1)"
-[ "$connect_line" -lt "$disconnect_line" ] || fail "runbook rollback order is not Admin then Proxy"
+[ "$connect_line" -lt "$disconnect_line" ] || fail 'manual rollback order is not Admin then Proxy'
 
-echo 'OK   Open WebUI/Admin ingress and network-reconcile contract is present'
+printf 'OK   Open WebUI ingress and atomic network-reconcile contract is present\n'
