@@ -233,7 +233,6 @@ search_enabled_services:
   - baidu-search-service
 admin_console_published_ports:
   - "5173:5173"
-admin_console_join_open_webui_network: true
 directory_service_published_ports:
   - "8001:8001"
 

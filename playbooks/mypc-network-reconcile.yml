@@ -1,0 +1,388 @@
+---
+- name: Reconcile mypc Open WebUI/Admin container networks
+  hosts: mypc
+  gather_facts: false
+
+  pre_tasks:
+    - name: Require the mypc deployment lane to be explicitly enabled
+      ansible.builtin.assert:
+        that:
+          - mypc_deploy_enabled is defined
+          - mypc_deploy_enabled | bool
+        fail_msg: "Refusing network reconciliation unless mypc_deploy_enabled=true"
+      tags: [always]
+
+    - name: Require the independent network-reconcile approval
+      ansible.builtin.assert:
+        that:
+          - mypc_network_reconcile_approval is defined
+          - mypc_network_reconcile_approval | bool
+        fail_msg: >-
+          Refusing network reconciliation without the independent approval
+          -e mypc_network_reconcile_approval=true
+      tags: [always]
+
+    - name: Read the remote hostname for the target guard
+      ansible.builtin.command:
+        argv:
+          - /bin/hostname
+      register: mypc_reconcile_remote_hostname
+      changed_when: false
+      check_mode: false
+      tags: [always]
+
+    - name: Require the remote hostname to be exactly mypc
+      ansible.builtin.assert:
+        that:
+          - mypc_reconcile_remote_hostname.rc == 0
+          - mypc_reconcile_remote_hostname.stdout | trim == 'mypc'
+        fail_msg: "Refusing network reconciliation unless /bin/hostname is exactly mypc"
+      tags: [always]
+
+  tasks:
+    - name: Run the read-only fixed-target preflight in check mode
+      ansible.builtin.shell:
+        cmd: |
+          /bin/sh -ec '
+          CORE_NETWORK_NAME="openclaw-enterprise_openclaw-net"
+          WEBUI_NETWORK_NAME="openclaw-enterprise_open-webui-net"
+          PROXY_NAME="openclaw-webui-proxy"
+          ADMIN_NAME="openclaw-admin-console"
+          FLEET_NAME="openclaw-fleet-gateway"
+
+          fail() {
+            printf "%s\n" "FAIL: $1" >&2
+            exit 1
+          }
+
+          valid_id() {
+            value="$1"
+            case "$value" in
+              ""|*[!0-9A-Fa-f]*) return 1 ;;
+            esac
+            [ "${#value}" -ge 12 ] && [ "${#value}" -le 64 ]
+          }
+
+          read_network_id() {
+            network_name="$1"
+            network_info="$(docker network inspect --format="{{ "{{.Id}}|{{.Name}}" }}" "$network_name" 2>/dev/null)" || fail "network preflight failed"
+            network_id="${network_info%%|*}"
+            network_actual="${network_info#*|}"
+            [ "$network_info" != "$network_id" ] || fail "network preflight output was incomplete"
+            [ "$network_actual" = "$network_name" ] || fail "network preflight name mismatch"
+            valid_id "$network_id" || fail "network preflight ID was invalid"
+            printf "%s\n" "$network_id"
+          }
+
+          inspect_container() {
+            container_name="$1"
+            container_info="$(docker inspect --type=container --format="{{ "{{.Id}}|{{.State.Running}}|{{json .NetworkSettings.Networks}}" }}" "$container_name" 2>/dev/null)" || fail "container preflight failed"
+            container_id="${container_info%%|*}"
+            container_rest="${container_info#*|}"
+            container_running="${container_rest%%|*}"
+            container_networks="${container_rest#*|}"
+            [ "$container_info" != "$container_id" ] || fail "container preflight ID was missing"
+            [ "$container_rest" != "$container_running" ] || fail "container preflight state was missing"
+            [ "$container_networks" != "$container_rest" ] || fail "container preflight networks were missing"
+            valid_id "$container_id" || fail "container preflight ID was invalid"
+            [ "$container_running" = "true" ] || fail "required container is not running"
+            [ -n "$container_networks" ] || fail "container preflight networks were empty"
+          }
+
+          read_running_container_id() {
+            container_name="$1"
+            container_info="$(docker inspect --type=container --format="{{ "{{.Id}}|{{.State.Running}}" }}" "$container_name" 2>/dev/null)" || fail "Fleet container preflight failed"
+            container_id="${container_info%%|*}"
+            container_running="${container_info#*|}"
+            [ "$container_info" != "$container_id" ] || fail "Fleet container ID was missing"
+            valid_id "$container_id" || fail "Fleet container ID was invalid"
+            [ "$container_running" = "true" ] || fail "Fleet container is not running"
+            printf "%s\n" "$container_id"
+          }
+
+          has_network() {
+            case "$1" in
+              *\"$2\"*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          hostname_value="$(/bin/hostname 2>/dev/null)" || fail "remote hostname probe failed"
+          [ "$hostname_value" = "mypc" ] || fail "remote hostname is not mypc"
+          core_network_id="$(read_network_id "$CORE_NETWORK_NAME")"
+          webui_network_id="$(read_network_id "$WEBUI_NETWORK_NAME")"
+          inspect_container "$PROXY_NAME"
+          proxy_id="$container_id"
+          proxy_networks="$container_networks"
+          inspect_container "$ADMIN_NAME"
+          admin_id="$container_id"
+          admin_networks="$container_networks"
+          fleet_id="$(read_running_container_id "$FLEET_NAME")"
+          has_network "$proxy_networks" "$CORE_NETWORK_NAME" || fail "proxy is not on the core network"
+          has_network "$proxy_networks" "$WEBUI_NETWORK_NAME" || fail "proxy is not on the Open WebUI network"
+          has_network "$admin_networks" "$CORE_NETWORK_NAME" || fail "admin is not on the core network"
+          if has_network "$admin_networks" "$WEBUI_NETWORK_NAME"; then
+            printf "%s\n" "PASS: admin is still on the Open WebUI network"
+          else
+            printf "%s\n" "PASS: admin is already detached from the Open WebUI network"
+          fi
+          docker exec "$proxy_id" /bin/sh -ec "wget -q -O /dev/null -T 5 http://127.0.0.1/login" >/dev/null 2>&1 || fail "current proxy /login probe failed"
+          printf "%s\n" "PASS: fixed target, networks, containers, and current /login verified"
+          printf "%s\n" "changed=false"
+          '
+      args:
+        executable: /bin/sh
+      register: mypc_reconcile_preflight
+      changed_when: false
+      check_mode: false
+      when: ansible_check_mode
+
+    - name: Run the fixed network mutation transaction outside check mode
+      ansible.builtin.shell:
+        cmd: |
+          /bin/sh -ec '
+          CORE_NETWORK_NAME="openclaw-enterprise_openclaw-net"
+          WEBUI_NETWORK_NAME="openclaw-enterprise_open-webui-net"
+          PROXY_NAME="openclaw-webui-proxy"
+          ADMIN_NAME="openclaw-admin-console"
+          FLEET_NAME="openclaw-fleet-gateway"
+          FLEET_HEALTH_URL="http://openclaw-fleet-gateway:3000/healthz"
+          ADMIN_LOGIN_URL="http://openclaw-admin-console:5173/login"
+          PROXY_LOGIN_URL="http://127.0.0.1/login"
+          changed=false
+          proxy_core_attached=false
+          admin_detached=false
+
+          fail() {
+            printf "%s\n" "FAIL: $1" >&2
+            exit 1
+          }
+
+          valid_id() {
+            value="$1"
+            case "$value" in
+              ""|*[!0-9A-Fa-f]*) return 1 ;;
+            esac
+            [ "${#value}" -ge 12 ] && [ "${#value}" -le 64 ]
+          }
+
+          read_network_id() {
+            network_name="$1"
+            network_info="$(docker network inspect --format="{{ "{{.Id}}|{{.Name}}" }}" "$network_name" 2>/dev/null)" || fail "network inspection failed"
+            network_id="${network_info%%|*}"
+            network_actual="${network_info#*|}"
+            [ "$network_info" != "$network_id" ] || fail "network ID was not returned"
+            [ "$network_actual" = "$network_name" ] || fail "network name did not match"
+            valid_id "$network_id" || fail "network ID was invalid"
+            printf "%s\n" "$network_id"
+          }
+
+          inspect_container() {
+            container_name="$1"
+            container_info="$(docker inspect --type=container --format="{{ "{{.Id}}|{{.State.Running}}|{{json .NetworkSettings.Networks}}" }}" "$container_name" 2>/dev/null)" || fail "container inspection failed"
+            container_id="${container_info%%|*}"
+            container_rest="${container_info#*|}"
+            container_running="${container_rest%%|*}"
+            container_networks="${container_rest#*|}"
+            [ "$container_info" != "$container_id" ] || fail "container ID was not returned"
+            [ "$container_rest" != "$container_running" ] || fail "container state was not returned"
+            [ "$container_networks" != "$container_rest" ] || fail "container networks were not returned"
+            valid_id "$container_id" || fail "container ID was invalid"
+            [ "$container_running" = "true" ] || fail "required container is not running"
+            [ -n "$container_networks" ] || fail "container networks were empty"
+          }
+
+          read_running_container_id() {
+            container_name="$1"
+            container_info="$(docker inspect --type=container --format="{{ "{{.Id}}|{{.State.Running}}" }}" "$container_name" 2>/dev/null)" || fail "Fleet container inspection failed"
+            container_id="${container_info%%|*}"
+            container_running="${container_info#*|}"
+            [ "$container_info" != "$container_id" ] || fail "Fleet container ID was not returned"
+            valid_id "$container_id" || fail "Fleet container ID was invalid"
+            [ "$container_running" = "true" ] || fail "Fleet container is not running"
+            printf "%s\n" "$container_id"
+          }
+
+          has_network() {
+            case "$1" in
+              *\"$2\"*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          rescue_fail() {
+            printf "%s\n" "FAIL: $1" >&2
+            rescue_ok=false
+          }
+
+          rescue_network_check() {
+            rescue_network_name="$1"
+            rescue_expected_id="$2"
+            rescue_network_info="$(docker network inspect --format="{{ "{{.Id}}|{{.Name}}" }}" "$rescue_network_name" 2>/dev/null)"
+            rescue_rc="$?"
+            if [ "$rescue_rc" -ne 0 ]; then
+              rescue_fail "rescue network inspection failed"
+              return
+            fi
+            rescue_network_id="${rescue_network_info%%|*}"
+            rescue_network_actual="${rescue_network_info#*|}"
+            if [ "$rescue_network_actual" != "$rescue_network_name" ] || [ "$rescue_network_id" != "$rescue_expected_id" ] || ! valid_id "$rescue_network_id"; then
+              rescue_fail "rescue network identity check failed"
+            else
+              printf "%s\n" "PASS: rescue network identity verified"
+            fi
+          }
+
+          rescue_container_check() {
+            rescue_container_name="$1"
+            rescue_expected_id="$2"
+            rescue_need_core="$3"
+            rescue_need_webui="$4"
+            rescue_container_info="$(docker inspect --type=container --format="{{ "{{.Id}}|{{.State.Running}}|{{json .NetworkSettings.Networks}}" }}" "$rescue_container_name" 2>/dev/null)"
+            rescue_rc="$?"
+            if [ "$rescue_rc" -ne 0 ]; then
+              rescue_fail "rescue container inspection failed"
+              return
+            fi
+            rescue_container_id="${rescue_container_info%%|*}"
+            rescue_container_rest="${rescue_container_info#*|}"
+            rescue_container_running="${rescue_container_rest%%|*}"
+            rescue_container_networks="${rescue_container_rest#*|}"
+            if [ "$rescue_container_id" != "$rescue_expected_id" ] || [ "$rescue_container_running" != "true" ] || ! valid_id "$rescue_container_id"; then
+              rescue_fail "rescue container ID or state check failed"
+            fi
+            if [ "$rescue_need_core" = "true" ]; then
+              has_network "$rescue_container_networks" "$CORE_NETWORK_NAME"
+              rescue_rc="$?"
+              [ "$rescue_rc" -eq 0 ] || rescue_fail "rescue container lost the core network"
+            fi
+            if [ "$rescue_need_webui" = "true" ]; then
+              has_network "$rescue_container_networks" "$WEBUI_NETWORK_NAME"
+              rescue_rc="$?"
+              [ "$rescue_rc" -eq 0 ] || rescue_fail "rescue container lost the Open WebUI network"
+            fi
+            printf "%s\n" "PASS: rescue container identity and network checks collected"
+          }
+
+          rescue_probe() {
+            rescue_probe_name="$1"
+            rescue_probe_url="$2"
+            docker exec "$PROXY_ID" /bin/sh -ec "wget -q -O /dev/null -T 5 $rescue_probe_url" >/dev/null 2>&1
+            rescue_rc="$?"
+            if [ "$rescue_rc" -eq 0 ]; then
+              printf "%s\n" "PASS: rescue ${rescue_probe_name} verified"
+            else
+              printf "%s\n" "FAIL: rescue ${rescue_probe_name} failed" >&2
+              rescue_ok=false
+            fi
+          }
+
+          rescue() {
+            trap - EXIT
+            if [ "$admin_detached" != "true" ] && [ "$proxy_core_attached" != "true" ]; then
+              printf "%s\n" "FAIL: transaction failed before a network mutation completed" >&2
+              printf "%s\n" "changed=$changed"
+              exit 1
+            fi
+
+            set +e
+            rescue_ok=true
+            if [ "$admin_detached" = "true" ]; then
+              printf "%s\n" "FAIL: transaction failed after admin detach" >&2
+              docker network connect "$WEBUI_NETWORK_ID" "$ADMIN_ID" >/dev/null 2>&1
+              reconnect_rc="$?"
+              if [ "$reconnect_rc" -eq 0 ]; then
+                printf "%s\n" "PASS: admin reconnect attempted"
+              else
+                printf "%s\n" "FAIL: admin reconnect failed" >&2
+                rescue_ok=false
+              fi
+            else
+              printf "%s\n" "FAIL: transaction failed after proxy core attach" >&2
+            fi
+            rescue_network_check "$CORE_NETWORK_NAME" "$CORE_NETWORK_ID"
+            rescue_network_check "$WEBUI_NETWORK_NAME" "$WEBUI_NETWORK_ID"
+            if [ "$admin_detached" = "true" ]; then
+              rescue_container_check "$ADMIN_NAME" "$ADMIN_ID" true true
+            else
+              rescue_container_check "$ADMIN_NAME" "$ADMIN_ID" true false
+            fi
+            rescue_container_check "$PROXY_NAME" "$PROXY_ID" true true
+            rescue_probe "Admin /login" "$ADMIN_LOGIN_URL"
+            rescue_probe "Fleet /healthz" "$FLEET_HEALTH_URL"
+            rescue_probe "proxy /login" "$PROXY_LOGIN_URL"
+            if [ "$rescue_ok" = "true" ]; then
+              printf "%s\n" "PASS: rescue checks completed"
+            else
+              printf "%s\n" "FAIL: rescue checks incomplete" >&2
+            fi
+            printf "%s\n" "changed=$changed"
+            exit 1
+          }
+
+          trap rescue EXIT
+          hostname_value="$(/bin/hostname 2>/dev/null)" || fail "remote hostname probe failed"
+          [ "$hostname_value" = "mypc" ] || fail "remote hostname is not mypc"
+          CORE_NETWORK_ID="$(read_network_id "$CORE_NETWORK_NAME")"
+          WEBUI_NETWORK_ID="$(read_network_id "$WEBUI_NETWORK_NAME")"
+          inspect_container "$PROXY_NAME"
+          PROXY_ID="$container_id"
+          PROXY_NETWORKS="$container_networks"
+          inspect_container "$ADMIN_NAME"
+          ADMIN_ID="$container_id"
+          ADMIN_NETWORKS="$container_networks"
+          FLEET_ID="$(read_running_container_id "$FLEET_NAME")"
+          has_network "$PROXY_NETWORKS" "$WEBUI_NETWORK_NAME" || fail "proxy is not on the Open WebUI network"
+          has_network "$ADMIN_NETWORKS" "$CORE_NETWORK_NAME" || fail "admin is not on the core network"
+
+          if has_network "$PROXY_NETWORKS" "$CORE_NETWORK_NAME"; then
+            printf "%s\n" "PASS: proxy is already on the core network"
+          else
+            docker network connect "$CORE_NETWORK_ID" "$PROXY_ID" >/dev/null 2>&1 || fail "proxy core-network attach failed"
+            proxy_core_attached=true
+            changed=true
+            printf "%s\n" "PASS: proxy core network attached"
+          fi
+
+          inspect_container "$PROXY_NAME"
+          [ "$container_id" = "$PROXY_ID" ] || fail "proxy ID changed during attach"
+          PROXY_NETWORKS="$container_networks"
+          has_network "$PROXY_NETWORKS" "$CORE_NETWORK_NAME" || fail "proxy core network attach was not observed"
+          docker exec "$PROXY_ID" /bin/sh -ec "wget -q -O /dev/null -T 5 $ADMIN_LOGIN_URL && wget -q -O /dev/null -T 5 $FLEET_HEALTH_URL && wget -q -O /dev/null -T 5 $PROXY_LOGIN_URL" >/dev/null 2>&1 || fail "dependency or pre-detach /login probe failed"
+          printf "%s\n" "PASS: proxy can reach Admin, Fleet health, and /login"
+
+          if has_network "$ADMIN_NETWORKS" "$WEBUI_NETWORK_NAME"; then
+            docker network disconnect "$WEBUI_NETWORK_ID" "$ADMIN_ID" >/dev/null 2>&1 || fail "admin Open WebUI-network detach failed"
+            admin_detached=true
+            changed=true
+            printf "%s\n" "PASS: admin Open WebUI network detached"
+          else
+            printf "%s\n" "PASS: admin Open WebUI network already detached"
+          fi
+
+          final_core_network_id="$(read_network_id "$CORE_NETWORK_NAME")"
+          final_webui_network_id="$(read_network_id "$WEBUI_NETWORK_NAME")"
+          [ "$final_core_network_id" = "$CORE_NETWORK_ID" ] || fail "core network ID changed"
+          [ "$final_webui_network_id" = "$WEBUI_NETWORK_ID" ] || fail "Open WebUI network ID changed"
+          inspect_container "$PROXY_NAME"
+          [ "$container_id" = "$PROXY_ID" ] || fail "proxy ID changed after detach"
+          PROXY_NETWORKS="$container_networks"
+          has_network "$PROXY_NETWORKS" "$CORE_NETWORK_NAME" || fail "proxy lost the core network"
+          has_network "$PROXY_NETWORKS" "$WEBUI_NETWORK_NAME" || fail "proxy lost the Open WebUI network"
+          inspect_container "$ADMIN_NAME"
+          [ "$container_id" = "$ADMIN_ID" ] || fail "admin ID changed after detach"
+          ADMIN_NETWORKS="$container_networks"
+          has_network "$ADMIN_NETWORKS" "$CORE_NETWORK_NAME" || fail "admin lost the core network"
+          if has_network "$ADMIN_NETWORKS" "$WEBUI_NETWORK_NAME"; then
+            fail "admin remains on the Open WebUI network"
+          fi
+          docker exec "$PROXY_ID" /bin/sh -ec "wget -q -O /dev/null -T 5 $FLEET_HEALTH_URL && wget -q -O /dev/null -T 5 $PROXY_LOGIN_URL" >/dev/null 2>&1 || fail "post-detach Fleet health or /login probe failed"
+          trap - EXIT
+          printf "%s\n" "PASS: fixed network transaction completed"
+          printf "%s\n" "changed=$changed"
+          '
+      args:
+        executable: /bin/sh
+      register: mypc_reconcile_transaction
+      changed_when: "'changed=true' in mypc_reconcile_transaction.stdout"
+      when: not ansible_check_mode

@@ -163,3 +163,35 @@ Post-cutover checks:
 During the run, two missing production contracts were found and fixed in the
 roles: mypc uses `openclaw-enterprise_open-webui-net`, and Admin/Directory must
 publish host ports `5173` and `8001` respectively.
+
+## WebUI/Admin Network Reconcile Boundary
+
+Use only `playbooks/mypc-network-reconcile.yml` for this network repair. It is
+mypc-only and fail-closed: both `mypc_deploy_enabled=true` and the independent
+`mypc_network_reconcile_approval=true` extra variables are required, and the
+remote `/bin/hostname` output must be exactly `mypc`. The playbook changes only
+Docker network attachments using IDs read inside one fixed shell transaction;
+it does not own an image, volume, port, or container lifecycle setting. It
+attaches the proxy to the core network, probes Admin/Fleet health/login from
+inside the proxy, then detaches Admin from the temporary Open WebUI network.
+If the target topology already holds (proxy on both core and WebUI, Admin only
+on core), the mutation transaction is a safe no-op. Admin is reconnected by its
+original ID only after a successful WebUI detach; any later failure continues
+to collect Admin/proxy ID, network, and independent login/health checks even if
+reconnect fails, and remains a failure. The proxy core connection is not rolled
+back.
+Fleet's network set is not a contract: only the fixed Fleet health URL is
+probed from the proxy.
+
+`--check` 仅预检：只运行另一个纯只读 preflight shell（固定目标、网络、容器和当前
+`/login`，并确认 proxy 同时位于既有 core 与 WebUI 网络）；它完全跳过 mutation
+transaction 及其依赖探针，不是成功证据
+（not success evidence）。shell 只输出非敏感的 `PASS`/`FAIL` 和
+`changed=true|false`。
+
+```bash
+scripts/check-open-webui-admin-ingress.sh
+ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --syntax-check
+ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --list-tasks
+ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --check -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
+```
