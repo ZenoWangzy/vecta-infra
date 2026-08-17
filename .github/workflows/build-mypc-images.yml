@@ -71,8 +71,10 @@ concurrency:
 jobs:
   build:
     if: >-
-      (github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call') &&
-      github.repository == 'ZenoWangzy/vecta-infra'
+      (github.event_name == 'workflow_call' &&
+      github.repository == 'ZenoWangzy/vecta') ||
+      (github.event_name == 'workflow_dispatch' &&
+      github.repository == 'ZenoWangzy/vecta-infra')
     runs-on: [self-hosted, mypc, prod-build]
     environment: production
     timeout-minutes: 240
@@ -91,6 +93,8 @@ jobs:
       DEBIAN_SECURITY_MIRROR: >-
         http://127.0.0.1:8081/repository/vecta-debian-security-proxy
       DOCKER_BUILDKIT: "0"
+      BUILDX_VERSION: v0.34.1
+      BUILDX_LINUX_AMD64_SHA256: f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b
       PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}
       NEXUS_ADMIN_PASSWORD_SECRET_NAME: MYPC_NEXUS_ADMIN_PASSWORD
     steps:
@@ -212,6 +216,9 @@ jobs:
           }
           command -v pnpm >/dev/null || {
             echo "pnpm is required" >&2; exit 1;
+          }
+          command -v sha256sum >/dev/null || {
+            echo "sha256sum is required" >&2; exit 1;
           }
           available_kb="$(df -Pk . | awk 'NR==2 {print $4}')"
           if [ "$available_kb" -lt 62914560 ]; then
@@ -424,22 +431,53 @@ jobs:
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
-      - name: Login to production Nexus Docker registry
-        run: >-
-          echo "$NEXUS_ADMIN_PASSWORD" |
-          docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
-        env:
-          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
-
       - name: Validate production image contract
         working-directory: vecta
         run: pnpm check:production-images
 
       - name: Build and push production images
         working-directory: vecta
-        run: >-
+        run: |
+          set -euo pipefail
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+          docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-docker-config.XXXXXX")"
+          cleanup_buildx() {
+            rm -rf "$docker_config"
+          }
+          trap cleanup_buildx EXIT
+          export DOCKER_CONFIG="$docker_config"
+          plugin_dir="$DOCKER_CONFIG/cli-plugins"
+          buildx_download="$plugin_dir/docker-buildx.download"
+          buildx_plugin="$plugin_dir/docker-buildx"
+          mkdir -p "$plugin_dir"
+          curl --fail --location --retry 3 --retry-delay 5 \
+            --output "$buildx_download" \
+            "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-amd64"
+          printf '%s  %s\n' "$BUILDX_LINUX_AMD64_SHA256" "$buildx_download" |
+            sha256sum --check -
+          chmod 0755 "$buildx_download"
+          mv "$buildx_download" "$buildx_plugin"
+          actual_buildx_version="$(docker buildx version | awk '{print $2}')"
+          if [ "$actual_buildx_version" != "$BUILDX_VERSION" ]; then
+            echo "Buildx version mismatch: expected=$BUILDX_VERSION actual=$actual_buildx_version" >&2
+            exit 1
+          fi
+          docker buildx use default
+          builder_info="$(docker buildx inspect default)"
+          if ! printf '%s\n' "$builder_info" | grep -Eq '^Name:[[:space:]]+default$'; then
+            echo "Buildx default builder is required" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$builder_info" | grep -Eq '^Driver:[[:space:]]+docker$'; then
+            echo "Buildx default builder must use the docker driver" >&2
+            exit 1
+          fi
+          printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
+            docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
           nice -n 10 ionice -c2 -n7
           node scripts/build-push-production-images.mjs
+        env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
       - name: Prune mypc Docker build cache
         if: always() && inputs.docker_cache_prune_until != 'never'
