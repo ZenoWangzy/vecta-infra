@@ -91,7 +91,7 @@ jobs:
       DEBIAN_SECURITY_MIRROR: >-
         http://127.0.0.1:8081/repository/vecta-debian-security-proxy
       DOCKER_BUILDKIT: "0"
-      VTEST_IMAGE_NAMES: ${{ inputs.image_names || '' }}
+      PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}
       NEXUS_ADMIN_PASSWORD_SECRET_NAME: MYPC_NEXUS_ADMIN_PASSWORD
     steps:
       - name: Configure git proxy
@@ -431,17 +431,15 @@ jobs:
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
-      - name: Validate image contract
+      - name: Validate production image contract
         working-directory: vecta
-        run: pnpm check:vtest-images
+        run: pnpm check:production-images
 
       - name: Build and push production images
         working-directory: vecta
         run: >-
           nice -n 10 ionice -c2 -n7
-          node scripts/build-push-vtest-images.mjs
-        env:
-          GITHUB_SHA: ${{ inputs.source_sha }}
+          node scripts/build-push-production-images.mjs
 
       - name: Prune mypc Docker build cache
         if: always() && inputs.docker_cache_prune_until != 'never'

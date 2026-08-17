@@ -117,8 +117,26 @@ def main() -> None:
     assert "Do not restore a compatibility workflow" in contributing
 
     workflow = (ROOT / ".github/workflows/build-mypc-images.yml").read_text()
+    retired_environment = "".join(("v", "test"))
     assert "name: Build mypc production images" in workflow
     assert "runs-on: [self-hosted, mypc, prod-build]" in workflow
+    assert "environment: production" in workflow
+    assert "permissions:\n  contents: read" in workflow
+    assert "SOURCE_SHA: ${{ inputs.source_sha }}" in workflow
+    assert "SOURCE_BRANCH: ${{ inputs.source_branch }}" in workflow
+    assert "NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082" in workflow
+    assert "DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082" in workflow
+    assert "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8082" in workflow
+    assert workflow.count("image_names:") == 2
+    assert "PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}" in workflow
+    assert 'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin' in workflow
+    assert "run: pnpm check:production-images" in workflow
+    assert "node scripts/build-push-production-images.mjs" in workflow
+    assert "nice -n 10 ionice -c2 -n7" in workflow
+    assert f"check:{retired_environment}-images" not in workflow
+    assert f"build-push-{retired_environment}-images.mjs" not in workflow
+    assert f"{retired_environment.upper()}_IMAGE_NAMES" not in workflow
+    assert "GITHUB_SHA: ${{ inputs.source_sha }}" not in workflow
     assert "inventory = ./inventories/mypc/hosts.ini" in (
         ROOT / "ansible.cfg"
     ).read_text()
