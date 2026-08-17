@@ -1,4 +1,8 @@
-# mypc Data-Structure Compatibility Report
+# Retired: mypc Data-Structure Compatibility Report
+
+> Status: retired 2026-08-17. Historical comparison only; do not use its
+> former integration-environment references as a deployment entry. Current
+> mypc procedures are maintained in `mypc-nexus-image-adoption.md`.
 
 Date: 2026-07-18
 
@@ -95,7 +99,10 @@ and fruit runtime overlay.
 Runtime recreation is blocked until the active service spec is restored or
 generated from live `docker inspect` plus backup Compose evidence.
 
-## Gradual Recreation Plan
+## Retired Gradual Recreation Plan
+
+> Historical plan from 2026-07-18; retained for evidence only and not an
+> executable procedure.
 
 1. Keep `mypc_deploy_enabled=false` and `mypc_stateful_services_enabled=false`.
 2. Keep mirroring local cache images into mypc Nexus for rollback/audit.
@@ -116,7 +123,10 @@ generated from live `docker inspect` plus backup Compose evidence.
    PostgreSQL only through service-specific backup, restore, rollback, and
    observation gates.
 
-## Implemented Compatibility Controls
+## Historical Compatibility Controls
+
+> These controls describe the historical comparison run and are not a current
+> deployment entry.
 
 - `deploy_image_tag_requires_full_sha` defaults to true for vtest. mypc sets it
   to false only for the explicit `local-cache-20260718` bridge.
@@ -164,48 +174,27 @@ During the run, two missing production contracts were found and fixed in the
 roles: mypc uses `openclaw-enterprise_open-webui-net`, and Admin/Directory must
 publish host ports `5173` and `8001` respectively.
 
-## WebUI/Admin Network Reconcile Boundary
+## Retired WebUI/Admin Network Evidence
 
-Use only `playbooks/mypc-network-reconcile.yml` for this mypc-only repair. The
-thin playbook calls one transaction script, whose hostname, container names,
-and network names are hardcoded. It accepts only the exact temporary state
-(Proxy on WebUI; Admin on core plus WebUI) or exact canonical state (Proxy on
-core plus WebUI; Admin on core). Canonical is a no-op. In-progress, extra, and
-missing attachments fail-closed.
+> Historical evidence only. The former repair playbook and transaction script
+> remain active elsewhere in the repository, but this retired report does not
+> provide an executable entry to them.
 
-The script uses only narrow formatted Docker inspection: container ID and
-network names, plus network ID. It never requests full inspect output or
-`Config.Env`. Before every mutation and rollback mutation it revalidates the
-baseline container and network IDs; any ID drift fails closed and never touches
-a replacement container. Execute revalidates both approvals internally, so
-`--start-at-task` cannot bypass the guard. It attaches Proxy to core, inspects
-the exact intermediate state, then detaches Admin from WebUI and inspects exact
-canonical state. No image, volume, data, restart, recreate, pull, compose, or
-other deployment change is in scope.
+The historical repair accepted only the exact temporary state (Proxy on WebUI;
+Admin on core plus WebUI) or exact canonical state (Proxy on core plus WebUI;
+Admin on core). Canonical was a no-op. In-progress, extra, and missing
+attachments failed closed.
 
-`--check` 仅预检：它运行 hostname 和窄格式 Docker inspect，跳过 mutation，
-不是成功证据（not success evidence）。真实命令才会执行 temporary ->
-canonical 的网络变更。仓库或运行时证据没有证明触发部署、重建或手工变更的
-actor；that actor remains unknown。
+The transaction used narrow formatted Docker inspection: container IDs, network
+names, and network IDs. It did not request full inspect output or `Config.Env`.
+Before each mutation and rollback mutation it revalidated baseline container and
+network IDs; ID drift failed closed and never touched a replacement container.
+The guard also revalidated both approvals internally, so task-start overrides
+could not bypass it. No image, volume, data, restart, recreate, pull, compose,
+or other deployment change was in scope.
 
-```bash
-scripts/check-open-webui-admin-ingress.sh
-bash -n scripts/reconcile-open-webui-admin-network.sh
-scripts/reconcile-open-webui-admin-network.sh --self-test
-uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --syntax-check
-uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --list-tasks
-uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --check -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
-uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
-```
-
-唯一支持的恢复路径是由 playbook 调用的受保护事务脚本
-`scripts/reconcile-open-webui-admin-network.sh --execute`。禁止按
-network/container 名称手工执行 rollback mutation，也不得对 replacement
-自动操作。脚本只允许从精确 temporary baseline 进入 transaction；canonical
-是 no-op。
-
-脚本在 hostname、窄格式 inspect、topology、forward mutation 或 rollback
-failure 时 fail-closed：停止自动操作，标记 baseline not proven，交给人工
-处置。只有四个 baseline IDs（Core/WebUI network、Proxy/Admin container）与
-保存的 baseline topology 都通过精确重验，才可声称 restored；任一 ID drift
-都禁止自动恢复 replacement。
+The historical precheck skipped mutation and was not success evidence. Repository
+and runtime evidence did not prove the actor that triggered deployment,
+recreation, or manual change; that actor remains unknown. Any future operational
+procedure must be taken from the current approved documentation, not this
+retired report.

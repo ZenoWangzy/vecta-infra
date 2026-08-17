@@ -16,12 +16,7 @@
     - role: infra-services
       tags: [infra-services, infra]
   tasks:
-    - name: Configure and verify Nexus System HTTP proxy
-      ansible.builtin.import_role:
-        name: nexus
-        tasks_from: system_http_proxy
-      tags: [nexus]
-    - name: Configure Nexus Docker registry proxies for vtest builds
+    - name: Configure Nexus Docker registry proxies for protected image builds
       ansible.builtin.import_role:
         name: nexus
         tasks_from: docker_registry

@@ -1,17 +1,16 @@
 # CI Git Transport And Proxy Contract
 
-> Origin: 2026-08-07 incident — vtest CI checkout wedged indefinitely because a
-> runner-level `insteadOf` rewrite silently switched fetches to direct ssh.
-> Full incident write-up: `vecta/lessons/full/ci-github-actions.md`
-> (insteadof-hijacks-checkout).
+> Status: active only for the mypc production-build runner and production
+> checkout. The former integration-runner path is retired.
 
 ## Transport design
 
-All GitHub git traffic from CN-hosted runners uses one of two paths:
+GitHub git traffic in the remaining CN-hosted production paths uses one of two
+paths:
 
 | Path | Used by | Safeguards that apply |
 |---|---|---|
-| HTTPS via squid proxy (`geraldsynnas.ddns.net:8888`) | CI checkout/fetch on vtest and mypc runners | token auth, proxy probe + dead-proxy fallback, `http.lowSpeedLimit/lowSpeedTime` |
+| HTTPS via squid proxy (`geraldsynnas.ddns.net:8888`) | checkout/fetch on the mypc production-build runner | token auth, proxy probe + dead-proxy fallback, `http.lowSpeedLimit/lowSpeedTime` |
 | ssh direct (`github.com:22`) | operator pushes; prod `/data/ocee` fetches | none of the above; ssh keepalives do not detect a throttled-but-alive stream |
 
 GFW intermittently throttles bulk data on long-lived port-22 connections while
@@ -20,16 +19,6 @@ therefore stall at 0 B/s forever without erroring. The HTTPS+proxy path is the
 only one with working stall protection, so **CI fetches must never leave it**.
 
 ## Per-host contract
-
-### vtest runner (`ubuntu` user)
-
-- Global gitconfig is shared between CI and interactive use and is part of the
-  CI contract. Fetch stays HTTPS; push-over-ssh is expressed only as:
-  `url.git@github.com:ZenoWangzy/vecta.pushInsteadOf=https://github.com/ZenoWangzy/vecta`
-- Never add a plain `insteadOf` for a GitHub https URL — it rewrites checkout
-  to ssh and bypasses proxy, token, and every `http.*` safeguard at once.
-- `http.lowSpeedLimit=1024` / `http.lowSpeedTime=30` stay set globally and are
-  also injected by every `Configure git proxy` workflow step.
 
 ### mypc prod-build runner (`github-runner` user)
 

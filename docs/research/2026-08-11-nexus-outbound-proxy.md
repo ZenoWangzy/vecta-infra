@@ -1,4 +1,8 @@
-# Nexus Repository 3.94 出站 HTTP/HTTPS 代理配置研究
+# Retired: Nexus Repository 3.94 出站 HTTP/HTTPS 代理配置研究
+
+> Status: retired 2026-08-17 with the integration deployment control plane.
+> Retained as historical research only; the retired System HTTP automation is
+> not an active Ansible or workflow entry.
 
 - 研究日期：2026-08-11
 - 目标版本：Nexus Repository Community Edition `3.94.0-12`

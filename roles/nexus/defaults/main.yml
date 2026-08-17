@@ -31,13 +31,3 @@ nexus_docker_remote_url: "https://registry-1.docker.io"
 # Nexus Docker proxy; Docker Hub cannot serve the OpenClaw runtime base image.
 nexus_ghcr_remote_index_url: "https://ghcr.io"
 nexus_ghcr_remote_url: "https://ghcr.io"
-
-# Nexus 3.94 uses its System HTTP setting for both HTTP and HTTPS CONNECT.
-nexus_outbound_proxy_version: "3.94.0-12"
-nexus_outbound_proxy_host: geraldsynnas.ddns.net
-nexus_outbound_proxy_port: 8888
-nexus_outbound_proxy_non_proxy_hosts:
-  - localhost
-  - 127.*
-  - ::1
-nexus_outbound_proxy_password_placeholder: "#~NXRM~PLACEHOLDER~PASSWORD~#"

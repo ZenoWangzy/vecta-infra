@@ -1,3 +1,0 @@
-# Full deploy: infra bootstrap + services + application containers.
-- import_playbook: infra.yml
-- import_playbook: app.yml

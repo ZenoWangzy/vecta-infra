@@ -1,4 +1,8 @@
-# vtest 平台 JWT bootstrap 交接
+# Retired: vtest 平台 JWT bootstrap 交接
+
+> Status: retired 2026-08-17. Historical handoff only; the vtest workflow,
+> bootstrap, and reusable control-plane entries were removed. Do not use this
+> document as a deployment entry.
 
 ## 已完成
 
@@ -6,8 +10,9 @@
 - 合并后的 Vecta 验证 run `31621054632` 已完成有 jobs 的 startup、deploy 和
   verify 检查；caller 不再映射旧的 bootstrap 输入。
 - 因此已删除 reusable workflow 中仅用于过渡的四个可选声明，并删除对应的
-  bootstrap contract test。vtest deploy 继续在 infra workflow 内为每次运行
-  生成一次性平台 JWT；不恢复旧 token 转发，也不填入任何 secret 值。
+  bootstrap contract test。vtest deploy path is retired; do not restore old
+  token forwarding or replace it with a compatibility wrapper. No secret value
+  is retained here.
 
 ## 事故记录
 
