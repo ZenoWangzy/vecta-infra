@@ -88,10 +88,11 @@ def assert_static_contract(workflow: str) -> None:
         "PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}",
         f"BUILDX_VERSION: {BUILDX_VERSION}",
         f"BUILDX_LINUX_AMD64_SHA256: {BUILDX_SHA256}",
+        "command -v nice >/dev/null",
+        "command -v ionice >/dev/null",
         "command -v sha256sum >/dev/null",
         'docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-docker-config.XXXXXX")"',
-        'rm -rf "$docker_config"',
-        "trap cleanup_buildx EXIT",
+        'trap \'rm -rf "$docker_config"\' EXIT',
         'export DOCKER_CONFIG="$docker_config"',
         "https://github.com/docker/buildx/releases/download/"
         "${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-amd64",
@@ -103,13 +104,20 @@ def assert_static_contract(workflow: str) -> None:
         "'^Driver:[[:space:]]+docker$'",
         'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin',
         "run: pnpm check:production-images",
-        "node scripts/build-push-production-images.mjs",
-        "nice -n 10 ionice -c2 -n7",
+        "nice -n 10 ionice -c2 -n7 \\\n"
+        "            node scripts/build-push-production-images.mjs",
         "NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}",
     )
     for literal in required:
         assert literal in workflow, literal
 
+    assert (
+        'docker_config="$(mktemp -d '
+        '"${RUNNER_TEMP}/vecta-docker-config.XXXXXX")"\n'
+        '          trap \'rm -rf "$docker_config"\' EXIT'
+    ) in workflow
+    assert workflow.count("- name: Build and push production images") == 1
+    assert "- name: Login to production Nexus Docker registry" not in workflow
     assert workflow.count("image_names:") == 2
     assert "docker buildx create" not in workflow
     assert "docker-container" not in workflow
@@ -199,9 +207,12 @@ fi
             fake_bin / "nice",
             """#!/bin/sh
 set -eu
+[ "$#" -gt 0 ] || exit 45
+printf 'nice %s\n' "$*" >> "$FAKE_LOG"
 [ "$1" = -n ]
 [ "$2" = 10 ]
 shift 2
+[ "$#" -gt 0 ] || exit 46
 exec "$@"
 """,
         )
@@ -209,9 +220,12 @@ exec "$@"
             fake_bin / "ionice",
             """#!/bin/sh
 set -eu
+[ "$#" -gt 0 ] || exit 47
+printf 'ionice %s\n' "$*" >> "$FAKE_LOG"
 [ "$1" = -c2 ]
 [ "$2" = -n7 ]
 shift 2
+[ "$#" -gt 0 ] || exit 48
 exec "$@"
 """,
         )
@@ -240,6 +254,15 @@ printf 'node %s\n' "$*" >> "$FAKE_LOG"
                 "NEXUS_DOCKER_REGISTRY": "127.0.0.1:8082",
             }
         )
+        for stub_name in ("nice", "ionice"):
+            empty_stub = subprocess.run(
+                [str(fake_bin / stub_name)],
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            assert empty_stub.returncode != 0, stub_name
         result = subprocess.run(
             ["bash", "-c", build_script],
             cwd=ROOT,
@@ -263,18 +286,25 @@ def assert_fake_contract(workflow: str) -> None:
     assert "docker buildx use default" in success_log
     assert "docker buildx inspect default" in success_log
     assert "docker login 127.0.0.1:8082 -u admin --password-stdin" in success_log
+    assert (
+        "nice -n 10 ionice -c2 -n7 "
+        "node scripts/build-push-production-images.mjs"
+    ) in success_log
+    assert (
+        "ionice -c2 -n7 node scripts/build-push-production-images.mjs"
+    ) in success_log
     assert "node scripts/build-push-production-images.mjs" in success_log
     assert not success_leftovers
 
     failures = (
-        run_fake_build(build_script, sha_failure=True),
-        run_fake_build(build_script, version="v0.34.0"),
-        run_fake_build(build_script, driver="docker-container"),
+        ("checksum", run_fake_build(build_script, sha_failure=True)),
+        ("version", run_fake_build(build_script, version="v0.34.0")),
+        ("driver", run_fake_build(build_script, driver="docker-container")),
     )
-    for result, log, leftovers in failures:
+    for label, (result, log, leftovers) in failures:
         assert result.returncode != 0
         assert "node scripts/build-push-production-images.mjs" not in log
-        assert not leftovers
+        assert not leftovers, f"{label}: temporary DOCKER_CONFIG was not removed"
 
 
 def main() -> None:

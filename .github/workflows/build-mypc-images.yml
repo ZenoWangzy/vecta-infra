@@ -217,6 +217,12 @@ jobs:
           command -v pnpm >/dev/null || {
             echo "pnpm is required" >&2; exit 1;
           }
+          command -v nice >/dev/null || {
+            echo "nice is required" >&2; exit 1;
+          }
+          command -v ionice >/dev/null || {
+            echo "ionice is required" >&2; exit 1;
+          }
           command -v sha256sum >/dev/null || {
             echo "sha256sum is required" >&2; exit 1;
           }
@@ -441,10 +447,7 @@ jobs:
           set -euo pipefail
           : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
           docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-docker-config.XXXXXX")"
-          cleanup_buildx() {
-            rm -rf "$docker_config"
-          }
-          trap cleanup_buildx EXIT
+          trap 'rm -rf "$docker_config"' EXIT
           export DOCKER_CONFIG="$docker_config"
           plugin_dir="$DOCKER_CONFIG/cli-plugins"
           buildx_download="$plugin_dir/docker-buildx.download"
@@ -474,8 +477,8 @@ jobs:
           fi
           printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
             docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
-          nice -n 10 ionice -c2 -n7
-          node scripts/build-push-production-images.mjs
+          nice -n 10 ionice -c2 -n7 \
+            node scripts/build-push-production-images.mjs
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
