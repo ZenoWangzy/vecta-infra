@@ -16,6 +16,12 @@ name: Build mypc production images
         type: string
         required: false
         default: 48h
+      image_names:
+        type: string
+        required: false
+        default: ''
+        description: >-
+          Comma-separated subset of contract images to build; empty builds all.
     secrets:
       VECTA_READ_TOKEN:
         required: true
@@ -48,6 +54,12 @@ name: Build mypc production images
         description: >-
           Docker build-cache retention on the mypc runner; set to 'never'
           to skip
+      image_names:
+        type: string
+        required: false
+        default: ''
+        description: >-
+          Comma-separated subset of contract images to build; empty builds all.
 
 permissions:
   contents: read
@@ -79,6 +91,7 @@ jobs:
       DEBIAN_SECURITY_MIRROR: >-
         http://127.0.0.1:8081/repository/vecta-debian-security-proxy
       DOCKER_BUILDKIT: "0"
+      VTEST_IMAGE_NAMES: ${{ inputs.image_names || '' }}
       NEXUS_ADMIN_PASSWORD_SECRET_NAME: MYPC_NEXUS_ADMIN_PASSWORD
     steps:
       - name: Configure git proxy
