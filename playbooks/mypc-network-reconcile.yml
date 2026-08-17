@@ -2,6 +2,10 @@
 - name: Reconcile mypc Open WebUI/Admin container networks
   hosts: mypc
   gather_facts: false
+  become: true
+  become_user: root
+  become_method: sudo
+  become_flags: '-n'
 
   tasks:
     - name: Read-only reconcile preflight

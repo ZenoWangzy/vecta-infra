@@ -7,9 +7,12 @@ export PATH='/usr/bin:/bin'
 readonly EXPECTED_HOSTNAME='mypc'
 readonly DOCKER_BIN='/usr/bin/docker'
 readonly DOCKER_HOST_SOCKET='unix:///var/run/docker.sock'
+readonly ID_BIN='/usr/bin/id'
 readonly HOSTNAME_BIN='/usr/bin/hostname'
 readonly FLOCK_BIN='/usr/bin/flock'
-readonly LOCK_FILE='/run/lock/vecta-open-webui-admin-network.lock'
+readonly CHMOD_BIN='/usr/bin/chmod'
+readonly CHOWN_BIN='/usr/bin/chown'
+readonly LOCK_FILE='/run/vecta-open-webui-admin-network.lock'
 readonly PROXY_CONTAINER='openclaw-webui-proxy'
 readonly ADMIN_CONTAINER='openclaw-admin-console'
 readonly CORE_NETWORK='openclaw-enterprise_openclaw-net'
@@ -167,6 +170,18 @@ require_hostname() {
   [[ "$actual" == "$EXPECTED_HOSTNAME" ]] || { fail 'refusing reconciliation unless hostname is exactly mypc'; return 1; }
 }
 
+require_root() {
+  local uid rc
+  if uid="$("$ID_BIN" -u)"; then
+    :
+  else
+    rc=$?
+    printf 'FAIL: id command rc=%d\n' "$rc" >&2
+    return "$rc"
+  fi
+  [[ "$uid" == 0 ]] || { fail 'refusing reconciliation unless running as root'; return 1; }
+}
+
 require_approvals() {
   [[ "${MYPC_DEPLOY_ENABLED:-}" == 'true' ]] || { fail 'refusing execute without MYPC_DEPLOY_ENABLED=true'; return 1; }
   [[ "${MYPC_NETWORK_RECONCILE_APPROVAL:-}" == 'true' ]] || { fail 'refusing execute without MYPC_NETWORK_RECONCILE_APPROVAL=true'; return 1; }
@@ -194,7 +209,7 @@ release_lock() {
 acquire_lock() {
   local previous_umask rc
   previous_umask="$(umask)"
-  umask 000
+  umask 077
   if exec 9>>"$LOCK_FILE"; then
     :
   else
@@ -205,6 +220,14 @@ acquire_lock() {
     return "$rc"
   fi
   umask "$previous_umask"
+  if "$CHMOD_BIN" 0600 "$LOCK_FILE" && "$CHOWN_BIN" root:root "$LOCK_FILE"; then
+    :
+  else
+    rc=$?
+    exec 9>&-
+    printf 'FAIL: unable to secure host network reconcile lock rc=%d\n' "$rc" >&2
+    return "$rc"
+  fi
   if "$FLOCK_BIN" -n 9; then
     LOCK_HELD=1
     trap 'release_lock' EXIT
@@ -296,6 +319,7 @@ rollback() {
 }
 
 run_check() {
+  require_root
   require_hostname
   inspect_state || { fail 'Docker identity or network-set inspection failed'; return 1; }
   if state_is_canonical "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS"; then
@@ -308,6 +332,7 @@ run_check() {
 }
 
 run_execute() {
+  require_root
   require_hostname
   require_approvals
   acquire_lock || return 1

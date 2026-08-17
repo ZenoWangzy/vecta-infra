@@ -67,9 +67,12 @@ for literal in \
   "readonly EXPECTED_HOSTNAME='mypc'" \
   "readonly DOCKER_BIN='/usr/bin/docker'" \
   "readonly DOCKER_HOST_SOCKET='unix:///var/run/docker.sock'" \
+  "readonly ID_BIN='/usr/bin/id'" \
   "readonly HOSTNAME_BIN='/usr/bin/hostname'" \
   "readonly FLOCK_BIN='/usr/bin/flock'" \
-  "readonly LOCK_FILE='/run/lock/vecta-open-webui-admin-network.lock'" \
+  "readonly CHMOD_BIN='/usr/bin/chmod'" \
+  "readonly CHOWN_BIN='/usr/bin/chown'" \
+  "readonly LOCK_FILE='/run/vecta-open-webui-admin-network.lock'" \
   "export PATH='/usr/bin:/bin'" \
   "readonly PROXY_CONTAINER='openclaw-webui-proxy'" \
   "readonly ADMIN_CONTAINER='openclaw-admin-console'" \
@@ -79,6 +82,16 @@ for literal in \
   'MYPC_NETWORK_RECONCILE_APPROVAL:-'; do
   require_literal "$TRANSACTION" "$literal"
 done
+for literal in \
+  'require_root()' \
+  '"$ID_BIN" -u' \
+  'umask 077' \
+  '"$CHMOD_BIN" 0600 "$LOCK_FILE"' \
+  '"$CHOWN_BIN" root:root "$LOCK_FILE"'; do
+  require_literal "$TRANSACTION" "$literal"
+done
+require_absent "$TRANSACTION" '/run/lock/vecta-open-webui-admin-network.lock'
+require_absent "$TRANSACTION" 'umask 000'
 for literal in \
   'docker_local()' \
   '/usr/bin/env -u DOCKER_HOST -u DOCKER_CONTEXT -u DOCKER_CONFIG' \
@@ -148,6 +161,15 @@ require_literal "$PLAYBOOK" 'check_mode: false'
 require_literal "$PLAYBOOK" 'when: not ansible_check_mode'
 require_literal "$PLAYBOOK" 'MYPC_DEPLOY_ENABLED:'
 require_literal "$PLAYBOOK" 'MYPC_NETWORK_RECONCILE_APPROVAL:'
+playbook_header="$(sed -n '1,12p' "$PLAYBOOK")"
+for literal in \
+  'become: true' \
+  'become_user: root' \
+  'become_method: sudo' \
+  "become_flags: '-n'"; do
+  printf '%s\n' "$playbook_header" | grep -Fq -- "$literal" ||
+    fail "playbook header missing root become contract: ${literal}"
+done
 if grep -Eiq \
   'ansible\.builtin\.(command|shell|raw)|community\.docker|docker[[:space:]]+(inspect|network)|^[[:space:]]*(roles|import_playbook|import_role|include_role):|cmd:.*\{\{' \
   "$PLAYBOOK"; then
@@ -195,8 +217,8 @@ if grep -nE '^[[:space:]]*/usr/bin/docker[[:space:]]+(inspect|network[[:space:]]
 fi
 
 run_fake_transaction_probe() {
-  local probe_dir probe_bin path_bin lock_bin test_transaction state_file lock_file lock_holder lock_held
-  local mutation_log fake_output_file fake_docker_calls flock_log
+  local probe_dir probe_bin path_bin id_bin lock_bin chown_bin test_transaction state_file lock_file lock_holder lock_held
+  local mutation_log fake_output_file fake_docker_calls flock_log chown_log
   local inspect_count_file network_inspect_count_file path_resolution_log output status captured_fake_output probe_text
   local probe_core_network='openclaw-enterprise_openclaw-net'
   local probe_webui_network='openclaw-enterprise_open-webui-net'
@@ -208,7 +230,9 @@ run_fake_transaction_probe() {
   probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/open-webui-admin-ingress.XXXXXX")"
   probe_bin="$probe_dir/fake-bin"
   path_bin="$probe_dir/path-bin"
+  id_bin="$probe_dir/id"
   lock_bin="$probe_dir/flock"
+  chown_bin="$probe_dir/chown"
   test_transaction="$probe_dir/reconcile-open-webui-admin-network.sh"
   state_file="$probe_dir/state"
   lock_file="$probe_dir/lock"
@@ -218,6 +242,7 @@ run_fake_transaction_probe() {
   fake_output_file="$probe_dir/output"
   fake_docker_calls="$probe_dir/docker-calls"
   flock_log="$probe_dir/flock-log"
+  chown_log="$probe_dir/chown-log"
   inspect_count_file="$probe_dir/inspect-count"
   network_inspect_count_file="$probe_dir/network-inspect-count"
   path_resolution_log="$probe_dir/path-resolution"
@@ -231,15 +256,34 @@ set -euo pipefail
 : "$FAKE_FLOCK_LOG"
 : "$FAKE_FLOCK_HOLDER"
 : "$FAKE_FLOCK_HELD"
-[[ "$#" == 2 && "$1" == '-n' && "$2" == 9 ]] || {
+[[ "$#" -ge 2 && "$1" == '-n' && "$2" == 9 ]] || {
   printf 'stderr-sentinel: unexpected fake flock invocation\n' >&2
   exit 90
 }
-printf '%s\n' "$*" >> "$FAKE_FLOCK_LOG"
+printf '%s %s\n' "$1" "$2" >> "$FAKE_FLOCK_LOG"
 if [[ -e "$FAKE_FLOCK_HOLDER" ]]; then
   exit 1
 fi
 : > "$FAKE_FLOCK_HELD"
+EOF
+
+  cat > "$id_bin" <<'EOF'
+#!/bin/sh
+if [ "${FAKE_MODE:-}" = non-root ]; then
+  printf '1000\n'
+else
+  printf '0\n'
+fi
+EOF
+
+  cat > "$chown_bin" <<'EOF'
+#!/bin/sh
+set -eu
+[ "$#" = 2 ] && [ "$1" = root:root ] && [ -f "$2" ] || {
+  printf 'stderr-sentinel: unexpected fake chown invocation\n' >&2
+  exit 95
+}
+printf '%s\n' "$*" >> "$FAKE_CHOWN_LOG"
 EOF
 
   cat > "$probe_bin/hostname" <<'EOF'
@@ -420,23 +464,30 @@ EOF
 printf 'docker\n' >> "$FAKE_PATH_RESOLUTION_LOG"
 exit 97
 EOF
-  chmod +x "$lock_bin" "$probe_bin/hostname" "$probe_bin/docker" "$path_bin/hostname" "$path_bin/docker"
+  chmod +x "$id_bin" "$lock_bin" "$chown_bin" "$probe_bin/hostname" "$probe_bin/docker" "$path_bin/hostname" "$path_bin/docker"
 
   cp "$TRANSACTION" "$test_transaction"
   sed \
     -e "s|^readonly DOCKER_BIN='/usr/bin/docker'$|readonly DOCKER_BIN='$probe_bin/docker'|" \
+    -e "s|^readonly ID_BIN='/usr/bin/id'$|readonly ID_BIN='$id_bin'|" \
     -e "s|^readonly FLOCK_BIN='/usr/bin/flock'$|readonly FLOCK_BIN='$lock_bin'|" \
-    -e "s|^readonly LOCK_FILE='/run/lock/vecta-open-webui-admin-network.lock'$|readonly LOCK_FILE='$lock_file'|" \
+    -e "s|^readonly CHMOD_BIN='/usr/bin/chmod'$|readonly CHMOD_BIN='/bin/chmod'|" \
+    -e "s|^readonly CHOWN_BIN='/usr/bin/chown'$|readonly CHOWN_BIN='$chown_bin'|" \
+    -e "s|^readonly LOCK_FILE='/run/vecta-open-webui-admin-network.lock'$|readonly LOCK_FILE='$lock_file'|" \
     -e "s|^readonly HOSTNAME_BIN='/usr/bin/hostname'$|readonly HOSTNAME_BIN='$probe_bin/hostname'|" \
     "$test_transaction" > "$probe_dir/transaction.replaced"
   mv "$probe_dir/transaction.replaced" "$test_transaction"
   chmod +x "$test_transaction"
   [ "$(grep -Fc -- "readonly DOCKER_BIN='$probe_bin/docker'" "$test_transaction")" = 1 ] ||
     fail 'temporary transaction did not replace the exact Docker constant'
+  [ "$(grep -Fc -- "readonly ID_BIN='$id_bin'" "$test_transaction")" = 1 ] ||
+    fail 'temporary transaction did not replace the exact id constant'
   [ "$(grep -Fc -- "readonly HOSTNAME_BIN='$probe_bin/hostname'" "$test_transaction")" = 1 ] ||
     fail 'temporary transaction did not replace the exact hostname constant'
   [ "$(grep -Fc -- "readonly FLOCK_BIN='$lock_bin'" "$test_transaction")" = 1 ] ||
     fail 'temporary transaction did not replace the exact flock constant'
+  [ "$(grep -Fc -- "readonly CHOWN_BIN='$chown_bin'" "$test_transaction")" = 1 ] ||
+    fail 'temporary transaction did not replace the exact chown constant'
   [ "$(grep -Fc -- "readonly LOCK_FILE='$lock_file'" "$test_transaction")" = 1 ] ||
     fail 'temporary transaction did not replace the exact lock-file constant'
   [ "$(grep -Fc -- "readonly DOCKER_BIN='/usr/bin/docker'" "$test_transaction")" = 0 ] ||
@@ -445,7 +496,9 @@ EOF
     fail 'temporary transaction retained the production hostname constant'
   [ "$(grep -Fc -- "readonly FLOCK_BIN='/usr/bin/flock'" "$test_transaction")" = 0 ] ||
     fail 'temporary transaction retained the production flock constant'
-  [ "$(grep -Fc -- "readonly LOCK_FILE='/run/lock/vecta-open-webui-admin-network.lock'" "$test_transaction")" = 0 ] ||
+  [ "$(grep -Fc -- "readonly CHOWN_BIN='/usr/bin/chown'" "$test_transaction")" = 0 ] ||
+    fail 'temporary transaction retained the production chown constant'
+  [ "$(grep -Fc -- "readonly LOCK_FILE='/run/vecta-open-webui-admin-network.lock'" "$test_transaction")" = 0 ] ||
     fail 'temporary transaction retained the production lock-file constant'
 
   reset_probe_case() {
@@ -454,10 +507,11 @@ EOF
     : > "$fake_output_file"
     : > "$fake_docker_calls"
     : > "$flock_log"
+    : > "$chown_log"
     printf '0\n' > "$inspect_count_file"
     printf '0\n' > "$network_inspect_count_file"
     : > "$path_resolution_log"
-    rm -f "$lock_holder" "$lock_held"
+    rm -f "$lock_file" "$lock_holder" "$lock_held"
   }
 
   run_transaction_process() {
@@ -472,6 +526,7 @@ EOF
     export FAKE_PATH_RESOLUTION_LOG="$path_resolution_log"
     export FAKE_DOCKER_CALLS="$fake_docker_calls" FAKE_REQUIRE_LOCK=0
     export FAKE_FLOCK_LOG="$flock_log" FAKE_FLOCK_HOLDER="$lock_holder" FAKE_FLOCK_HELD="$lock_held"
+    export FAKE_CHOWN_LOG="$chown_log"
     if [[ "$operation" == '--execute' ]]; then
       export FAKE_REQUIRE_LOCK=1
     fi
@@ -528,6 +583,20 @@ EOF
       fail "fake Docker ${label} did not expose operation context and rc"
   }
 
+  lock_mode() {
+    if stat -f '%Lp' "$lock_file" >/dev/null 2>&1; then
+      stat -f '%Lp' "$lock_file"
+    else
+      stat -c '%a' "$lock_file"
+    fi
+  }
+
+  assert_lock_file_secure() {
+    [ "$(lock_mode)" = 600 ] || fail 'lock file was not created with mode 0600'
+    [ "$(<"$chown_log")" = "root:root $lock_file" ] ||
+      fail 'lock file was not secured as root:root'
+  }
+
   run_probe_case() {
     local label="$1" mode="$2" operation="$3" deploy_approval="$4" network_approval="$5"
     local initial_proxy="$6" initial_admin="$7" docker_environment='clean'
@@ -553,7 +622,7 @@ EOF
         ;;
     esac
     case "$label" in
-      initial-missing|initial-extra|initial-in-progress|hostname-failure|wrong-hostname|missing-deploy-approval|wrong-deploy-approval|missing-network-approval|wrong-network-approval|id-drift|inspect-failure|admin-id-drift-before-mutation|core-network-id-drift-before-mutation)
+      initial-missing|initial-extra|initial-in-progress|hostname-failure|wrong-hostname|missing-deploy-approval|wrong-deploy-approval|missing-network-approval|wrong-network-approval|id-drift|inspect-failure|admin-id-drift-before-mutation|core-network-id-drift-before-mutation|non-root)
         expected_status='nonzero'
         expected_state="$initial_proxy"$'\n'"$initial_admin"
         expected_log=''
@@ -630,6 +699,14 @@ EOF
     fi
     [ "$actual_state" = "$expected_state" ] || fail "fake Docker ${label} ended in an unexpected state"
     [ "$actual_log" = "$expected_log" ] || fail "fake Docker ${label} recorded an unexpected mutation sequence"
+    if [[ "$label" == non-root ]]; then
+      [ -z "$actual_docker_calls" ] || fail 'non-root execution reached Docker inspect or mutation'
+      [ -z "$actual_flock_log" ] || fail 'non-root execution reached the lock'
+      [ ! -e "$lock_file" ] || fail 'non-root execution created the lock file'
+    fi
+    if [[ "$label" == success ]]; then
+      assert_lock_file_secure
+    fi
     case "$label" in
       rollback-reconnect-fail|rollback-disconnect-fail)
         if printf '%s\n' "$output" | grep -Fq 'baseline restored'; then
@@ -666,6 +743,7 @@ EOF
   }
 
   run_lock_contention_probe
+  run_probe_case non-root non-root --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case wrong-hostname wrong-hostname --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case missing-deploy-approval success --execute __unset__ true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case wrong-deploy-approval success --execute false true "$probe_proxy_networks" "$probe_admin_networks"
