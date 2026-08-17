@@ -13,12 +13,21 @@ RETIRED_MARKERS = (
     "fruit_vtest",
     "fruit-vtest",
     "shared_pool_vtest",
+    "vtest_allow_migrate",
+    "vtest_required_image_repos",
+    "vtest_write_quiesce_services",
     "VTEST_",
     "vtest-smoke.sh",
     "mint-vtest",
     "verify-vtest",
     "write-deploy-audit",
     "system_http_proxy",
+)
+LEGACY_POLICY_MARKERS = (
+    "-> vtest validation ->",
+    "vtest postsubmit",
+    "runs the vtest lane",
+    "broaden a vtest trigger",
 )
 RETIRED_PATHS = (
     ".github/workflows/deploy-vtest.yml",
@@ -49,6 +58,7 @@ def main() -> None:
 
     active_roots = (
         ROOT / ".github/workflows",
+        ROOT / "inventories",
         ROOT / "playbooks",
         ROOT / "roles",
         ROOT / "scripts",
@@ -64,6 +74,47 @@ def main() -> None:
             content = path.read_text()
             for marker in RETIRED_MARKERS:
                 assert marker not in content, f"{marker}: {path}"
+
+    for path in sorted(
+        path for path in (ROOT / "inventories").rglob("*") if path.is_file()
+    ):
+        assert "vtest" not in path.read_text().lower(), f"vtest: {path}"
+
+    active_policy_roots = (
+        ROOT / "AGENTS.md",
+        ROOT / "CLAUDE.md",
+        ROOT / "CONTRIBUTING.md",
+    )
+    for path in active_policy_roots:
+        if not path.is_file():
+            continue
+        content = path.read_text()
+        for marker in RETIRED_MARKERS + LEGACY_POLICY_MARKERS:
+            assert marker not in content, f"{marker}: {path}"
+
+    active_spec_roots = (
+        ROOT / "README.md",
+        ROOT / ".trellis/spec",
+        ROOT / "docs",
+    )
+    for root in active_spec_roots:
+        paths = [root] if root.is_file() else sorted(
+            path for path in root.rglob("*") if path.is_file()
+        )
+        for path in paths:
+            content = path.read_text()
+            if content.lstrip().startswith("# Retired:"):
+                continue
+            assert "vtest" not in content.lower(), f"vtest: {path}"
+            for marker in RETIRED_MARKERS + LEGACY_POLICY_MARKERS:
+                assert marker not in content, f"{marker}: {path}"
+
+    agents = (ROOT / "AGENTS.md").read_text()
+    assert "vtest is permanently retired." in agents
+    assert "caller-removal hotfix must merge first" in agents
+    contributing = (ROOT / "CONTRIBUTING.md").read_text()
+    assert "The VectA caller-removal hotfix must merge first" in contributing
+    assert "Do not restore a compatibility workflow" in contributing
 
     workflow = (ROOT / ".github/workflows/build-mypc-images.yml").read_text()
     assert "name: Build mypc production images" in workflow

@@ -4,6 +4,15 @@
 > bootstrap, and reusable control-plane entries were removed. Do not use this
 > document as a deployment entry.
 
+## 退役合并顺序
+
+1. VectA hotfix 必须先合并，发布一个已经删除全部 infra workflow caller 的
+   状态。
+2. 确认该 caller-free 状态后，`vecta-infra` 的永久删除提交才能合并。
+
+当前 dirty worktree 或未发布分支中仍存在 caller，不构成恢复兼容 workflow、
+wrapper、fallback 或 runner 的理由。
+
 ## 已完成
 
 - Vecta PR `#454` 已合并到 `develop`（`910ca553`）。
