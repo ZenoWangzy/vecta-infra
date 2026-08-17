@@ -8,7 +8,8 @@ TRANSACTION="${ROOT_DIR}/scripts/reconcile-open-webui-admin-network.sh"
 PLAYBOOK="${ROOT_DIR}/playbooks/mypc-network-reconcile.yml"
 RUNBOOK="${ROOT_DIR}/docs/runbooks/mypc-data-structure-compatibility.md"
 INVENTORY="${ROOT_DIR}/inventories/mypc/group_vars/mypc.yml"
-BASE_SHA="${BASE_SHA:-7f6bdcd29d74d8dab80ca1ab17ab63b444fdb0ee}"
+HOSTS_INVENTORY="${ROOT_DIR}/inventories/mypc/hosts.ini"
+BASE_SHA="${BASE_SHA:-41aca750d58c82a905cb3974b7c2c6c0ecfbd72f}"
 
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
@@ -34,9 +35,15 @@ require_absent() {
 }
 
 cd "$ROOT_DIR"
-for file in "$PROXY_TEMPLATE" "$HOST_TEMPLATE" "$TRANSACTION" "$PLAYBOOK" "$RUNBOOK" "$INVENTORY"; do
+for file in "$PROXY_TEMPLATE" "$HOST_TEMPLATE" "$TRANSACTION" "$PLAYBOOK" "$RUNBOOK" "$INVENTORY" "$HOSTS_INVENTORY"; do
   require_file "$file"
 done
+
+[ "$(grep -Ec '^base_url=' "$HOSTS_INVENTORY")" = 1 ] ||
+  fail "$HOSTS_INVENTORY must contain exactly one base_url entry"
+[ "$(grep -Fxc 'base_url=https://vecta.matrix-ai.com.cn' "$HOSTS_INVENTORY")" = 1 ] ||
+  fail "$HOSTS_INVENTORY must set the official public origin exactly"
+require_absent "$HOSTS_INVENTORY" 'mypc.matrix-ai.com.cn'
 
 # Existing browser ingress contract.
 for literal in \
@@ -182,12 +189,9 @@ require_absent "$INVENTORY" 'admin_console_join_open_webui_network'
 git rev-parse --verify "${BASE_SHA}^{commit}" >/dev/null 2>&1 || fail "base commit is unavailable: ${BASE_SHA}"
 actual_scope="$({ git diff --name-only "$BASE_SHA" --; git diff --cached --name-only --; git ls-files --others --exclude-standard; } | sort -u)"
 expected_scope="$(printf '%s\n' \
-  docs/runbooks/mypc-data-structure-compatibility.md \
-  inventories/mypc/group_vars/mypc.yml \
-  playbooks/mypc-network-reconcile.yml \
-  scripts/check-open-webui-admin-ingress.sh \
-  scripts/reconcile-open-webui-admin-network.sh)"
-[ "$actual_scope" = "$expected_scope" ] || fail 'diff scope is not exactly the authorized five files'
+  inventories/mypc/hosts.ini \
+  scripts/check-open-webui-admin-ingress.sh)"
+[ "$actual_scope" = "$expected_scope" ] || fail 'diff scope is not exactly the authorized two files'
 if printf '%s\n' "$actual_scope" | grep -Eq '(^|/)(roles|\.github/workflows)(/|$)'; then
   fail 'role or CI wiring changed'
 fi
