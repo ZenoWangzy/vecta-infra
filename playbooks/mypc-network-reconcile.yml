@@ -1,0 +1,29 @@
+---
+- name: Reconcile mypc Open WebUI/Admin container networks
+  hosts: mypc
+  gather_facts: false
+  become: true
+  become_user: root
+  become_method: sudo
+  become_flags: '-n'
+
+  tasks:
+    - name: Read-only reconcile preflight
+      ansible.builtin.script:
+        cmd: ../scripts/reconcile-open-webui-admin-network.sh --check
+      environment:
+        MYPC_DEPLOY_ENABLED: "{{ mypc_deploy_enabled | default('') }}"
+        MYPC_NETWORK_RECONCILE_APPROVAL: "{{ mypc_network_reconcile_approval | default('') }}"
+      check_mode: false
+      changed_when: false
+
+    - name: Execute atomic reconcile
+      ansible.builtin.script:
+        cmd: ../scripts/reconcile-open-webui-admin-network.sh --execute
+      environment:
+        MYPC_DEPLOY_ENABLED: "{{ mypc_deploy_enabled | default('') }}"
+        MYPC_NETWORK_RECONCILE_APPROVAL: "{{ mypc_network_reconcile_approval | default('') }}"
+      check_mode: false
+      register: mypc_network_reconcile_result
+      changed_when: "'RESULT=changed' in mypc_network_reconcile_result.stdout"
+      when: not ansible_check_mode
