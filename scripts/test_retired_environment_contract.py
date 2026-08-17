@@ -46,6 +46,9 @@ RETIRED_PATHS = (
     "scripts/vtest-smoke.sh",
     "scripts/write-deploy-audit.sh",
 )
+ACTIVE_MYPC_RUNBOOKS = (
+    "docs/runbooks/mypc-data-structure-compatibility.md",
+)
 
 
 def main() -> None:
@@ -55,6 +58,10 @@ def main() -> None:
             assert not any(item.is_file() for item in path.rglob("*")), relative
         else:
             assert not path.exists(), relative
+
+    for relative in ACTIVE_MYPC_RUNBOOKS:
+        content = (ROOT / relative).read_text()
+        assert not content.lstrip().startswith("# Retired:"), relative
 
     active_roots = (
         ROOT / ".github/workflows",
@@ -115,6 +122,26 @@ def main() -> None:
     contributing = (ROOT / "CONTRIBUTING.md").read_text()
     assert "The VectA caller-removal hotfix must merge first" in contributing
     assert "Do not restore a compatibility workflow" in contributing
+
+    mypc_compatibility = (
+        ROOT / "docs/runbooks/mypc-data-structure-compatibility.md"
+    ).read_text()
+    for literal in (
+        "mypc is the production state source.",
+        "openclaw-enterprise_postgres_data",
+        "openclaw-enterprise_open-webui-data",
+        "/data/ocee/data/instances",
+        "deploy_image_tag_requires_full_sha=false",
+        "mypc_deploy_enabled=false",
+        "mypc_stateful_services_enabled=false",
+        "playbooks/mypc-network-reconcile.yml",
+        "scripts/reconcile-open-webui-admin-network.sh --self-test",
+        "唯一支持的恢复路径",
+        "不得对 replacement",
+        "四个 baseline IDs",
+        "不是成功证据",
+    ):
+        assert literal in mypc_compatibility, literal
 
     workflow = (ROOT / ".github/workflows/build-mypc-images.yml").read_text()
     retired_environment = "".join(("v", "test"))

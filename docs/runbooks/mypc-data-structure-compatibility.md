@@ -1,28 +1,22 @@
-# Retired: mypc Data-Structure Compatibility Report
-
-> Status: retired 2026-08-17. Historical comparison only; do not use its
-> former integration-environment references as a deployment entry. Current
-> mypc procedures are maintained in `mypc-nexus-image-adoption.md`.
+# mypc Data-Structure Compatibility Report
 
 Date: 2026-07-18
 
-This report records the read-only comparison between mypc production and vtest.
-It defines the compatibility boundary for gradually recreating production under
-Ansible without moving or replacing production data.
+This report records the read-only structure of mypc production. It defines the
+compatibility boundary for gradually managing production through Ansible
+without moving or replacing production data.
 
 ## Summary
 
-mypc is not a vtest clone. vtest is the cleaner Ansible/Nexus target shape;
-mypc is the production state source. The migration must make Ansible compatible
-with mypc first, then recreate services one at a time.
+mypc is the production state source. Ansible must remain compatible with its
+existing data, paths, network attachments, ports, and service ownership before
+any service is recreated.
 
-Do not normalize production by creating new vtest-style volumes or paths.
+Do not normalize production by creating replacement volumes or paths.
 
 ## Container Shape
 
-vtest runs most VectA services from `127.0.0.1:8082/...:<full-sha>` images and
-has an Ansible-managed ClickHouse container. mypc currently runs the main app
-containers from local cache tags:
+mypc currently runs the main app containers from local cache tags:
 
 - `openclaw-enterprise-fleet-gateway`
 - `openclaw-enterprise-rag-service`
@@ -41,14 +35,14 @@ tags.
 
 Preserve these mypc Docker volumes exactly:
 
-| Service | mypc production owner | vtest shape |
-|---|---|---|
-| PostgreSQL | `openclaw-enterprise_postgres_data` | `postgres_data` |
-| Redis | `140f0b143751894f82ec1b1ea8e9401051d45bf8fe031bfdffbb5e8557162151` | `redis_data` |
-| MinIO | `openclaw-enterprise_minio-data` | `/data/ocee/data/minio` bind |
-| Open WebUI | `openclaw-enterprise_open-webui-data` plus wrapper/patch binds | `openclaw-open-webui-data` |
-| OnlyOffice | `openclaw-enterprise_onlyoffice-logs`, `openclaw-enterprise_onlyoffice-data`, plus anonymous internal service volumes | `onlyoffice_logs`, `onlyoffice_data`, anonymous internal volumes |
-| RAG cache | `openclaw-enterprise_rag_model_cache` mounted at `/home/node/.cache/huggingface` | `rag_model_cache` mounted at `/app/model_cache` |
+| Service | mypc production owner or mount |
+|---|---|
+| PostgreSQL | `openclaw-enterprise_postgres_data` |
+| Redis | `140f0b143751894f82ec1b1ea8e9401051d45bf8fe031bfdffbb5e8557162151` |
+| MinIO | `openclaw-enterprise_minio-data` |
+| Open WebUI | `openclaw-enterprise_open-webui-data` plus wrapper/patch binds |
+| OnlyOffice | `openclaw-enterprise_onlyoffice-logs`, `openclaw-enterprise_onlyoffice-data`, plus anonymous internal service volumes |
+| RAG cache | `openclaw-enterprise_rag_model_cache` mounted at `/home/node/.cache/huggingface` |
 
 No mypc ClickHouse production container was found in the production inspection.
 Do not create one as part of app recreation unless a separate data-owner decision
@@ -76,18 +70,13 @@ The mypc inventory now carries these paths explicitly.
 
 ## Database Shape
 
-Read-only table inventory found:
-
-- mypc: `public` 103 tables, `fruit` 8 tables, `drizzle` 1 table,
-  `fruit_meta` 1 table.
-- vtest: `public` 81 tables, `fruit` 14 tables, `fruit_meta` 1 table.
-
-mypc has production-only tables including ontology/entity/wiki/workflow,
-share-link, invitation, and conversation artifact tables. vtest has newer fruit
-processing tables absent from mypc.
+Read-only mypc inventory found `public` 103 tables, `fruit` 8 tables,
+`drizzle` 1 table, and `fruit_meta` 1 table. Production-only tables include
+ontology/entity/wiki/workflow, share-link, invitation, and conversation
+artifact tables.
 
 Compatibility rule: production schema work must be additive and reviewed. Do not
-replay the vtest schema or migration ledger wholesale into production.
+replay an external schema or migration ledger wholesale into production.
 
 ## Compose Ownership Blocker
 
@@ -99,10 +88,7 @@ and fruit runtime overlay.
 Runtime recreation is blocked until the active service spec is restored or
 generated from live `docker inspect` plus backup Compose evidence.
 
-## Retired Gradual Recreation Plan
-
-> Historical plan from 2026-07-18; retained for evidence only and not an
-> executable procedure.
+## Gradual Recreation Plan
 
 1. Keep `mypc_deploy_enabled=false` and `mypc_stateful_services_enabled=false`.
 2. Keep mirroring local cache images into mypc Nexus for rollback/audit.
@@ -123,13 +109,11 @@ generated from live `docker inspect` plus backup Compose evidence.
    PostgreSQL only through service-specific backup, restore, rollback, and
    observation gates.
 
-## Historical Compatibility Controls
+## Implemented Compatibility Controls
 
-> These controls describe the historical comparison run and are not a current
-> deployment entry.
-
-- `deploy_image_tag_requires_full_sha` defaults to true for vtest. mypc sets it
-  to false only for the explicit `local-cache-20260718` bridge.
+- mypc sets `deploy_image_tag_requires_full_sha=false` only for the explicit
+  `local-cache-20260718` bridge; protected production builds use full source
+  SHA tags.
 - `deploy_image_tags` maps each mypc app repo to the exact mirrored
   `cache-<image-id>` tag.
 - `vecta_app_enabled_services` allows the VectA app role to recreate only the
@@ -141,7 +125,7 @@ generated from live `docker inspect` plus backup Compose evidence.
 
 ## First-Stage Cutover Evidence
 
-Executed on 2026-07-18 with `mypc_deploy_enabled=true`, `vtest_allow_migrate=0`,
+Executed on 2026-07-18 with `mypc_deploy_enabled=true`,
 `--tags search,vecta-app`, and the mypc service allowlists.
 
 Recreated from mypc Nexus cache tags:
@@ -174,27 +158,47 @@ During the run, two missing production contracts were found and fixed in the
 roles: mypc uses `openclaw-enterprise_open-webui-net`, and Admin/Directory must
 publish host ports `5173` and `8001` respectively.
 
-## Retired WebUI/Admin Network Evidence
+## WebUI/Admin Network Reconcile Boundary
 
-> Historical evidence only. The former repair playbook and transaction script
-> remain active elsewhere in the repository, but this retired report does not
-> provide an executable entry to them.
+Use only `playbooks/mypc-network-reconcile.yml` for this mypc-only repair. The
+thin playbook calls one transaction script, whose hostname, container names,
+and network names are hardcoded. It accepts only the exact temporary state
+(Proxy on WebUI; Admin on core plus WebUI) or exact canonical state (Proxy on
+core plus WebUI; Admin on core). Canonical is a no-op. In-progress, extra, and
+missing attachments fail closed.
 
-The historical repair accepted only the exact temporary state (Proxy on WebUI;
-Admin on core plus WebUI) or exact canonical state (Proxy on core plus WebUI;
-Admin on core). Canonical was a no-op. In-progress, extra, and missing
-attachments failed closed.
+The script uses only narrow formatted Docker inspection: container ID and
+network names, plus network ID. It never requests full inspect output or
+`Config.Env`. Before every mutation and rollback mutation it revalidates the
+baseline container and network IDs; any ID drift fails closed and never touches
+a replacement container. Execute revalidates both approvals internally, so
+`--start-at-task` cannot bypass the guard. It attaches Proxy to core, inspects
+the exact intermediate state, then detaches Admin from WebUI and inspects exact
+canonical state. No image, volume, data, restart, recreate, pull, compose, or
+other deployment change is in scope.
 
-The transaction used narrow formatted Docker inspection: container IDs, network
-names, and network IDs. It did not request full inspect output or `Config.Env`.
-Before each mutation and rollback mutation it revalidated baseline container and
-network IDs; ID drift failed closed and never touched a replacement container.
-The guard also revalidated both approvals internally, so task-start overrides
-could not bypass it. No image, volume, data, restart, recreate, pull, compose,
-or other deployment change was in scope.
+`--check` 仅预检：它运行 hostname 和窄格式 Docker inspect，跳过 mutation，
+不是成功证据（not success evidence）。真实命令才会执行 temporary ->
+canonical 的网络变更。仓库或运行时证据没有证明触发部署、重建或手工变更的
+actor；that actor remains unknown。
 
-The historical precheck skipped mutation and was not success evidence. Repository
-and runtime evidence did not prove the actor that triggered deployment,
-recreation, or manual change; that actor remains unknown. Any future operational
-procedure must be taken from the current approved documentation, not this
-retired report.
+```bash
+bash -n scripts/reconcile-open-webui-admin-network.sh
+scripts/reconcile-open-webui-admin-network.sh --self-test
+uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --syntax-check
+uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --list-tasks
+uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --check -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
+uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
+```
+
+唯一支持的恢复路径是由 playbook 调用的受保护事务脚本
+`scripts/reconcile-open-webui-admin-network.sh --execute`。禁止按
+network/container 名称手工执行 rollback mutation，也不得对 replacement
+自动操作。脚本只允许从精确 temporary baseline 进入 transaction；canonical
+是 no-op。
+
+脚本在 hostname、窄格式 inspect、topology、forward mutation 或 rollback
+failure 时 fail-closed：停止自动操作，标记 baseline not proven，交给人工
+处置。只有四个 baseline IDs（Core/WebUI network、Proxy/Admin container）与
+保存的 baseline topology 都通过精确重验，才可声称 restored；任一 ID drift
+都禁止自动恢复 replacement。
