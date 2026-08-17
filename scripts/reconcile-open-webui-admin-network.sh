@@ -6,7 +6,10 @@ export PATH='/usr/bin:/bin'
 
 readonly EXPECTED_HOSTNAME='mypc'
 readonly DOCKER_BIN='/usr/bin/docker'
+readonly DOCKER_HOST_SOCKET='unix:///var/run/docker.sock'
 readonly HOSTNAME_BIN='/usr/bin/hostname'
+readonly FLOCK_BIN='/usr/bin/flock'
+readonly LOCK_FILE='/run/lock/vecta-open-webui-admin-network.lock'
 readonly PROXY_CONTAINER='openclaw-webui-proxy'
 readonly ADMIN_CONTAINER='openclaw-admin-console'
 readonly CORE_NETWORK='openclaw-enterprise_openclaw-net'
@@ -33,9 +36,15 @@ INSPECT_CONTAINER_ID=''
 INSPECT_NETWORKS=''
 MUTATION_STARTED=0
 ROLLBACK_FAILED=0
+LOCK_HELD=0
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; return 1; }
 usage() { printf 'Usage: %s --check|--execute|--self-test\n' "$0" >&2; exit 2; }
+
+docker_local() {
+  /usr/bin/env -u DOCKER_HOST -u DOCKER_CONTEXT -u DOCKER_CONFIG \
+    "$DOCKER_BIN" --host "$DOCKER_HOST_SOCKET" "$@"
+}
 
 normalize_networks() {
   local raw="$1" name result=''
@@ -68,7 +77,7 @@ rollback_plan() {
 
 inspect_container() {
   local container="$1" output container_id network_names='' rc
-  if output="$("$DOCKER_BIN" inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' "$container")"; then
+  if output="$(docker_local inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' "$container")"; then
     :
   else
     rc=$?
@@ -91,7 +100,7 @@ inspect_container() {
 
 inspect_network() {
   local network="$1" output rc
-  if output="$("$DOCKER_BIN" network inspect --format='{{.Id}}' "$network")"; then
+  if output="$(docker_local network inspect --format='{{.Id}}' "$network")"; then
     :
   else
     rc=$?
@@ -165,7 +174,7 @@ require_approvals() {
 
 run_network_mutation() {
   local phase="$1" action="$2" network="$3" container="$4" rc
-  if "$DOCKER_BIN" network "$action" "$network" "$container" >/dev/null; then
+  if docker_local network "$action" "$network" "$container" >/dev/null; then
     return 0
   else
     rc=$?
@@ -173,6 +182,38 @@ run_network_mutation() {
       "$phase" "$action" "$network" "$container" "$rc" >&2
     return "$rc"
   fi
+}
+
+release_lock() {
+  if (( LOCK_HELD != 0 )); then
+    exec 9>&-
+    LOCK_HELD=0
+  fi
+}
+
+acquire_lock() {
+  local previous_umask rc
+  previous_umask="$(umask)"
+  umask 000
+  if exec 9>>"$LOCK_FILE"; then
+    :
+  else
+    rc=$?
+    umask "$previous_umask"
+    release_lock
+    printf 'FAIL: unable to open host network reconcile lock rc=%d\n' "$rc" >&2
+    return "$rc"
+  fi
+  umask "$previous_umask"
+  if "$FLOCK_BIN" -n 9; then
+    LOCK_HELD=1
+    trap 'release_lock' EXIT
+    return 0
+  fi
+  rc=$?
+  exec 9>&-
+  printf 'FAIL: another Open WebUI network reconciliation is already running\n' >&2
+  return "$rc"
 }
 
 rollback_refresh() { inspect_state && ids_match_baseline; }
@@ -269,6 +310,7 @@ run_check() {
 run_execute() {
   require_hostname
   require_approvals
+  acquire_lock || return 1
   inspect_state || { fail 'Docker identity or network-set inspection failed'; return 1; }
   capture_baseline
   if state_is_canonical "$BASE_PROXY_NETWORKS" "$BASE_ADMIN_NETWORKS"; then

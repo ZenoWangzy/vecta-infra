@@ -66,7 +66,10 @@ require_literal "$TRANSACTION" 'set -euo pipefail'
 for literal in \
   "readonly EXPECTED_HOSTNAME='mypc'" \
   "readonly DOCKER_BIN='/usr/bin/docker'" \
+  "readonly DOCKER_HOST_SOCKET='unix:///var/run/docker.sock'" \
   "readonly HOSTNAME_BIN='/usr/bin/hostname'" \
+  "readonly FLOCK_BIN='/usr/bin/flock'" \
+  "readonly LOCK_FILE='/run/lock/vecta-open-webui-admin-network.lock'" \
   "export PATH='/usr/bin:/bin'" \
   "readonly PROXY_CONTAINER='openclaw-webui-proxy'" \
   "readonly ADMIN_CONTAINER='openclaw-admin-console'" \
@@ -74,6 +77,15 @@ for literal in \
   "readonly WEBUI_NETWORK='openclaw-enterprise_open-webui-net'" \
   'MYPC_DEPLOY_ENABLED:-' \
   'MYPC_NETWORK_RECONCILE_APPROVAL:-'; do
+  require_literal "$TRANSACTION" "$literal"
+done
+for literal in \
+  'docker_local()' \
+  '/usr/bin/env -u DOCKER_HOST -u DOCKER_CONTEXT -u DOCKER_CONFIG' \
+  '"$DOCKER_BIN" --host "$DOCKER_HOST_SOCKET"' \
+  'acquire_lock || return 1' \
+  '"$FLOCK_BIN" -n 9' \
+  'trap '\''release_lock'\'' EXIT'; do
   require_literal "$TRANSACTION" "$literal"
 done
 for literal in --check --execute --self-test; do
@@ -183,7 +195,8 @@ if grep -nE '^[[:space:]]*/usr/bin/docker[[:space:]]+(inspect|network[[:space:]]
 fi
 
 run_fake_transaction_probe() {
-  local probe_dir probe_bin path_bin test_transaction state_file mutation_log fake_output_file
+  local probe_dir probe_bin path_bin lock_bin test_transaction state_file lock_file lock_holder lock_held
+  local mutation_log fake_output_file fake_docker_calls flock_log
   local inspect_count_file network_inspect_count_file path_resolution_log output status captured_fake_output probe_text
   local probe_core_network='openclaw-enterprise_openclaw-net'
   local probe_webui_network='openclaw-enterprise_open-webui-net'
@@ -195,15 +208,39 @@ run_fake_transaction_probe() {
   probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/open-webui-admin-ingress.XXXXXX")"
   probe_bin="$probe_dir/fake-bin"
   path_bin="$probe_dir/path-bin"
+  lock_bin="$probe_dir/flock"
   test_transaction="$probe_dir/reconcile-open-webui-admin-network.sh"
   state_file="$probe_dir/state"
+  lock_file="$probe_dir/lock"
+  lock_holder="$probe_dir/lock-holder"
+  lock_held="$probe_dir/lock-held"
   mutation_log="$probe_dir/mutations"
   fake_output_file="$probe_dir/output"
+  fake_docker_calls="$probe_dir/docker-calls"
+  flock_log="$probe_dir/flock-log"
   inspect_count_file="$probe_dir/inspect-count"
   network_inspect_count_file="$probe_dir/network-inspect-count"
   path_resolution_log="$probe_dir/path-resolution"
   mkdir "$probe_bin" "$path_bin"
   trap 'rm -rf "$probe_dir"' EXIT
+
+  cat > "$lock_bin" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "$FAKE_FLOCK_LOG"
+: "$FAKE_FLOCK_HOLDER"
+: "$FAKE_FLOCK_HELD"
+[[ "$#" == 2 && "$1" == '-n' && "$2" == 9 ]] || {
+  printf 'stderr-sentinel: unexpected fake flock invocation\n' >&2
+  exit 90
+}
+printf '%s\n' "$*" >> "$FAKE_FLOCK_LOG"
+if [[ -e "$FAKE_FLOCK_HOLDER" ]]; then
+  exit 1
+fi
+: > "$FAKE_FLOCK_HELD"
+EOF
 
   cat > "$probe_bin/hostname" <<'EOF'
 #!/bin/sh
@@ -232,6 +269,17 @@ readonly WEBUI_NETWORK='openclaw-enterprise_open-webui-net'
 
 stderr_sentinel() { printf 'stderr-sentinel: %s\n' "$1" >&2; }
 fail() { stderr_sentinel 'unexpected fake Docker invocation'; exit 90; }
+[[ "$#" -ge 2 && "$1" == '--host' && "$2" == 'unix:///var/run/docker.sock' ]] || fail
+[[ -z "${DOCKER_HOST+x}" && -z "${DOCKER_CONTEXT+x}" && -z "${DOCKER_CONFIG+x}" ]] || {
+  stderr_sentinel 'Docker endpoint environment was not cleared'
+  exit 92
+}
+[[ "$FAKE_REQUIRE_LOCK" != 1 || -e "$FAKE_FLOCK_HELD" ]] || {
+  stderr_sentinel 'Docker call happened without the transaction lock'
+  exit 93
+}
+printf '%s\n' "$*" >> "$FAKE_DOCKER_CALLS"
+shift 2
 emit() { printf '%s\n' "$1" | tee -a "$FAKE_OUTPUT"; }
 read_state() {
   IFS= read -r proxy_networks < "$FAKE_STATE"
@@ -372,11 +420,13 @@ EOF
 printf 'docker\n' >> "$FAKE_PATH_RESOLUTION_LOG"
 exit 97
 EOF
-  chmod +x "$probe_bin/hostname" "$probe_bin/docker" "$path_bin/hostname" "$path_bin/docker"
+  chmod +x "$lock_bin" "$probe_bin/hostname" "$probe_bin/docker" "$path_bin/hostname" "$path_bin/docker"
 
   cp "$TRANSACTION" "$test_transaction"
   sed \
     -e "s|^readonly DOCKER_BIN='/usr/bin/docker'$|readonly DOCKER_BIN='$probe_bin/docker'|" \
+    -e "s|^readonly FLOCK_BIN='/usr/bin/flock'$|readonly FLOCK_BIN='$lock_bin'|" \
+    -e "s|^readonly LOCK_FILE='/run/lock/vecta-open-webui-admin-network.lock'$|readonly LOCK_FILE='$lock_file'|" \
     -e "s|^readonly HOSTNAME_BIN='/usr/bin/hostname'$|readonly HOSTNAME_BIN='$probe_bin/hostname'|" \
     "$test_transaction" > "$probe_dir/transaction.replaced"
   mv "$probe_dir/transaction.replaced" "$test_transaction"
@@ -385,27 +435,54 @@ EOF
     fail 'temporary transaction did not replace the exact Docker constant'
   [ "$(grep -Fc -- "readonly HOSTNAME_BIN='$probe_bin/hostname'" "$test_transaction")" = 1 ] ||
     fail 'temporary transaction did not replace the exact hostname constant'
+  [ "$(grep -Fc -- "readonly FLOCK_BIN='$lock_bin'" "$test_transaction")" = 1 ] ||
+    fail 'temporary transaction did not replace the exact flock constant'
+  [ "$(grep -Fc -- "readonly LOCK_FILE='$lock_file'" "$test_transaction")" = 1 ] ||
+    fail 'temporary transaction did not replace the exact lock-file constant'
   [ "$(grep -Fc -- "readonly DOCKER_BIN='/usr/bin/docker'" "$test_transaction")" = 0 ] ||
     fail 'temporary transaction retained the production Docker constant'
   [ "$(grep -Fc -- "readonly HOSTNAME_BIN='/usr/bin/hostname'" "$test_transaction")" = 0 ] ||
     fail 'temporary transaction retained the production hostname constant'
+  [ "$(grep -Fc -- "readonly FLOCK_BIN='/usr/bin/flock'" "$test_transaction")" = 0 ] ||
+    fail 'temporary transaction retained the production flock constant'
+  [ "$(grep -Fc -- "readonly LOCK_FILE='/run/lock/vecta-open-webui-admin-network.lock'" "$test_transaction")" = 0 ] ||
+    fail 'temporary transaction retained the production lock-file constant'
 
   reset_probe_case() {
     printf '%s\n%s\n' "$1" "$2" > "$state_file"
     : > "$mutation_log"
     : > "$fake_output_file"
+    : > "$fake_docker_calls"
+    : > "$flock_log"
     printf '0\n' > "$inspect_count_file"
     printf '0\n' > "$network_inspect_count_file"
     : > "$path_resolution_log"
+    rm -f "$lock_holder" "$lock_held"
   }
 
   run_transaction_process() {
-    local operation="$1" mode="$2" deploy_approval="$3" network_approval="$4"
+    local operation="$1" mode="$2" deploy_approval="$3" network_approval="$4" docker_environment='clean'
+    if [[ "$#" -ge 5 ]]; then
+      docker_environment="$5"
+    fi
     export PATH="$path_bin:/usr/bin:/bin"
     export FAKE_MODE="$mode" FAKE_STATE="$state_file" FAKE_LOG="$mutation_log"
     export FAKE_OUTPUT="$fake_output_file" FAKE_INSPECT_COUNT="$inspect_count_file"
     export FAKE_NETWORK_INSPECT_COUNT="$network_inspect_count_file"
     export FAKE_PATH_RESOLUTION_LOG="$path_resolution_log"
+    export FAKE_DOCKER_CALLS="$fake_docker_calls" FAKE_REQUIRE_LOCK=0
+    export FAKE_FLOCK_LOG="$flock_log" FAKE_FLOCK_HOLDER="$lock_holder" FAKE_FLOCK_HELD="$lock_held"
+    if [[ "$operation" == '--execute' ]]; then
+      export FAKE_REQUIRE_LOCK=1
+    fi
+    unset DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG
+    case "$docker_environment" in
+      clean) ;;
+      remote-host) export DOCKER_HOST='ssh://remote.example' ;;
+      remote-context) export DOCKER_CONTEXT='remote-context' ;;
+      remote-config) export DOCKER_CONFIG='/tmp/remote-docker-config' ;;
+      *) fail "unknown Docker environment: $docker_environment" ;;
+    esac
     if [[ "$deploy_approval" == '__unset__' ]]; then
       unset MYPC_DEPLOY_ENABLED
     else
@@ -453,10 +530,14 @@ EOF
 
   run_probe_case() {
     local label="$1" mode="$2" operation="$3" deploy_approval="$4" network_approval="$5"
-    local initial_proxy="$6" initial_admin="$7" expected_status expected_output expected_state expected_log
-    local actual_state actual_log
+    local initial_proxy="$6" initial_admin="$7" docker_environment='clean'
+    local expected_status expected_output expected_state expected_log
+    if [[ "$#" -ge 8 ]]; then
+      docker_environment="$8"
+    fi
+    local actual_state actual_log actual_docker_calls actual_flock_log docker_call
     reset_probe_case "$initial_proxy" "$initial_admin"
-    if output="$(run_transaction_process "$operation" "$mode" "$deploy_approval" "$network_approval" 2>&1)"; then
+    if output="$(run_transaction_process "$operation" "$mode" "$deploy_approval" "$network_approval" "$docker_environment" 2>&1)"; then
       status=0
     else
       status=$?
@@ -494,7 +575,7 @@ EOF
         expected_state="$initial_proxy"$'\n'"$initial_admin"
         expected_log=''
         ;;
-      success)
+      success|remote-docker-host|remote-docker-context|remote-docker-config)
         expected_status=0
         expected_output='RESULT=changed'
         expected_state="$probe_canonical_proxy_networks"$'\n'"$probe_canonical_admin_networks"
@@ -535,6 +616,18 @@ EOF
     fi
     actual_state="$(<"$state_file")"
     actual_log="$(<"$mutation_log")"
+    actual_docker_calls="$(<"$fake_docker_calls")"
+    actual_flock_log="$(<"$flock_log")"
+    if [[ -n "$actual_docker_calls" ]]; then
+      while IFS= read -r docker_call; do
+        [[ "$docker_call" == '--host unix:///var/run/docker.sock '* ]] ||
+          fail "fake Docker $label observed a non-local endpoint"
+      done <<< "$actual_docker_calls"
+    fi
+    if [[ -n "$actual_flock_log" ]]; then
+      [ "$actual_flock_log" = '-n 9' ] ||
+        fail "fake flock $label did not receive the non-blocking FD contract"
+    fi
     [ "$actual_state" = "$expected_state" ] || fail "fake Docker ${label} ended in an unexpected state"
     [ "$actual_log" = "$expected_log" ] || fail "fake Docker ${label} recorded an unexpected mutation sequence"
     case "$label" in
@@ -547,6 +640,32 @@ EOF
     [ ! -s "$path_resolution_log" ] || fail "fake Docker ${label} resolved a command through PATH"
   }
 
+  run_lock_contention_probe() {
+    local output status actual_state actual_log actual_docker_calls actual_flock_log
+    reset_probe_case "$probe_proxy_networks" "$probe_admin_networks"
+    : > "$lock_holder"
+    if output="$(run_transaction_process --execute success true true clean 2>&1)"; then
+      status=0
+    else
+      status=$?
+    fi
+    actual_state="$(<"$state_file")"
+    actual_log="$(<"$mutation_log")"
+    actual_docker_calls="$(<"$fake_docker_calls")"
+    actual_flock_log="$(<"$flock_log")"
+    [ "$status" != 0 ] || fail 'lock contention unexpectedly succeeded'
+    [ "$actual_state" = "$probe_proxy_networks"$'\n'"$probe_admin_networks" ] ||
+      fail 'lock contention changed the measured topology'
+    [ -z "$actual_log" ] || fail 'lock contention reached a Docker mutation'
+    [ -z "$actual_docker_calls" ] || fail 'lock contention reached Docker before the lock'
+    [ ! -s "$fake_output_file" ] || fail 'lock contention produced fake Docker output'
+    [ "$actual_flock_log" = '-n 9' ] || fail 'lock contention did not use non-blocking flock'
+    printf '%s\n' "$output" | grep -Fq 'another Open WebUI network reconciliation is already running' ||
+      fail 'lock contention did not fail with the lock error'
+    rm -f "$lock_holder" "$lock_held"
+  }
+
+  run_lock_contention_probe
   run_probe_case wrong-hostname wrong-hostname --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case missing-deploy-approval success --execute __unset__ true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case wrong-deploy-approval success --execute false true "$probe_proxy_networks" "$probe_admin_networks"
@@ -561,6 +680,9 @@ EOF
   run_probe_case id-drift id-drift --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case inspect-failure inspect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case success success --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case remote-docker-host success --execute true true "$probe_proxy_networks" "$probe_admin_networks" remote-host
+  run_probe_case remote-docker-context success --execute true true "$probe_proxy_networks" "$probe_admin_networks" remote-context
+  run_probe_case remote-docker-config success --execute true true "$probe_proxy_networks" "$probe_admin_networks" remote-config
   run_probe_case connect-failure connect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case disconnect-failure disconnect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case rollback-reconnect-fail rollback-reconnect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
