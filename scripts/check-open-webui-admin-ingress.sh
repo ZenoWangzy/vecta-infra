@@ -87,11 +87,17 @@ for literal in \
   'state_is_intermediate "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS"' \
   'state_is_canonical "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS"' \
   'state_matches_baseline || ROLLBACK_FAILED=1' \
+  'run_network_mutation()' \
+  'exact measured baseline was not proven' \
+  'rc=' \
   'RESULT=changed' \
   'RESULT=noop'; do
   require_literal "$TRANSACTION" "$literal"
 done
 require_absent "$TRANSACTION" '.Config'
+require_absent "$TRANSACTION" '.Env'
+require_absent "$TRANSACTION" 'Config.Env'
+require_absent "$TRANSACTION" '2>/dev/null'
 require_absent "$TRANSACTION" 'docker compose'
 require_absent "$TRANSACTION" 'docker-compose'
 if grep -Eiq -- '(\{\{[[:space:]]*json|--format=[^[:space:]]*json|\{\{[[:space:]]*\.[[:space:]]*\}\})' "$TRANSACTION"; then
@@ -113,7 +119,7 @@ if grep -F '"$DOCKER_BIN" network inspect' "$TRANSACTION" | grep -vF -- '--forma
   fail 'transaction contains an unformatted docker network inspect'
 fi
 if grep -F '"$DOCKER_BIN" network' "$TRANSACTION" |
-  grep -Ev '"\$DOCKER_BIN" network (inspect|connect|disconnect)' >/dev/null; then
+  grep -Ev '"\$DOCKER_BIN" network (inspect|connect|disconnect)|"\$DOCKER_BIN" network "\$action"' >/dev/null; then
   fail 'transaction contains an unapproved docker network operation'
 fi
 if grep -Eiq \
@@ -158,22 +164,23 @@ for literal in \
   'canonical' \
   'ID drift' \
   'fail-closed' \
+  '唯一支持的恢复路径' \
+  '受保护事务脚本' \
+  '不得对 replacement' \
+  '自动操作' \
+  'baseline not proven' \
+  '四个 baseline IDs' \
+  '精确重验' \
   '仅预检' \
   '不是成功证据' \
   'uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --check -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true' \
   'uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true' \
-  '/usr/bin/docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console' \
-  '/usr/bin/docker inspect --type=container --format=' \
-  '/usr/bin/docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy' \
   'that actor remains unknown'; do
   require_literal "$RUNBOOK" "$literal"
 done
-if grep -nE '^[[:space:]]*docker[[:space:]]+(inspect|network)' "$RUNBOOK" >/dev/null; then
-  fail 'runbook manual Docker commands must use /usr/bin/docker'
+if grep -nE '^[[:space:]]*/usr/bin/docker[[:space:]]+(inspect|network[[:space:]]+(connect|disconnect))' "$RUNBOOK" >/dev/null; then
+  fail 'runbook contains manual Docker mutation or inspect commands'
 fi
-connect_line="$(grep -nF '/usr/bin/docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console' "$RUNBOOK" | tail -n1 | cut -d: -f1)"
-disconnect_line="$(grep -nF '/usr/bin/docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy' "$RUNBOOK" | tail -n1 | cut -d: -f1)"
-[ "$connect_line" -lt "$disconnect_line" ] || fail 'manual rollback order is not Admin then Proxy'
 
 run_fake_transaction_probe() {
   local probe_dir probe_bin path_bin test_transaction state_file mutation_log fake_output_file
@@ -202,6 +209,9 @@ run_fake_transaction_probe() {
 #!/bin/sh
 if [ "${FAKE_MODE:-}" = wrong-hostname ]; then
   printf 'not-mypc\n'
+elif [ "${FAKE_MODE:-}" = hostname-fail ]; then
+  printf 'stderr-sentinel: hostname failed\n' >&2
+  exit 96
 else
   printf 'mypc\n'
 fi
@@ -220,7 +230,8 @@ set -euo pipefail
 readonly CORE_NETWORK='openclaw-enterprise_openclaw-net'
 readonly WEBUI_NETWORK='openclaw-enterprise_open-webui-net'
 
-fail() { exit 90; }
+stderr_sentinel() { printf 'stderr-sentinel: %s\n' "$1" >&2; }
+fail() { stderr_sentinel 'unexpected fake Docker invocation'; exit 90; }
 emit() { printf '%s\n' "$1" | tee -a "$FAKE_OUTPUT"; }
 read_state() {
   IFS= read -r proxy_networks < "$FAKE_STATE"
@@ -253,7 +264,10 @@ case "${1:-}" in
       inspect)
         [[ "${3:-}" == '--format={{.Id}}' ]] || fail
         network_inspect_count="$(next_network_inspect)"
-        [[ "$FAKE_MODE" != inspect-fail || "${4:-}" != "$WEBUI_NETWORK" ]] || exit 91
+        if [[ "$FAKE_MODE" == inspect-fail && "${4:-}" == "$WEBUI_NETWORK" ]]; then
+          stderr_sentinel 'narrow inspect failed'
+          exit 91
+        fi
         case "${4:-}" in
           "$CORE_NETWORK")
             if [[ "$FAKE_MODE" == core-network-id-drift-before-mutation && "$network_inspect_count" -ge 3 ]]; then
@@ -282,11 +296,18 @@ case "${1:-}" in
               write_state "$WEBUI_NETWORK,$CORE_NETWORK" "$admin_networks"
             fi
             record connect core-id proxy-id
-            [[ "$FAKE_MODE" != connect-fail && "$FAKE_MODE" != extra-network ]] || exit 42
+            if [[ "$FAKE_MODE" == connect-fail || "$FAKE_MODE" == extra-network || "$FAKE_MODE" == rollback-disconnect-fail ]]; then
+              stderr_sentinel 'forward connect failed'
+              exit 42
+            fi
             ;;
           webui-id:admin-id)
             write_state "$proxy_networks" "$WEBUI_NETWORK,$CORE_NETWORK"
             record connect webui-id admin-id
+            if [[ "$FAKE_MODE" == rollback-reconnect-fail ]]; then
+              stderr_sentinel 'rollback reconnect failed'
+              exit 44
+            fi
             ;;
           *) fail ;;
         esac
@@ -297,11 +318,18 @@ case "${1:-}" in
           webui-id:admin-id)
             write_state "$proxy_networks" "$CORE_NETWORK"
             record disconnect webui-id admin-id
-            [[ "$FAKE_MODE" != disconnect-fail ]] || exit 43
+            if [[ "$FAKE_MODE" == disconnect-fail || "$FAKE_MODE" == rollback-reconnect-fail ]]; then
+              stderr_sentinel 'forward disconnect failed'
+              exit 43
+            fi
             ;;
           core-id:proxy-id)
             write_state "$WEBUI_NETWORK" "$admin_networks"
             record disconnect core-id proxy-id
+            if [[ "$FAKE_MODE" == rollback-disconnect-fail ]]; then
+              stderr_sentinel 'rollback disconnect failed'
+              exit 45
+            fi
             ;;
           *) fail ;;
         esac
@@ -402,6 +430,27 @@ EOF
     fi
   }
 
+  assert_stderr_sentinel() {
+    local label="$1" text="$2"
+    printf '%s\n' "$text" | grep -Fq 'stderr-sentinel:' ||
+      fail "fake Docker ${label} did not expose stderr sentinel"
+  }
+
+  assert_stderr_context() {
+    local label="$1" text="$2" expected
+    case "$label" in
+      hostname-failure) expected='FAIL: hostname command rc=96' ;;
+      inspect-failure) expected='FAIL: Docker network inspect network=openclaw-enterprise_open-webui-net rc=91' ;;
+      connect-failure) expected='FAIL: forward Docker network connect network=core-id container=proxy-id rc=42' ;;
+      disconnect-failure) expected='FAIL: forward Docker network disconnect network=webui-id container=admin-id rc=43' ;;
+      rollback-reconnect-fail) expected='FAIL: rollback Docker network connect network=webui-id container=admin-id rc=44' ;;
+      rollback-disconnect-fail) expected='FAIL: rollback Docker network disconnect network=core-id container=proxy-id rc=45' ;;
+      *) fail "unknown stderr context case: $label" ;;
+    esac
+    printf '%s\n' "$text" | grep -Fq -- "$expected" ||
+      fail "fake Docker ${label} did not expose operation context and rc"
+  }
+
   run_probe_case() {
     local label="$1" mode="$2" operation="$3" deploy_approval="$4" network_approval="$5"
     local initial_proxy="$6" initial_admin="$7" expected_status expected_output expected_state expected_log
@@ -417,7 +466,13 @@ EOF
       assert_safe_probe_output "$probe_text"
     done
     case "$label" in
-      wrong-hostname|missing-deploy-approval|wrong-deploy-approval|missing-network-approval|wrong-network-approval|id-drift|inspect-failure|admin-id-drift-before-mutation|core-network-id-drift-before-mutation)
+      hostname-failure|inspect-failure|connect-failure|disconnect-failure|rollback-reconnect-fail|rollback-disconnect-fail)
+        assert_stderr_sentinel "$label" "$output"
+        assert_stderr_context "$label" "$output"
+        ;;
+    esac
+    case "$label" in
+      initial-missing|initial-extra|initial-in-progress|hostname-failure|wrong-hostname|missing-deploy-approval|wrong-deploy-approval|missing-network-approval|wrong-network-approval|id-drift|inspect-failure|admin-id-drift-before-mutation|core-network-id-drift-before-mutation)
         expected_status='nonzero'
         expected_state="$initial_proxy"$'\n'"$initial_admin"
         expected_log=''
@@ -455,6 +510,16 @@ EOF
         expected_state="$probe_proxy_networks"$'\n'"$probe_admin_networks"
         expected_log=$'connect core-id proxy-id\ndisconnect webui-id admin-id\nconnect webui-id admin-id\ndisconnect core-id proxy-id'
         ;;
+      rollback-reconnect-fail)
+        expected_status='nonzero'
+        expected_state="$probe_canonical_proxy_networks"$'\n'"$probe_admin_networks"
+        expected_log=$'connect core-id proxy-id\ndisconnect webui-id admin-id\nconnect webui-id admin-id'
+        ;;
+      rollback-disconnect-fail)
+        expected_status='nonzero'
+        expected_state="$probe_proxy_networks"$'\n'"$probe_admin_networks"
+        expected_log=$'connect core-id proxy-id\ndisconnect core-id proxy-id'
+        ;;
       unexpected-extra-network)
         expected_status='nonzero'
         expected_state="${probe_canonical_proxy_networks},unexpected"$'\n'"$probe_admin_networks"
@@ -472,6 +537,13 @@ EOF
     actual_log="$(<"$mutation_log")"
     [ "$actual_state" = "$expected_state" ] || fail "fake Docker ${label} ended in an unexpected state"
     [ "$actual_log" = "$expected_log" ] || fail "fake Docker ${label} recorded an unexpected mutation sequence"
+    case "$label" in
+      rollback-reconnect-fail|rollback-disconnect-fail)
+        if printf '%s\n' "$output" | grep -Fq 'baseline restored'; then
+          fail "fake Docker ${label} incorrectly claimed baseline restored"
+        fi
+        ;;
+    esac
     [ ! -s "$path_resolution_log" ] || fail "fake Docker ${label} resolved a command through PATH"
   }
 
@@ -480,6 +552,10 @@ EOF
   run_probe_case wrong-deploy-approval success --execute false true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case missing-network-approval success --execute true __unset__ "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case wrong-network-approval success --execute true false "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case initial-missing success --execute true true '' "$probe_admin_networks"
+  run_probe_case initial-extra success --execute true true "$probe_proxy_networks" "${probe_admin_networks},unexpected"
+  run_probe_case initial-in-progress success --execute true true "$probe_canonical_proxy_networks" "$probe_admin_networks"
+  run_probe_case hostname-failure hostname-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case check-temporary success --check __unset__ __unset__ "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case execute-canonical success --execute true true "$probe_canonical_proxy_networks" "$probe_canonical_admin_networks"
   run_probe_case id-drift id-drift --execute true true "$probe_proxy_networks" "$probe_admin_networks"
@@ -487,6 +563,8 @@ EOF
   run_probe_case success success --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case connect-failure connect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case disconnect-failure disconnect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case rollback-reconnect-fail rollback-reconnect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
+  run_probe_case rollback-disconnect-fail rollback-disconnect-fail --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case unexpected-extra-network extra-network --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case admin-id-drift-before-mutation admin-id-drift-before-mutation --execute true true "$probe_proxy_networks" "$probe_admin_networks"
   run_probe_case core-network-id-drift-before-mutation core-network-id-drift-before-mutation --execute true true "$probe_proxy_networks" "$probe_admin_networks"

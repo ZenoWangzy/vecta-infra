@@ -67,23 +67,41 @@ rollback_plan() {
 }
 
 inspect_container() {
-  local container="$1" output container_id network_names=''
-  output="$("$DOCKER_BIN" inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' "$container" 2>/dev/null)" || return 1
+  local container="$1" output container_id network_names='' rc
+  if output="$("$DOCKER_BIN" inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' "$container")"; then
+    :
+  else
+    rc=$?
+    printf 'FAIL: Docker inspect container=%s rc=%d\n' "$container" "$rc" >&2
+    return "$rc"
+  fi
   if [[ "$output" == *$'\n'* ]]; then
     container_id="${output%%$'\n'*}"
     network_names="${output#*$'\n'}"
   else
     container_id="$output"
   fi
-  if [[ -z "$container_id" || "$container_id" == *[[:space:]]* ]]; then return 1; fi
+  if [[ -z "$container_id" || "$container_id" == *[[:space:]]* ]]; then
+    printf 'FAIL: Docker inspect container=%s returned invalid narrow output\n' "$container" >&2
+    return 1
+  fi
   INSPECT_CONTAINER_ID="$container_id"
   INSPECT_NETWORKS="$(normalize_networks "$network_names")"
 }
 
 inspect_network() {
-  local network="$1" output
-  output="$("$DOCKER_BIN" network inspect --format='{{.Id}}' "$network" 2>/dev/null)" || return 1
-  if [[ -z "$output" || "$output" == *$'\n'* || "$output" == *[[:space:]]* ]]; then return 1; fi
+  local network="$1" output rc
+  if output="$("$DOCKER_BIN" network inspect --format='{{.Id}}' "$network")"; then
+    :
+  else
+    rc=$?
+    printf 'FAIL: Docker network inspect network=%s rc=%d\n' "$network" "$rc" >&2
+    return "$rc"
+  fi
+  if [[ -z "$output" || "$output" == *$'\n'* || "$output" == *[[:space:]]* ]]; then
+    printf 'FAIL: Docker network inspect network=%s returned invalid narrow output\n' "$network" >&2
+    return 1
+  fi
   INSPECT_NETWORK_ID="$output"
 }
 
@@ -114,6 +132,7 @@ ids_match_baseline() {
 }
 
 state_matches_baseline() {
+  # Only the four baseline IDs and exact baseline topology prove restoration.
   ids_match_baseline && [[ "$CURRENT_PROXY_NETWORKS" == "$BASE_PROXY_NETWORKS" &&
     "$CURRENT_ADMIN_NETWORKS" == "$BASE_ADMIN_NETWORKS" ]]
 }
@@ -128,8 +147,14 @@ assert_current_state() {
 }
 
 require_hostname() {
-  local actual
-  actual="$("$HOSTNAME_BIN" 2>/dev/null)" || { fail 'unable to read the target hostname'; return 1; }
+  local actual rc
+  if actual="$("$HOSTNAME_BIN")"; then
+    :
+  else
+    rc=$?
+    printf 'FAIL: hostname command rc=%d\n' "$rc" >&2
+    return "$rc"
+  fi
   [[ "$actual" == "$EXPECTED_HOSTNAME" ]] || { fail 'refusing reconciliation unless hostname is exactly mypc'; return 1; }
 }
 
@@ -138,20 +163,27 @@ require_approvals() {
   [[ "${MYPC_NETWORK_RECONCILE_APPROVAL:-}" == 'true' ]] || { fail 'refusing execute without MYPC_NETWORK_RECONCILE_APPROVAL=true'; return 1; }
 }
 
+run_network_mutation() {
+  local phase="$1" action="$2" network="$3" container="$4" rc
+  if "$DOCKER_BIN" network "$action" "$network" "$container" >/dev/null; then
+    return 0
+  else
+    rc=$?
+    printf 'FAIL: %s Docker network %s network=%s container=%s rc=%d\n' \
+      "$phase" "$action" "$network" "$container" "$rc" >&2
+    return "$rc"
+  fi
+}
+
 rollback_refresh() { inspect_state && ids_match_baseline; }
 
 rollback_reconnect_admin() {
-  local rc
   rollback_refresh || return 1
   state_is_canonical "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS" || {
     fail 'rollback Admin reconnect requires exact canonical state'
     return 1
   }
-  "$DOCKER_BIN" network connect "$BASE_WEBUI_NETWORK_ID" "$BASE_ADMIN_CONTAINER_ID" >/dev/null 2>&1
-  rc=$?
-  if (( rc != 0 )); then
-    printf 'FAIL: rollback Admin reconnect returned non-zero; inspecting resulting state\n' >&2
-  fi
+  run_network_mutation rollback connect "$BASE_WEBUI_NETWORK_ID" "$BASE_ADMIN_CONTAINER_ID" || return 1
   rollback_refresh || return 1
   state_is_intermediate "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS" || {
     fail 'rollback Admin reconnect did not produce exact intermediate state'
@@ -160,7 +192,6 @@ rollback_reconnect_admin() {
 }
 
 rollback_disconnect_proxy() {
-  local rc
   rollback_refresh || return 1
   if state_is_temporary "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS"; then
     return 0
@@ -169,11 +200,7 @@ rollback_disconnect_proxy() {
     fail 'rollback Proxy disconnect requires exact intermediate state'
     return 1
   }
-  "$DOCKER_BIN" network disconnect "$BASE_CORE_NETWORK_ID" "$BASE_PROXY_CONTAINER_ID" >/dev/null 2>&1
-  rc=$?
-  if (( rc != 0 )); then
-    printf 'FAIL: rollback Proxy disconnect returned non-zero; inspecting resulting state\n' >&2
-  fi
+  run_network_mutation rollback disconnect "$BASE_CORE_NETWORK_ID" "$BASE_PROXY_CONTAINER_ID" || return 1
   rollback_refresh || return 1
   state_is_temporary "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS" || {
     fail 'rollback Proxy disconnect did not produce exact temporary state'
@@ -192,26 +219,26 @@ rollback() {
 
   ROLLBACK_FAILED=0
   rollback_refresh || {
-    printf 'FAIL: rollback stopped during initial ID revalidation\n' >&2
+    printf 'FAIL: rollback stopped during initial ID revalidation; exact measured baseline was not proven\n' >&2
     exit 1
   }
   plan="$(rollback_plan "$CURRENT_PROXY_NETWORKS" "$CURRENT_ADMIN_NETWORKS")" || {
-    printf 'FAIL: rollback stopped on an unexpected exact network state\n' >&2
+    printf 'FAIL: rollback stopped on an unexpected exact network state; exact measured baseline was not proven\n' >&2
     exit 1
   }
   while IFS= read -r operation; do
     [[ -n "$operation" ]] || continue
     case "$operation" in
       reconnect-admin) rollback_reconnect_admin || {
-        printf 'FAIL: rollback stopped before or after reconnecting Admin\n' >&2
+        printf 'FAIL: rollback stopped before or after reconnecting Admin; exact measured baseline was not proven\n' >&2
         exit 1
       } ;;
       disconnect-proxy) rollback_disconnect_proxy || {
-        printf 'FAIL: rollback stopped before or after disconnecting Proxy\n' >&2
+        printf 'FAIL: rollback stopped before or after disconnecting Proxy; exact measured baseline was not proven\n' >&2
         exit 1
       } ;;
       *)
-        printf 'FAIL: rollback produced an unknown operation\n' >&2
+        printf 'FAIL: rollback produced an unknown operation; exact measured baseline was not proven\n' >&2
         exit 1
         ;;
     esac
@@ -257,9 +284,9 @@ run_execute() {
   assert_current_state "$BASE_PROXY_NETWORKS" "$BASE_ADMIN_NETWORKS"
   # ponytail: Docker has no atomic inspect+connect; revalidate immediately before each mutation.
   MUTATION_STARTED=1
-  "$DOCKER_BIN" network connect "$BASE_CORE_NETWORK_ID" "$BASE_PROXY_CONTAINER_ID" >/dev/null 2>&1
+  run_network_mutation forward connect "$BASE_CORE_NETWORK_ID" "$BASE_PROXY_CONTAINER_ID"
   assert_current_state "$CANONICAL_PROXY_NETWORKS" "$TEMP_ADMIN_NETWORKS"
-  "$DOCKER_BIN" network disconnect "$BASE_WEBUI_NETWORK_ID" "$BASE_ADMIN_CONTAINER_ID" >/dev/null 2>&1
+  run_network_mutation forward disconnect "$BASE_WEBUI_NETWORK_ID" "$BASE_ADMIN_CONTAINER_ID"
   assert_current_state "$CANONICAL_PROXY_NETWORKS" "$CANONICAL_ADMIN_NETWORKS"
   trap - ERR INT TERM
   printf 'RESULT=changed\n'

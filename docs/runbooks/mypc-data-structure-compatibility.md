@@ -198,15 +198,14 @@ uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i
 uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
 ```
 
-Manual rollback is allowed only for a measured temporary baseline; canonical
-is a no-op. Compare the narrow inspect IDs with the saved baseline before each
-operation. If an ID drifts, stop and do not run either mutation. When rollback
-is required, use this exact order and inspect after each command; a non-zero
-command does not prove that membership was unchanged:
+唯一支持的恢复路径是由 playbook 调用的受保护事务脚本
+`scripts/reconcile-open-webui-admin-network.sh --execute`。禁止按
+network/container 名称手工执行 rollback mutation，也不得对 replacement
+自动操作。脚本只允许从精确 temporary baseline 进入 transaction；canonical
+是 no-op。
 
-```bash
-/usr/bin/docker network connect openclaw-enterprise_open-webui-net openclaw-admin-console
-/usr/bin/docker inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' openclaw-admin-console
-/usr/bin/docker network disconnect openclaw-enterprise_openclaw-net openclaw-webui-proxy
-/usr/bin/docker inspect --type=container --format='{{.Id}}{{range $name, $value := .NetworkSettings.Networks}}{{printf "\n%s" $name}}{{end}}' openclaw-webui-proxy
-```
+脚本在 hostname、窄格式 inspect、topology、forward mutation 或 rollback
+failure 时 fail-closed：停止自动操作，标记 baseline not proven，交给人工
+处置。只有四个 baseline IDs（Core/WebUI network、Proxy/Admin container）与
+保存的 baseline topology 都通过精确重验，才可声称 restored；任一 ID drift
+都禁止自动恢复 replacement。
