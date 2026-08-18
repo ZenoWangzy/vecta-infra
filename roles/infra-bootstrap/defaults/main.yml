@@ -11,3 +11,12 @@ infra_directories:
   - "{{ remote_dir }}/backups"
   - "{{ remote_dir }}/deploy"
   - "{{ remote_dir }}/deploy/instances"
+
+infra_buildx_version: v0.34.1
+infra_buildx_linux_amd64_sha256: >-
+  f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b
+infra_buildx_download_url: >-
+  https://github.com/docker/buildx/releases/download/{{ infra_buildx_version }}/buildx-{{ infra_buildx_version }}.linux-amd64
+infra_buildx_controller_asset_path: >-
+  /tmp/vecta-infra-buildx-{{ infra_buildx_version }}.linux-amd64
+infra_buildx_plugin_path: /usr/local/lib/docker/cli-plugins/docker-buildx

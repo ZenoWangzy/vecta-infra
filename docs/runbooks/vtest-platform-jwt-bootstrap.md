@@ -1,13 +1,35 @@
-# vtest 平台 JWT bootstrap 交接
+# Retired: vtest 平台 JWT bootstrap 交接
+
+> Status: retired 2026-08-17. Historical handoff only; the vtest workflow,
+> bootstrap, and control-plane entries were removed. Do not use this document
+> as a deployment entry.
+
+## 退役合并顺序
+
+1. VectA hotfix 必须先合并，发布一个已经删除全部 infra workflow caller 的
+   状态。
+2. 确认该 caller-free 状态后，`vecta-infra` 的永久删除提交才能合并。
+
+当前 dirty worktree 或未发布分支中仍存在 caller，不构成恢复兼容 workflow、
+wrapper、fallback 或 runner 的理由。
+
+## 生产镜像构建边界
+
+保留的 production image build 只能从 `vecta-infra` main 人工触发，输入必须是
+当前 VectA main HEAD 的完整 SHA。当前授权边界是具有仓库写权限的触发者；
+production environment 只作审计标签，没有 reviewer 或 protection gate，所用
+secret 仍为 repo-level。成功 run 只构成独立的 exact-SHA image-build 证据，不
+构成合并、部署或生产健康证据，也不改变上面的退役合并顺序。
 
 ## 已完成
 
 - Vecta PR `#454` 已合并到 `develop`（`910ca553`）。
 - 合并后的 Vecta 验证 run `31621054632` 已完成有 jobs 的 startup、deploy 和
   verify 检查；caller 不再映射旧的 bootstrap 输入。
-- 因此已删除 reusable workflow 中仅用于过渡的四个可选声明，并删除对应的
-  bootstrap contract test。vtest deploy 继续在 infra workflow 内为每次运行
-  生成一次性平台 JWT；不恢复旧 token 转发，也不填入任何 secret 值。
+- 因此已删除退役 workflow 中仅用于过渡的四个可选声明，并删除对应的 bootstrap
+  contract test。vtest deploy path is retired; do not restore old
+  token forwarding or replace it with a compatibility wrapper. No secret value
+  is retained here.
 
 ## 事故记录
 

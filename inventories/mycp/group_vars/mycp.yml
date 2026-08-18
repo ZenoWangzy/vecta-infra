@@ -1,7 +1,7 @@
-# mycp (prod) inventory — mirrors vtest structure. Set TODO values before first deploy.
+# mycp production inventory. Set TODO values before first deploy.
 # Third-party infra images (pinned, not affected by deploy_sha).
 # Keep these pointed at the local Nexus Docker registry; sync upstream sources
-# into Nexus before running infra/open-webui/openclaw/search roles.
+# into Nexus before running the remaining approved infrastructure roles.
 postgres_image: "{{ nexus_docker_registry }}/pgvector/pgvector:pg16"
 redis_image: "{{ nexus_docker_registry }}/library/redis:7-alpine"
 minio_image: "{{ nexus_docker_registry }}/minio/minio:RELEASE.2024-01-31T20-20-33Z"

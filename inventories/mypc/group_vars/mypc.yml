@@ -1,4 +1,4 @@
-# mypc (prod) inventory - mirrors vtest structure. Set TODO values before first deploy.
+# mypc production inventory. Set TODO values before first deploy.
 # Third-party infra images (pinned, not affected by deploy_sha).
 # Keep these pointed at the production-local Nexus Docker registry. Sync the
 # upstream source images into Nexus before any approved role adopts a service.
@@ -108,7 +108,7 @@ rag_service_backup_root: /data/ocee/backups/app-adoption
 rag_service_allow_image_upgrade: false
 
 # Existing production bind paths. These are compatibility inputs for gradual
-# Ansible recreation; do not replace them with vtest defaults during cutover.
+# Ansible recreation; do not replace them with non-production defaults during cutover.
 fleet_gateway_instances_host_path: /data/ocee/data/instances
 fleet_gateway_instances_container_path: /app/data/instances
 fleet_gateway_container_data_dir: /app/data/instances
@@ -117,7 +117,7 @@ fleet_gateway_knowledge_host_path: /data/ocee/packages/rag-service/knowledge
 fleet_gateway_templates_host_path: /data/ocee/templates
 fleet_gateway_shared_plugins_host_path: /data/ocee/deploy/instances/shared/plugins
 fleet_gateway_litellm_config_host_path: /data/ocee/infra/litellm/config.yaml
-# Fleet is serving the active release bundle, not the vtest-style workspace
+# Fleet is serving the active release bundle, not a transient workspace
 # path. Keep this bind exact during a Fleet-only configuration recreation.
 fleet_gateway_fruit_pack_host_path: /data/ocee-releases/fruit-0d11ab0b/packages/fruit-industry-pack
 fleet_gateway_container_name: openclaw-fleet-gateway
@@ -136,7 +136,7 @@ fleet_gateway_memory: 2g
 fleet_gateway_cpus: "1.5"
 fleet_gateway_backup_root: /data/ocee/backups/app-adoption
 # System alerts are platform-root diagnostics, not a generic L4 capability.
-# Keep this explicit and aligned with the approved vtest root identities.
+# Keep this explicit and aligned with the approved production root identities.
 platform_root_employee_ids:
   - IT001
   - admin@matrix.com
@@ -168,7 +168,7 @@ open_webui_nginx_config_path: /data/ocee/infra/open-webui/nginx.conf
 docker_network: "openclaw-enterprise_openclaw-net"
 open_webui_network: "openclaw-enterprise_open-webui-net"
 
-# Nexus / registry endpoints - production-local only. Do not point mypc at vtest Nexus.
+# Nexus / registry endpoints - production-local only.
 nexus_base_url: "http://127.0.0.1:8081"
 nexus_docker_registry: "127.0.0.1:8082"
 
@@ -185,10 +185,6 @@ deploy_audit_enabled: false
 deploy_smoke_enabled: false
 nexus_manifest_check_enabled: false
 nexus_docker_login_enabled: false
-# The shared deploy role evaluates this even for app-only production cutovers.
-# Keep migration writes disabled unless an explicitly approved migration run
-# overrides it.
-vtest_allow_migrate: "0"
 deploy_image_tags:
   a2a-router: cache-3134bcb4484a
   admin-console: cache-19ca33c7e758
@@ -220,8 +216,6 @@ wechat_contact_sync_log_options:
 wechat_contact_sync_memory: 128m
 wechat_contact_sync_cpus: "0.25"
 baidu_search_image: "{{ nexus_docker_registry }}/baidu-search-service:{{ deploy_image_tags['baidu-search-service'] }}"
-fruit_vtest_enabled: false
-
 # First app-only recreation stage estimated from live mypc risk. These services
 # have no production data mounts and can be tested before Fleet/RAG/Channel/WeCom.
 # Keep mypc_deploy_enabled=false until an explicit cutover run.
@@ -235,22 +229,6 @@ admin_console_published_ports:
   - "5173:5173"
 directory_service_published_ports:
   - "8001:8001"
-
-# The shared deploy role still uses the historical vtest_* variable names for
-# image preflight and write quiesce lists. Keep mypc values app-only here.
-vtest_required_image_repos:
-  - fleet-gateway
-  - channel-gateway
-  - a2a-router
-  - rag-service
-  - directory-service
-  - admin-console
-  - wechat-contact-sync
-  - baidu-search-service
-vtest_write_quiesce_services:
-  - fleet-gateway
-  - channel-gateway
-  - wechat-contact-sync
 
 # Build dependency/cache endpoints. The mypc build workflow uses the same names.
 npm_registry_url: "{{ nexus_base_url }}/repository/{{ nexus_npm_proxy_repo | default('vecta-npm-proxy') }}/"

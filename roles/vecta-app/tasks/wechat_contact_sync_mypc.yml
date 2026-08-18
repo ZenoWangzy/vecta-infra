@@ -1,7 +1,7 @@
 ---
-# This is intentionally separate from the vtest task. mypc runs the legacy
-# container name and has production-only channel credentials that must be
-# retained from the live container rather than reconstructed from controller env.
+# mypc runs the legacy container name and has production-only channel
+# credentials that must be retained from the live container rather than
+# reconstructed from controller env.
 - name: Capture mypc WeCom contact-sync container contract
   ansible.builtin.command:
     argv:

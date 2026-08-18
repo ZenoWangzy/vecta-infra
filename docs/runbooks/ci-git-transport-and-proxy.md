@@ -1,17 +1,47 @@
 # CI Git Transport And Proxy Contract
 
-> Origin: 2026-08-07 incident — vtest CI checkout wedged indefinitely because a
-> runner-level `insteadOf` rewrite silently switched fetches to direct ssh.
-> Full incident write-up: `vecta/lessons/full/ci-github-actions.md`
-> (insteadof-hijacks-checkout).
+> Status: active only for the mypc production-build runner and production
+> checkout. The former integration-runner path is retired.
+
+The image build is manually dispatched from `vecta-infra` main with the full
+current VectA main HEAD SHA. The dispatching repository writer is the current
+authorization boundary. The `production` environment is an audit label with no
+reviewer or protection gate, and the referenced secrets remain repository-level.
+The result is independent exact-SHA image-build evidence, not a deployment or
+production-health result.
+
+## Buildx host provisioning
+
+The `buildx` Ansible tag downloads Buildx on the controller, verifies the
+official checksum, and copies only the plugin to
+`/usr/local/lib/docker/cli-plugins/docker-buildx` on mypc. The managed host does
+not connect to GitHub, and this tag does not call Docker or touch containers,
+images, Nexus, or registry configuration.
+
+Check the isolated tag without applying it:
+
+```bash
+uvx --from ansible-core ansible-playbook -i inventories/mypc/hosts.ini \
+  playbooks/infra.yml --limit mypc --tags buildx --check \
+  -e mypc_deploy_enabled=true
+```
+
+After review, apply only that tag:
+
+```bash
+uvx --from ansible-core ansible-playbook -i inventories/mypc/hosts.ini \
+  playbooks/infra.yml --limit mypc --tags buildx \
+  -e mypc_deploy_enabled=true
+```
 
 ## Transport design
 
-All GitHub git traffic from CN-hosted runners uses one of two paths:
+GitHub git traffic in the remaining CN-hosted production paths uses one of two
+paths:
 
 | Path | Used by | Safeguards that apply |
 |---|---|---|
-| HTTPS via squid proxy (`geraldsynnas.ddns.net:8888`) | CI checkout/fetch on vtest and mypc runners | token auth, proxy probe + dead-proxy fallback, `http.lowSpeedLimit/lowSpeedTime` |
+| HTTPS via squid proxy (`geraldsynnas.ddns.net:8888`) | checkout/fetch on the mypc production-build runner | token auth, proxy probe + dead-proxy fallback, `http.lowSpeedLimit/lowSpeedTime` |
 | ssh direct (`github.com:22`) | operator pushes; prod `/data/ocee` fetches | none of the above; ssh keepalives do not detect a throttled-but-alive stream |
 
 GFW intermittently throttles bulk data on long-lived port-22 connections while
@@ -20,16 +50,6 @@ therefore stall at 0 B/s forever without erroring. The HTTPS+proxy path is the
 only one with working stall protection, so **CI fetches must never leave it**.
 
 ## Per-host contract
-
-### vtest runner (`ubuntu` user)
-
-- Global gitconfig is shared between CI and interactive use and is part of the
-  CI contract. Fetch stays HTTPS; push-over-ssh is expressed only as:
-  `url.git@github.com:ZenoWangzy/vecta.pushInsteadOf=https://github.com/ZenoWangzy/vecta`
-- Never add a plain `insteadOf` for a GitHub https URL — it rewrites checkout
-  to ssh and bypasses proxy, token, and every `http.*` safeguard at once.
-- `http.lowSpeedLimit=1024` / `http.lowSpeedTime=30` stay set globally and are
-  also injected by every `Configure git proxy` workflow step.
 
 ### mypc prod-build runner (`github-runner` user)
 

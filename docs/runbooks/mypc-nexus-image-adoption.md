@@ -14,38 +14,7 @@ approval.
   per-user runtime volumes, and current ingress owner under their existing
   production owner until a service-specific adoption phase is approved.
 
-## mypc / vtest Data-Structure Compatibility
-
-The production host is not a copy of vtest. Treat vtest as the Ansible target
-shape and mypc as the stateful source of truth.
-
-Observed differences on 2026-07-18:
-
-- Compose ownership differs. vtest has active `/data/ocee/docker-compose.yml`
-  and `/data/ocee/docker-compose.override.yml`; mypc live containers reference
-  those paths in labels, but `/data/ocee/docker-compose.yml` was absent. Fleet
-  also references a backup Compose bundle and a fruit runtime overlay.
-- Image shape differs. vtest app containers run Nexus SHA tags; mypc app
-  containers still run local cache tags such as `openclaw-enterprise-*` and
-  `vecta-channel-gateway:latest`, mirrored to Nexus only as `latest` and
-  `cache-<image-id>` bridge tags.
-- Stateful mounts differ. mypc PostgreSQL, Redis, MinIO, Open WebUI,
-  OnlyOffice, and RAG cache use existing production Docker volumes; vtest uses
-  shorter Ansible-created names or bind paths in several places.
-- Application bind paths differ. mypc Fleet keeps `/data/ocee/data/instances`,
-  `/data/ocee/templates`, `/data/ocee/deploy/instances/shared/plugins`,
-  `/data/ocee/packages/rag-service/knowledge`, and the fruit industry pack bind
-  mounted. vtest Fleet uses `/data/ocee/deploy` and upload paths.
-- Open WebUI differs. mypc mounts production wrapper/patch paths under
-  `/data/ocee/infra/open-webui`; vtest currently uses the plain data volume and
-  infra-rendered nginx config.
-- Database shape differs. mypc has 103 public tables plus `drizzle`, `fruit`,
-  and `fruit_meta` schemas; vtest has 81 public tables and newer fruit
-  processing tables. mypc also has production-only ontology/entity/workflow,
-  share-link, invitation, and conversation artifact tables. Do not replay the
-  vtest schema wholesale into production.
-
-The mypc inventory now pins the existing production bind paths so the Ansible
+The mypc inventory pins the existing production bind paths so the Ansible
 roles can render a production-compatible container spec before any runtime
 replacement is approved.
 
@@ -87,11 +56,11 @@ replacement is approved.
 Third-party and runtime images keep pinned tags and are synced into Nexus before
 the corresponding service is eligible for adoption.
 
-GitHub Actions must not reuse one shared Nexus admin secret across vtest and
-mypc. The mypc production-image workflow reads the repository secret
+The mypc production-image workflow reads the repository secret
 `MYPC_NEXUS_ADMIN_PASSWORD` and maps it to the job-local environment variable
-`NEXUS_ADMIN_PASSWORD` for Docker login and Nexus API calls. vtest workflows use
-`VTEST_NEXUS_ADMIN_PASSWORD` separately.
+`NEXUS_ADMIN_PASSWORD` for Docker login and Nexus API calls. All secrets used by
+this workflow remain repository-level. Its `production` environment is an audit
+label and currently has no reviewer or protection gate.
 
 Current mypc sync status from 2026-07-18:
 
@@ -125,8 +94,6 @@ The mypc inventory intentionally keeps:
 
 - `mypc_stateful_services_enabled: false`
 - `wren_engine_enabled: false`
-- `fruit_vtest_enabled: false`
-
 ## Application Adoption Evidence
 
 ### WeCom Contact Sync - 2026-07-18
@@ -199,7 +166,7 @@ root list before it reports Fleet healthy.
 
 The live Fleet fruit-pack bind is
 `/data/ocee-releases/fruit-0d11ab0b/packages/fruit-industry-pack`, not the
-vtest-style `/data/ocee/packages/fruit-industry-pack` path. Inventory must
+legacy `/data/ocee/packages/fruit-industry-pack` path. Inventory must
 retain the active release bind exactly; the mount guard blocks the recreation
 before backup or container replacement when those paths diverge.
 
@@ -505,9 +472,10 @@ persist approval in the default inventory.
 - Do not run `playbooks/infra.yml` against mypc with
   `mypc_stateful_services_enabled=true` unless
   `mypc_stateful_service_allowlist` names exactly the approved service.
-- Do not reuse vtest Nexus for mypc. The mypc registry is production-local.
+- Use only the mypc production-local registry.
 - Do not prune production data volumes as part of image-cache cleanup.
-- Do not switch tags such as LiteLLM or Hermes to vtest values unless that is a
+- Do not switch tags such as LiteLLM or Hermes to unreviewed non-production
+  values unless that is a
   reviewed production release decision.
 - Do not flatten/import `alpine/openclaw:2026.5.18` just to force it into Nexus;
   that would create a behaviorally different runtime image.

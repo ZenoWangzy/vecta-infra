@@ -2,23 +2,21 @@
 
 Date: 2026-07-18
 
-This report records the read-only comparison between mypc production and vtest.
-It defines the compatibility boundary for gradually recreating production under
-Ansible without moving or replacing production data.
+This report records the read-only structure of mypc production. It defines the
+compatibility boundary for gradually managing production through Ansible
+without moving or replacing production data.
 
 ## Summary
 
-mypc is not a vtest clone. vtest is the cleaner Ansible/Nexus target shape;
-mypc is the production state source. The migration must make Ansible compatible
-with mypc first, then recreate services one at a time.
+mypc is the production state source. Ansible must remain compatible with its
+existing data, paths, network attachments, ports, and service ownership before
+any service is recreated.
 
-Do not normalize production by creating new vtest-style volumes or paths.
+Do not normalize production by creating replacement volumes or paths.
 
 ## Container Shape
 
-vtest runs most VectA services from `127.0.0.1:8082/...:<full-sha>` images and
-has an Ansible-managed ClickHouse container. mypc currently runs the main app
-containers from local cache tags:
+mypc currently runs the main app containers from local cache tags:
 
 - `openclaw-enterprise-fleet-gateway`
 - `openclaw-enterprise-rag-service`
@@ -37,14 +35,14 @@ tags.
 
 Preserve these mypc Docker volumes exactly:
 
-| Service | mypc production owner | vtest shape |
-|---|---|---|
-| PostgreSQL | `openclaw-enterprise_postgres_data` | `postgres_data` |
-| Redis | `140f0b143751894f82ec1b1ea8e9401051d45bf8fe031bfdffbb5e8557162151` | `redis_data` |
-| MinIO | `openclaw-enterprise_minio-data` | `/data/ocee/data/minio` bind |
-| Open WebUI | `openclaw-enterprise_open-webui-data` plus wrapper/patch binds | `openclaw-open-webui-data` |
-| OnlyOffice | `openclaw-enterprise_onlyoffice-logs`, `openclaw-enterprise_onlyoffice-data`, plus anonymous internal service volumes | `onlyoffice_logs`, `onlyoffice_data`, anonymous internal volumes |
-| RAG cache | `openclaw-enterprise_rag_model_cache` mounted at `/home/node/.cache/huggingface` | `rag_model_cache` mounted at `/app/model_cache` |
+| Service | mypc production owner or mount |
+|---|---|
+| PostgreSQL | `openclaw-enterprise_postgres_data` |
+| Redis | `140f0b143751894f82ec1b1ea8e9401051d45bf8fe031bfdffbb5e8557162151` |
+| MinIO | `openclaw-enterprise_minio-data` |
+| Open WebUI | `openclaw-enterprise_open-webui-data` plus wrapper/patch binds |
+| OnlyOffice | `openclaw-enterprise_onlyoffice-logs`, `openclaw-enterprise_onlyoffice-data`, plus anonymous internal service volumes |
+| RAG cache | `openclaw-enterprise_rag_model_cache` mounted at `/home/node/.cache/huggingface` |
 
 No mypc ClickHouse production container was found in the production inspection.
 Do not create one as part of app recreation unless a separate data-owner decision
@@ -72,18 +70,13 @@ The mypc inventory now carries these paths explicitly.
 
 ## Database Shape
 
-Read-only table inventory found:
-
-- mypc: `public` 103 tables, `fruit` 8 tables, `drizzle` 1 table,
-  `fruit_meta` 1 table.
-- vtest: `public` 81 tables, `fruit` 14 tables, `fruit_meta` 1 table.
-
-mypc has production-only tables including ontology/entity/wiki/workflow,
-share-link, invitation, and conversation artifact tables. vtest has newer fruit
-processing tables absent from mypc.
+Read-only mypc inventory found `public` 103 tables, `fruit` 8 tables,
+`drizzle` 1 table, and `fruit_meta` 1 table. Production-only tables include
+ontology/entity/wiki/workflow, share-link, invitation, and conversation
+artifact tables.
 
 Compatibility rule: production schema work must be additive and reviewed. Do not
-replay the vtest schema or migration ledger wholesale into production.
+replay an external schema or migration ledger wholesale into production.
 
 ## Compose Ownership Blocker
 
@@ -118,8 +111,9 @@ generated from live `docker inspect` plus backup Compose evidence.
 
 ## Implemented Compatibility Controls
 
-- `deploy_image_tag_requires_full_sha` defaults to true for vtest. mypc sets it
-  to false only for the explicit `local-cache-20260718` bridge.
+- mypc sets `deploy_image_tag_requires_full_sha=false` only for the explicit
+  `local-cache-20260718` bridge; repository-writer-initiated production image
+  builds use the full current VectA main HEAD SHA.
 - `deploy_image_tags` maps each mypc app repo to the exact mirrored
   `cache-<image-id>` tag.
 - `vecta_app_enabled_services` allows the VectA app role to recreate only the
@@ -131,7 +125,7 @@ generated from live `docker inspect` plus backup Compose evidence.
 
 ## First-Stage Cutover Evidence
 
-Executed on 2026-07-18 with `mypc_deploy_enabled=true`, `vtest_allow_migrate=0`,
+Executed on 2026-07-18 with `mypc_deploy_enabled=true`,
 `--tags search,vecta-app`, and the mypc service allowlists.
 
 Recreated from mypc Nexus cache tags:
@@ -171,7 +165,7 @@ thin playbook calls one transaction script, whose hostname, container names,
 and network names are hardcoded. It accepts only the exact temporary state
 (Proxy on WebUI; Admin on core plus WebUI) or exact canonical state (Proxy on
 core plus WebUI; Admin on core). Canonical is a no-op. In-progress, extra, and
-missing attachments fail-closed.
+missing attachments fail closed.
 
 The script uses only narrow formatted Docker inspection: container ID and
 network names, plus network ID. It never requests full inspect output or
@@ -189,7 +183,6 @@ canonical 的网络变更。仓库或运行时证据没有证明触发部署、�
 actor；that actor remains unknown。
 
 ```bash
-scripts/check-open-webui-admin-ingress.sh
 bash -n scripts/reconcile-open-webui-admin-network.sh
 scripts/reconcile-open-webui-admin-network.sh --self-test
 uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --syntax-check

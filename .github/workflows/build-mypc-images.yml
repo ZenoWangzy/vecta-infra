@@ -1,52 +1,23 @@
 ---
-# Manual production build entry point. It builds an explicitly selected VectA
-# SHA into the production-local Nexus on the mypc runner only.
+# Repository-writer-initiated production build evidence. It builds the current
+# VectA main HEAD into the production-local Nexus on the mypc runner only.
 name: Build mypc production images
 
 "on":
-  workflow_call:
-    inputs:
-      source_sha:
-        type: string
-        required: true
-      source_branch:
-        type: string
-        required: true
-      docker_cache_prune_until:
-        type: string
-        required: false
-        default: 48h
-      image_names:
-        type: string
-        required: false
-        default: ''
-        description: >-
-          Comma-separated subset of contract images to build; empty builds all.
-    secrets:
-      VECTA_READ_TOKEN:
-        required: true
-      MYPC_NEXUS_ADMIN_PASSWORD:
-        required: true
-      PROXY_USERNAME:
-        required: false
-      PROXY_PASSWORD:
-        required: false
   workflow_dispatch:
     inputs:
       source_sha:
         type: string
         required: true
         description: >-
-          Full 40-character VectA SHA to build into mypc Nexus
+          Full 40-character current VectA main HEAD SHA
       source_branch:
         type: choice
         required: true
-        default: develop
+        default: main
         description: >-
-          Branch that must contain source_sha. develop is temporary for the
-          incremental production build lane.
+          VectA branch whose current HEAD is built; only main is accepted.
         options:
-          - develop
           - main
       docker_cache_prune_until:
         type: string
@@ -71,8 +42,9 @@ concurrency:
 jobs:
   build:
     if: >-
-      (github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call') &&
-      github.repository == 'ZenoWangzy/vecta-infra'
+      github.repository == 'ZenoWangzy/vecta-infra' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main'
     runs-on: [self-hosted, mypc, prod-build]
     environment: production
     timeout-minutes: 240
@@ -91,7 +63,10 @@ jobs:
       DEBIAN_SECURITY_MIRROR: >-
         http://127.0.0.1:8081/repository/vecta-debian-security-proxy
       DOCKER_BUILDKIT: "0"
-      VTEST_IMAGE_NAMES: ${{ inputs.image_names || '' }}
+      BUILDX_VERSION: v0.34.1
+      BUILDX_LINUX_AMD64_SHA256: f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b
+      BUILDX_PLUGIN_PATH: /usr/local/lib/docker/cli-plugins/docker-buildx
+      PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}
       NEXUS_ADMIN_PASSWORD_SECRET_NAME: MYPC_NEXUS_ADMIN_PASSWORD
     steps:
       - name: Configure git proxy
@@ -139,8 +114,8 @@ jobs:
             exit 1
           }
           case "$SOURCE_BRANCH" in
-            main|develop) ;;
-            *) echo "unsupported source_branch: $SOURCE_BRANCH" >&2; exit 1 ;;
+            main) ;;
+            *) echo "source_branch must be main: $SOURCE_BRANCH" >&2; exit 1 ;;
           esac
           curl_config="$(mktemp)"
           trap 'rm -f "$curl_config" /tmp/vecta-source.tar.gz' EXIT
@@ -171,7 +146,7 @@ jobs:
             fi
           fi
           branch_json="$(curl -fsSL --config "$curl_config" \
-            "https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/${SOURCE_BRANCH}")"
+            "https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/main")"
           branch_sha="$(printf '%s' "$branch_json" | node -e '
             let input = "";
             process.stdin.on("data", chunk => input += chunk);
@@ -181,7 +156,7 @@ jobs:
             });
           ')"
           if [ "$branch_sha" != "$SOURCE_SHA" ]; then
-            echo "source_sha must be the selected branch HEAD" >&2
+            echo "source_sha must be the current VectA main HEAD" >&2
             echo "expected=$SOURCE_SHA actual=$branch_sha" >&2
             exit 1
           fi
@@ -212,6 +187,15 @@ jobs:
           }
           command -v pnpm >/dev/null || {
             echo "pnpm is required" >&2; exit 1;
+          }
+          command -v nice >/dev/null || {
+            echo "nice is required" >&2; exit 1;
+          }
+          command -v ionice >/dev/null || {
+            echo "ionice is required" >&2; exit 1;
+          }
+          command -v sha256sum >/dev/null || {
+            echo "sha256sum is required" >&2; exit 1;
           }
           available_kb="$(df -Pk . | awk 'NR==2 {print $4}')"
           if [ "$available_kb" -lt 62914560 ]; then
@@ -424,24 +408,45 @@ jobs:
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
-      - name: Login to production Nexus Docker registry
-        run: >-
-          echo "$NEXUS_ADMIN_PASSWORD" |
-          docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
-        env:
-          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
-
-      - name: Validate image contract
+      - name: Validate production image contract
         working-directory: vecta
-        run: pnpm check:vtest-images
+        run: pnpm check:production-images
 
       - name: Build and push production images
         working-directory: vecta
-        run: >-
-          nice -n 10 ionice -c2 -n7
-          node scripts/build-push-vtest-images.mjs
+        run: |
+          set -euo pipefail
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+          docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-docker-config.XXXXXX")"
+          trap 'rm -rf "$docker_config"' EXIT
+          export DOCKER_CONFIG="$docker_config"
+          if [ ! -x "$BUILDX_PLUGIN_PATH" ]; then
+            echo "Buildx plugin is required at $BUILDX_PLUGIN_PATH" >&2
+            exit 1
+          fi
+          printf '%s  %s\n' "$BUILDX_LINUX_AMD64_SHA256" "$BUILDX_PLUGIN_PATH" |
+            sha256sum --check -
+          actual_buildx_version="$(docker buildx version | awk '{print $2}')"
+          if [ "$actual_buildx_version" != "$BUILDX_VERSION" ]; then
+            echo "Buildx version mismatch: expected=$BUILDX_VERSION actual=$actual_buildx_version" >&2
+            exit 1
+          fi
+          docker buildx use default
+          builder_info="$(docker buildx inspect default)"
+          if ! printf '%s\n' "$builder_info" | grep -Eq '^Name:[[:space:]]+default$'; then
+            echo "Buildx default builder is required" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$builder_info" | grep -Eq '^Driver:[[:space:]]+docker$'; then
+            echo "Buildx default builder must use the docker driver" >&2
+            exit 1
+          fi
+          printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
+            docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
+          nice -n 10 ionice -c2 -n7 \
+            node scripts/build-push-production-images.mjs
         env:
-          GITHUB_SHA: ${{ inputs.source_sha }}
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
       - name: Prune mypc Docker build cache
         if: always() && inputs.docker_cache_prune_until != 'never'

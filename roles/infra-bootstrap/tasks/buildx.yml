@@ -1,0 +1,47 @@
+- name: Validate the pinned Buildx provisioning contract
+  ansible.builtin.assert:
+    that:
+      - infra_buildx_version == 'v0.34.1'
+      - >-
+        infra_buildx_linux_amd64_sha256 ==
+        'f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b'
+      - >-
+        infra_buildx_download_url ==
+        'https://github.com/docker/buildx/releases/download/v0.34.1/buildx-v0.34.1.linux-amd64'
+      - >-
+        infra_buildx_plugin_path ==
+        '/usr/local/lib/docker/cli-plugins/docker-buildx'
+    fail_msg: Buildx provisioning inputs must match the production contract.
+
+- name: Download the pinned Buildx asset on the controller
+  ansible.builtin.get_url:
+    url: "{{ infra_buildx_download_url }}"
+    dest: "{{ infra_buildx_controller_asset_path }}"
+    checksum: "sha256:{{ infra_buildx_linux_amd64_sha256 }}"
+    mode: "0755"
+    timeout: 30
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: infra_buildx_download
+  retries: 3
+  delay: 5
+  until: infra_buildx_download is succeeded
+  when: not ansible_check_mode
+
+- name: Ensure the system Docker CLI plugin directory exists
+  ansible.builtin.file:
+    path: "{{ infra_buildx_plugin_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the pinned Buildx plugin from the controller
+  ansible.builtin.copy:
+    src: "{{ infra_buildx_controller_asset_path }}"
+    dest: "{{ infra_buildx_plugin_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: not ansible_check_mode

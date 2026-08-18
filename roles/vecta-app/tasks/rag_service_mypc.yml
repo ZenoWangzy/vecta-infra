@@ -1,8 +1,8 @@
 ---
 # mypc has a production RAG cache volume, knowledge bind, and OCR/provider
-# configuration that do not match the vtest role. Capture the live contract and
-# recreate only from the same image, unless a caller explicitly approves an
-# immutable full-SHA repair image.
+# configuration that do not match a transient environment. Capture the live
+# contract and recreate only from the same image, unless a caller explicitly
+# approves an immutable full-SHA repair image.
 - name: Capture mypc RAG container contract
   ansible.builtin.command:
     argv:

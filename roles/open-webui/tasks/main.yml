@@ -1,3 +1,15 @@
+- name: Require a complete host nginx contract when enabled
+  ansible.builtin.assert:
+    that:
+      - host_nginx_site_name | default('') | length > 0
+      - host_nginx_server_names | default([]) | length > 0
+      - host_nginx_ssl_certificate | default('') | length > 0
+      - host_nginx_ssl_certificate_key | default('') | length > 0
+    fail_msg: >-
+      host_nginx_enabled requires an explicit site name, server names, and TLS
+      certificate paths; no environment default is provided.
+  when: host_nginx_enabled | bool
+
 - name: Ensure Open WebUI Docker networks exist
   community.docker.docker_network:
     name: "{{ item }}"
@@ -160,7 +172,7 @@
   changed_when: (open_webui_mapping_upsert.stdout | trim | int) > 0
   when: (open_webui_user_mappings | default([]) | length) > 0
 
-- name: Render host nginx vtest site
+- name: Render host nginx site
   become: true
   ansible.builtin.template:
     src: host-nginx-site.conf.j2
@@ -172,7 +184,7 @@
   register: host_nginx_site
   when: host_nginx_enabled | bool
 
-- name: Enable host nginx vtest site
+- name: Enable host nginx site
   become: true
   ansible.builtin.file:
     src: "{{ host_nginx_site_available_path }}"
