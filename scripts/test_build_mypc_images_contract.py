@@ -17,12 +17,15 @@ BUILDX_SHA256 = (
 )
 
 
-def job_allowed(event_name: str, repository: str) -> bool:
+def job_allowed(event_name: str, repository: str, ref: str) -> bool:
     return (
-        event_name == "workflow_call" and repository == "ZenoWangzy/vecta"
+        repository == "ZenoWangzy/vecta"
+        and event_name == "push"
+        and ref == "refs/heads/main"
     ) or (
-        event_name == "workflow_dispatch"
-        and repository == "ZenoWangzy/vecta-infra"
+        repository == "ZenoWangzy/vecta-infra"
+        and event_name == "workflow_dispatch"
+        and ref == "refs/heads/main"
     )
 
 
@@ -52,23 +55,34 @@ def extract_step_script(workflow: str, step_name: str) -> str:
 
 def assert_static_contract(workflow: str) -> None:
     expected_condition = (
-        "(github.event_name == 'workflow_call' && "
-        "github.repository == 'ZenoWangzy/vecta') || "
-        "(github.event_name == 'workflow_dispatch' && "
-        "github.repository == 'ZenoWangzy/vecta-infra')"
+        "(github.repository == 'ZenoWangzy/vecta' && "
+        "github.event_name == 'push' && github.ref == 'refs/heads/main') || "
+        "(github.repository == 'ZenoWangzy/vecta-infra' && "
+        "github.event_name == 'workflow_dispatch' && "
+        "github.ref == 'refs/heads/main')"
     )
     assert extract_job_condition(workflow) == expected_condition
 
     allowed = (
-        ("workflow_call", "ZenoWangzy/vecta"),
-        ("workflow_dispatch", "ZenoWangzy/vecta-infra"),
+        ("push", "ZenoWangzy/vecta", "refs/heads/main"),
+        (
+            "workflow_dispatch",
+            "ZenoWangzy/vecta-infra",
+            "refs/heads/main",
+        ),
     )
     rejected = (
-        ("workflow_call", "ZenoWangzy/vecta-infra"),
-        ("workflow_dispatch", "ZenoWangzy/vecta"),
-        ("workflow_call", "someone/fork"),
-        ("push", "ZenoWangzy/vecta-infra"),
-        ("pull_request", "ZenoWangzy/vecta"),
+        ("push", "ZenoWangzy/vecta", "refs/heads/develop"),
+        ("pull_request", "ZenoWangzy/vecta", "refs/pull/42/merge"),
+        ("workflow_call", "ZenoWangzy/vecta", "refs/heads/main"),
+        ("workflow_dispatch", "ZenoWangzy/vecta", "refs/heads/main"),
+        ("push", "ZenoWangzy/vecta-infra", "refs/heads/main"),
+        (
+            "workflow_dispatch",
+            "ZenoWangzy/vecta-infra",
+            "refs/heads/develop",
+        ),
+        ("push", "someone/fork", "refs/heads/main"),
     )
     assert all(job_allowed(*case) for case in allowed)
     assert not any(job_allowed(*case) for case in rejected)

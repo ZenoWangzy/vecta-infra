@@ -71,10 +71,12 @@ concurrency:
 jobs:
   build:
     if: >-
-      (github.event_name == 'workflow_call' &&
-      github.repository == 'ZenoWangzy/vecta') ||
-      (github.event_name == 'workflow_dispatch' &&
-      github.repository == 'ZenoWangzy/vecta-infra')
+      (github.repository == 'ZenoWangzy/vecta' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main') ||
+      (github.repository == 'ZenoWangzy/vecta-infra' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main')
     runs-on: [self-hosted, mypc, prod-build]
     environment: production
     timeout-minutes: 240
