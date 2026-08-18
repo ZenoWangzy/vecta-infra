@@ -1,52 +1,23 @@
 ---
-# Manual production build entry point. It builds an explicitly selected VectA
-# SHA into the production-local Nexus on the mypc runner only.
+# Manually approved production build evidence. It builds the current VectA main
+# HEAD into the production-local Nexus on the mypc runner only.
 name: Build mypc production images
 
 "on":
-  workflow_call:
-    inputs:
-      source_sha:
-        type: string
-        required: true
-      source_branch:
-        type: string
-        required: true
-      docker_cache_prune_until:
-        type: string
-        required: false
-        default: 48h
-      image_names:
-        type: string
-        required: false
-        default: ''
-        description: >-
-          Comma-separated subset of contract images to build; empty builds all.
-    secrets:
-      VECTA_READ_TOKEN:
-        required: true
-      MYPC_NEXUS_ADMIN_PASSWORD:
-        required: true
-      PROXY_USERNAME:
-        required: false
-      PROXY_PASSWORD:
-        required: false
   workflow_dispatch:
     inputs:
       source_sha:
         type: string
         required: true
         description: >-
-          Full 40-character VectA SHA to build into mypc Nexus
+          Full 40-character current VectA main HEAD SHA
       source_branch:
         type: choice
         required: true
-        default: develop
+        default: main
         description: >-
-          Branch that must contain source_sha. develop is temporary for the
-          incremental production build lane.
+          VectA branch whose current HEAD is built; only main is accepted.
         options:
-          - develop
           - main
       docker_cache_prune_until:
         type: string
@@ -71,12 +42,9 @@ concurrency:
 jobs:
   build:
     if: >-
-      (github.repository == 'ZenoWangzy/vecta' &&
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main') ||
-      (github.repository == 'ZenoWangzy/vecta-infra' &&
+      github.repository == 'ZenoWangzy/vecta-infra' &&
       github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main')
+      github.ref == 'refs/heads/main'
     runs-on: [self-hosted, mypc, prod-build]
     environment: production
     timeout-minutes: 240
@@ -145,8 +113,8 @@ jobs:
             exit 1
           }
           case "$SOURCE_BRANCH" in
-            main|develop) ;;
-            *) echo "unsupported source_branch: $SOURCE_BRANCH" >&2; exit 1 ;;
+            main) ;;
+            *) echo "source_branch must be main: $SOURCE_BRANCH" >&2; exit 1 ;;
           esac
           curl_config="$(mktemp)"
           trap 'rm -f "$curl_config" /tmp/vecta-source.tar.gz' EXIT
@@ -177,7 +145,7 @@ jobs:
             fi
           fi
           branch_json="$(curl -fsSL --config "$curl_config" \
-            "https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/${SOURCE_BRANCH}")"
+            "https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/main")"
           branch_sha="$(printf '%s' "$branch_json" | node -e '
             let input = "";
             process.stdin.on("data", chunk => input += chunk);
@@ -187,7 +155,7 @@ jobs:
             });
           ')"
           if [ "$branch_sha" != "$SOURCE_SHA" ]; then
-            echo "source_sha must be the selected branch HEAD" >&2
+            echo "source_sha must be the current VectA main HEAD" >&2
             echo "expected=$SOURCE_SHA actual=$branch_sha" >&2
             exit 1
           fi

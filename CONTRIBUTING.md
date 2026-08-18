@@ -34,13 +34,25 @@ contract changes.
   `main`. Once the main SHA is verified, the exact change returns through
   `main -> develop` before later promotion.
 - VectA `main` is the production release lane. It runs the protected mypc
-  image-build lane. A production deploy remains a separately approved action.
-- Infrastructure workflows and reusable jobs must preserve those branch and
-  runner boundaries, policy checks, and promotion evidence. Do not broaden a
-  main image build into a production deploy.
+  release checks. A production deploy remains a separately approved action.
+- Infrastructure workflows must preserve those branch and runner boundaries,
+  policy checks, and promotion evidence. Do not broaden an image build into a
+  production deploy.
 - Images use immutable full Git SHA tags for normal delivery. Production cache
   adoption uses immutable `cache-<image-id>` tags only when preserving a live
   container image is required.
+
+## Production Image Build Evidence
+
+The production image build is manually dispatched from `vecta-infra` main and
+requires production-environment approval on the `prod-build` runner. The
+operator supplies a full `source_sha`, `source_branch=main`, and an optional
+`image_names` subset. The workflow rejects any SHA that is not the current
+VectA main HEAD.
+
+A successful run is independent exact-SHA image-build evidence. It is not a
+VectA postsubmit result, merge result, production deployment, or production
+health claim.
 
 ## Change Rules
 

@@ -9,11 +9,16 @@ runner, deployment role, fallback, or compatibility wrapper. The VectA
 caller-removal hotfix must merge first; only then may the matching `vecta-infra`
 removal merge. `CONTRIBUTING.md` owns the detailed cross-repository sequence.
 
+Production image builds are manually approved, exact-SHA evidence generated
+only from `vecta-infra` main. The requested SHA must be the current VectA main
+HEAD. This evidence is independent of VectA workflow execution and is not a
+production deployment or health claim.
+
 The VectA contribution lifecycle remains mandatory: topic branch -> `develop`
 -> required postsubmit validation -> `main`. A verified production `hotfix/*`
 merged into VectA `main` must return through `main -> develop`. Infrastructure
 workflows preserve the production/myPC branch, runner, permission, and approval
-boundaries and never turn a main image build into an automatic production
+boundaries and never turn a manual image build into an automatic production
 deployment.
 
 Keep this file as the agent entry point. Put durable contribution and delivery

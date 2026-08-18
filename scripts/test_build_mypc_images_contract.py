@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -19,10 +20,6 @@ BUILDX_SHA256 = (
 
 def job_allowed(event_name: str, repository: str, ref: str) -> bool:
     return (
-        repository == "ZenoWangzy/vecta"
-        and event_name == "push"
-        and ref == "refs/heads/main"
-    ) or (
         repository == "ZenoWangzy/vecta-infra"
         and event_name == "workflow_dispatch"
         and ref == "refs/heads/main"
@@ -55,16 +52,13 @@ def extract_step_script(workflow: str, step_name: str) -> str:
 
 def assert_static_contract(workflow: str) -> None:
     expected_condition = (
-        "(github.repository == 'ZenoWangzy/vecta' && "
-        "github.event_name == 'push' && github.ref == 'refs/heads/main') || "
-        "(github.repository == 'ZenoWangzy/vecta-infra' && "
+        "github.repository == 'ZenoWangzy/vecta-infra' && "
         "github.event_name == 'workflow_dispatch' && "
-        "github.ref == 'refs/heads/main')"
+        "github.ref == 'refs/heads/main'"
     )
     assert extract_job_condition(workflow) == expected_condition
 
     allowed = (
-        ("push", "ZenoWangzy/vecta", "refs/heads/main"),
         (
             "workflow_dispatch",
             "ZenoWangzy/vecta-infra",
@@ -72,6 +66,7 @@ def assert_static_contract(workflow: str) -> None:
         ),
     )
     rejected = (
+        ("push", "ZenoWangzy/vecta", "refs/heads/main"),
         ("push", "ZenoWangzy/vecta", "refs/heads/develop"),
         ("pull_request", "ZenoWangzy/vecta", "refs/pull/42/merge"),
         ("workflow_call", "ZenoWangzy/vecta", "refs/heads/main"),
@@ -86,6 +81,19 @@ def assert_static_contract(workflow: str) -> None:
     )
     assert all(job_allowed(*case) for case in allowed)
     assert not any(job_allowed(*case) for case in rejected)
+    assert '"on":\n  workflow_dispatch:' in workflow
+    trigger_block = workflow.split('"on":\n', 1)[1].split("\npermissions:", 1)[0]
+    assert re.findall(r"^  ([a-z_]+):", trigger_block, re.MULTILINE) == [
+        "workflow_dispatch"
+    ]
+    assert "  workflow_call:" not in workflow
+    assert "\n    secrets:\n" not in workflow
+    assert set(re.findall(r"\$\{\{ secrets\.([A-Z0-9_]+) \}\}", workflow)) == {
+        "MYPC_NEXUS_ADMIN_PASSWORD",
+        "PROXY_PASSWORD",
+        "PROXY_USERNAME",
+        "VECTA_READ_TOKEN",
+    }
 
     required = (
         "runs-on: [self-hosted, mypc, prod-build]",
@@ -94,6 +102,12 @@ def assert_static_contract(workflow: str) -> None:
         "SOURCE_SHA: ${{ inputs.source_sha }}",
         "SOURCE_BRANCH: ${{ inputs.source_branch }}",
         "grep -Eq '^[0-9a-f]{40}$'",
+        "default: main",
+        "only main is accepted.",
+        'main) ;;',
+        '*) echo "source_branch must be main: $SOURCE_BRANCH"',
+        '"https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/main"',
+        'echo "source_sha must be the current VectA main HEAD"',
         'if [ "$branch_sha" != "$SOURCE_SHA" ]; then',
         '"https://api.github.com/repos/ZenoWangzy/vecta/tarball/${SOURCE_SHA}"',
         "NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082",
@@ -132,7 +146,9 @@ def assert_static_contract(workflow: str) -> None:
     ) in workflow
     assert workflow.count("- name: Build and push production images") == 1
     assert "- name: Login to production Nexus Docker registry" not in workflow
-    assert workflow.count("image_names:") == 2
+    assert workflow.count("image_names:") == 1
+    assert "main|develop" not in workflow
+    assert "          - develop" not in workflow
     assert "docker buildx create" not in workflow
     assert "docker-container" not in workflow
     retired_environment = "".join(("v", "test"))

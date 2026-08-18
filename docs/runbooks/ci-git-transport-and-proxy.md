@@ -3,6 +3,11 @@
 > Status: active only for the mypc production-build runner and production
 > checkout. The former integration-runner path is retired.
 
+The image build is manually dispatched from `vecta-infra` main with the full
+current VectA main HEAD SHA and requires production-environment approval. Its
+result is independent exact-SHA image-build evidence, not a deployment or
+production-health result.
+
 ## Transport design
 
 GitHub git traffic in the remaining CN-hosted production paths uses one of two

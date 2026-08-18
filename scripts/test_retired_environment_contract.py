@@ -119,9 +119,31 @@ def main() -> None:
     agents = (ROOT / "AGENTS.md").read_text()
     assert "vtest is permanently retired." in agents
     assert "caller-removal hotfix must merge first" in agents
+    assert "manually approved, exact-SHA evidence" in agents
+    assert "current VectA main\nHEAD" in agents
     contributing = (ROOT / "CONTRIBUTING.md").read_text()
     assert "The VectA caller-removal hotfix must merge first" in contributing
     assert "Do not restore a compatibility workflow" in contributing
+    assert "manually dispatched from `vecta-infra` main" in contributing
+    assert "source_branch=main" in contributing
+    assert "independent exact-SHA image-build evidence" in contributing
+
+    active_build_docs = (
+        agents,
+        contributing,
+        (ROOT / "docs/runbooks/ci-git-transport-and-proxy.md").read_text(),
+        (ROOT / "docs/runbooks/mypc-data-structure-compatibility.md").read_text(),
+    )
+    for content in active_build_docs:
+        assert "workflow_call" not in content
+        assert "reusable job" not in content
+        assert "GitHub App" not in content
+
+    retirement_report = (
+        ROOT / "docs/runbooks/vtest-platform-jwt-bootstrap.md"
+    ).read_text()
+    assert "当前 VectA main HEAD 的完整 SHA" in retirement_report
+    assert "独立的 exact-SHA image-build 证据" in retirement_report
 
     mypc_compatibility = (
         ROOT / "docs/runbooks/mypc-data-structure-compatibility.md"
@@ -146,15 +168,20 @@ def main() -> None:
     workflow = (ROOT / ".github/workflows/build-mypc-images.yml").read_text()
     retired_environment = "".join(("v", "test"))
     assert "name: Build mypc production images" in workflow
+    assert '"on":\n  workflow_dispatch:' in workflow
+    assert "  workflow_call:" not in workflow
     assert "runs-on: [self-hosted, mypc, prod-build]" in workflow
     assert "environment: production" in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "SOURCE_SHA: ${{ inputs.source_sha }}" in workflow
     assert "SOURCE_BRANCH: ${{ inputs.source_branch }}" in workflow
+    assert 'main) ;;' in workflow
+    assert "main|develop" not in workflow
+    assert "source_sha must be the current VectA main HEAD" in workflow
     assert "NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082" in workflow
     assert "DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082" in workflow
     assert "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8082" in workflow
-    assert workflow.count("image_names:") == 2
+    assert workflow.count("image_names:") == 1
     assert "PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}" in workflow
     assert 'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin' in workflow
     assert "run: pnpm check:production-images" in workflow
