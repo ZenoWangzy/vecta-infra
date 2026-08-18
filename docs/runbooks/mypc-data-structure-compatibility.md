@@ -112,8 +112,8 @@ generated from live `docker inspect` plus backup Compose evidence.
 ## Implemented Compatibility Controls
 
 - mypc sets `deploy_image_tag_requires_full_sha=false` only for the explicit
-  `local-cache-20260718` bridge; manually approved production image builds use
-  the full current VectA main HEAD SHA.
+  `local-cache-20260718` bridge; repository-writer-initiated production image
+  builds use the full current VectA main HEAD SHA.
 - `deploy_image_tags` maps each mypc app repo to the exact mirrored
   `cache-<image-id>` tag.
 - `vecta_app_enabled_services` allows the VectA app role to recreate only the

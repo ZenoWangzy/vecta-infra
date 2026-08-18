@@ -4,9 +4,35 @@
 > checkout. The former integration-runner path is retired.
 
 The image build is manually dispatched from `vecta-infra` main with the full
-current VectA main HEAD SHA and requires production-environment approval. Its
-result is independent exact-SHA image-build evidence, not a deployment or
+current VectA main HEAD SHA. The dispatching repository writer is the current
+authorization boundary. The `production` environment is an audit label with no
+reviewer or protection gate, and the referenced secrets remain repository-level.
+The result is independent exact-SHA image-build evidence, not a deployment or
 production-health result.
+
+## Buildx host provisioning
+
+The `buildx` Ansible tag downloads Buildx on the controller, verifies the
+official checksum, and copies only the plugin to
+`/usr/local/lib/docker/cli-plugins/docker-buildx` on mypc. The managed host does
+not connect to GitHub, and this tag does not call Docker or touch containers,
+images, Nexus, or registry configuration.
+
+Check the isolated tag without applying it:
+
+```bash
+uvx --from ansible-core ansible-playbook -i inventories/mypc/hosts.ini \
+  playbooks/infra.yml --limit mypc --tags buildx --check \
+  -e mypc_deploy_enabled=true
+```
+
+After review, apply only that tag:
+
+```bash
+uvx --from ansible-core ansible-playbook -i inventories/mypc/hosts.ini \
+  playbooks/infra.yml --limit mypc --tags buildx \
+  -e mypc_deploy_enabled=true
+```
 
 ## Transport design
 

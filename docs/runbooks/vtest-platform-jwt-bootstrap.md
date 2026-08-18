@@ -16,9 +16,10 @@ wrapper、fallback 或 runner 的理由。
 ## 生产镜像构建边界
 
 保留的 production image build 只能从 `vecta-infra` main 人工触发，输入必须是
-当前 VectA main HEAD 的完整 SHA，并经过 production environment 审批。成功 run
-只构成独立的 exact-SHA image-build 证据，不构成合并、部署或生产健康证据，也不
-改变上面的退役合并顺序。
+当前 VectA main HEAD 的完整 SHA。当前授权边界是具有仓库写权限的触发者；
+production environment 只作审计标签，没有 reviewer 或 protection gate，所用
+secret 仍为 repo-level。成功 run 只构成独立的 exact-SHA image-build 证据，不
+构成合并、部署或生产健康证据，也不改变上面的退役合并顺序。
 
 ## 已完成
 

@@ -12,10 +12,14 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/build-mypc-images.yml"
+BUILDX_DEFAULTS_PATH = ROOT / "roles/infra-bootstrap/defaults/main.yml"
+BUILDX_TASKS_PATH = ROOT / "roles/infra-bootstrap/tasks/buildx.yml"
+INFRA_BOOTSTRAP_MAIN_PATH = ROOT / "roles/infra-bootstrap/tasks/main.yml"
 BUILDX_VERSION = "v0.34.1"
 BUILDX_SHA256 = (
     "f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b"
 )
+BUILDX_PLUGIN_PATH = "/usr/local/lib/docker/cli-plugins/docker-buildx"
 
 
 def job_allowed(event_name: str, repository: str, ref: str) -> bool:
@@ -116,14 +120,16 @@ def assert_static_contract(workflow: str) -> None:
         "PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}",
         f"BUILDX_VERSION: {BUILDX_VERSION}",
         f"BUILDX_LINUX_AMD64_SHA256: {BUILDX_SHA256}",
+        f"BUILDX_PLUGIN_PATH: {BUILDX_PLUGIN_PATH}",
         "command -v nice >/dev/null",
         "command -v ionice >/dev/null",
         "command -v sha256sum >/dev/null",
         'docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-docker-config.XXXXXX")"',
         'trap \'rm -rf "$docker_config"\' EXIT',
         'export DOCKER_CONFIG="$docker_config"',
-        "https://github.com/docker/buildx/releases/download/"
-        "${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-amd64",
+        'if [ ! -x "$BUILDX_PLUGIN_PATH" ]; then',
+        'echo "Buildx plugin is required at $BUILDX_PLUGIN_PATH"',
+        '"$BUILDX_LINUX_AMD64_SHA256" "$BUILDX_PLUGIN_PATH"',
         "sha256sum --check -",
         'actual_buildx_version="$(docker buildx version | awk',
         "docker buildx use default",
@@ -149,6 +155,11 @@ def assert_static_contract(workflow: str) -> None:
     assert workflow.count("image_names:") == 1
     assert "main|develop" not in workflow
     assert "          - develop" not in workflow
+    assert "github.com/docker/buildx" not in workflow
+    assert "docker-buildx.download" not in workflow
+    assert "curl " not in extract_step_script(
+        workflow, "Build and push production images"
+    )
     assert "docker buildx create" not in workflow
     assert "docker-container" not in workflow
     retired_environment = "".join(("v", "test"))
@@ -156,6 +167,67 @@ def assert_static_contract(workflow: str) -> None:
     assert f"build-push-{retired_environment}-images.mjs" not in workflow
     assert f"{retired_environment.upper()}_IMAGE_NAMES" not in workflow
     assert "GITHUB_SHA: ${{ inputs.source_sha }}" not in workflow
+
+
+def assert_provisioning_contract() -> None:
+    defaults = BUILDX_DEFAULTS_PATH.read_text()
+    tasks = BUILDX_TASKS_PATH.read_text()
+    role_main = INFRA_BOOTSTRAP_MAIN_PATH.read_text()
+
+    for literal in (
+        f"infra_buildx_version: {BUILDX_VERSION}",
+        BUILDX_SHA256,
+        "https://github.com/docker/buildx/releases/download/"
+        "{{ infra_buildx_version }}/buildx-"
+        "{{ infra_buildx_version }}.linux-amd64",
+        f"infra_buildx_plugin_path: {BUILDX_PLUGIN_PATH}",
+    ):
+        assert literal in defaults, literal
+
+    assert "- import_tasks: buildx.yml\n  tags: [buildx]" in role_main
+    download = tasks.split(
+        "- name: Download the pinned Buildx asset on the controller\n", 1
+    )[1].split("\n- name:", 1)[0]
+    for literal in (
+        "ansible.builtin.get_url:",
+        'checksum: "sha256:{{ infra_buildx_linux_amd64_sha256 }}"',
+        "timeout: 30",
+        "delegate_to: localhost",
+        "become: false",
+        "run_once: true",
+        "retries: 3",
+        "delay: 5",
+        "until: infra_buildx_download is succeeded",
+        "when: not ansible_check_mode",
+    ):
+        assert literal in download, literal
+
+    copy = tasks.split(
+        "- name: Install the pinned Buildx plugin from the controller\n", 1
+    )[1]
+    for literal in (
+        "ansible.builtin.copy:",
+        'dest: "{{ infra_buildx_plugin_path }}"',
+        'owner: root',
+        'group: root',
+        'mode: "0755"',
+        "when: not ansible_check_mode",
+    ):
+        assert literal in copy, literal
+
+    assert BUILDX_SHA256 in tasks
+    assert (
+        "https://github.com/docker/buildx/releases/download/"
+        f"{BUILDX_VERSION}/buildx-{BUILDX_VERSION}.linux-amd64"
+    ) in tasks
+    assert BUILDX_PLUGIN_PATH in tasks
+    for forbidden in (
+        "community.docker",
+        "ansible.builtin.command",
+        "docker login",
+        "registry",
+    ):
+        assert forbidden not in tasks, forbidden
 
 
 def write_executable(path: Path, content: str) -> None:
@@ -166,6 +238,7 @@ def write_executable(path: Path, content: str) -> None:
 def run_fake_build(
     build_script: str,
     *,
+    plugin_present: bool = True,
     sha_failure: bool = False,
     version: str = BUILDX_VERSION,
     driver: str = "docker",
@@ -177,25 +250,10 @@ def run_fake_build(
         fake_bin.mkdir()
         runner_temp.mkdir()
         log_path = temporary_path / "calls.log"
-
-        write_executable(
-            fake_bin / "curl",
-            """#!/bin/sh
-set -eu
-printf 'curl' >> "$FAKE_LOG"
-printf ' %s' "$@" >> "$FAKE_LOG"
-printf '\n' >> "$FAKE_LOG"
-output=''
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --output) output="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[ -n "$output" ]
-printf 'fake buildx binary\n' > "$output"
-""",
-        )
+        plugin_path = temporary_path / "system" / "docker-buildx"
+        if plugin_present:
+            plugin_path.parent.mkdir()
+            write_executable(plugin_path, "#!/bin/sh\nexit 0\n")
         write_executable(
             fake_bin / "sha256sum",
             """#!/bin/sh
@@ -206,10 +264,7 @@ printf 'sha256sum %s\n' "$input" >> "$FAKE_LOG"
 actual_sha="${input%% *}"
 actual_path="${input#*  }"
 [ "$actual_sha" = "$EXPECTED_BUILDX_SHA" ]
-case "$actual_path" in
-  */docker-buildx.download) ;;
-  *) exit 43 ;;
-esac
+[ "$actual_path" = "$BUILDX_PLUGIN_PATH" ] || exit 43
 """,
         )
         write_executable(
@@ -275,6 +330,7 @@ printf 'node %s\n' "$*" >> "$FAKE_LOG"
                 "RUNNER_TEMP": str(runner_temp),
                 "BUILDX_VERSION": BUILDX_VERSION,
                 "BUILDX_LINUX_AMD64_SHA256": BUILDX_SHA256,
+                "BUILDX_PLUGIN_PATH": str(plugin_path),
                 "EXPECTED_BUILDX_SHA": BUILDX_SHA256,
                 "FAKE_SHA_FAILURE": "1" if sha_failure else "0",
                 "FAKE_BUILDX_VERSION": version,
@@ -311,7 +367,7 @@ def assert_fake_contract(workflow: str) -> None:
 
     success, success_log, success_leftovers = run_fake_build(build_script)
     assert success.returncode == 0, success.stderr
-    assert f"buildx-{BUILDX_VERSION}.linux-amd64" in success_log
+    assert f"sha256sum {BUILDX_SHA256}" in success_log
     assert "docker buildx version" in success_log
     assert "docker buildx use default" in success_log
     assert "docker buildx inspect default" in success_log
@@ -327,6 +383,7 @@ def assert_fake_contract(workflow: str) -> None:
     assert not success_leftovers
 
     failures = (
+        ("missing", run_fake_build(build_script, plugin_present=False)),
         ("checksum", run_fake_build(build_script, sha_failure=True)),
         ("version", run_fake_build(build_script, version="v0.34.0")),
         ("driver", run_fake_build(build_script, driver="docker-container")),
@@ -340,6 +397,7 @@ def assert_fake_contract(workflow: str) -> None:
 def main() -> None:
     workflow = WORKFLOW_PATH.read_text()
     assert_static_contract(workflow)
+    assert_provisioning_contract()
     assert_fake_contract(workflow)
     print("build-mypc images contract: ok")
 

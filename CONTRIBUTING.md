@@ -45,10 +45,12 @@ contract changes.
 ## Production Image Build Evidence
 
 The production image build is manually dispatched from `vecta-infra` main and
-requires production-environment approval on the `prod-build` runner. The
-operator supplies a full `source_sha`, `source_branch=main`, and an optional
-`image_names` subset. The workflow rejects any SHA that is not the current
-VectA main HEAD.
+is authorized by the dispatching repository writer. The `production`
+environment is an audit label; it currently has no required reviewers or
+protection rules. Existing workflow secrets remain repository-level and are not
+migrated by this contract. The operator supplies a full `source_sha`,
+`source_branch=main`, and an optional `image_names` subset. The workflow rejects
+any SHA that is not the current VectA main HEAD.
 
 A successful run is independent exact-SHA image-build evidence. It is not a
 VectA postsubmit result, merge result, production deployment, or production

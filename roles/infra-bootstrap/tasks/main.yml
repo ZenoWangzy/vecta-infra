@@ -4,5 +4,8 @@
 - import_tasks: docker.yml
   tags: [infra-docker, infra-bootstrap, infra]
 
+- import_tasks: buildx.yml
+  tags: [buildx]
+
 - import_tasks: configs.yml
   tags: [infra-configs, infra-bootstrap, infra]

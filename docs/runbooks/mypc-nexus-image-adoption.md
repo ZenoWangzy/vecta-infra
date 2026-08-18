@@ -58,7 +58,9 @@ the corresponding service is eligible for adoption.
 
 The mypc production-image workflow reads the repository secret
 `MYPC_NEXUS_ADMIN_PASSWORD` and maps it to the job-local environment variable
-`NEXUS_ADMIN_PASSWORD` for Docker login and Nexus API calls.
+`NEXUS_ADMIN_PASSWORD` for Docker login and Nexus API calls. All secrets used by
+this workflow remain repository-level. Its `production` environment is an audit
+label and currently has no reviewer or protection gate.
 
 Current mypc sync status from 2026-07-18:
 

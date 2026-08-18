@@ -119,25 +119,32 @@ def main() -> None:
     agents = (ROOT / "AGENTS.md").read_text()
     assert "vtest is permanently retired." in agents
     assert "caller-removal hotfix must merge first" in agents
-    assert "manually approved, exact-SHA evidence" in agents
-    assert "current VectA main\nHEAD" in agents
+    assert "repository-writer-initiated, exact-SHA evidence" in agents
+    assert "current VectA main HEAD" in agents
+    assert "audit\nlabel without reviewer or protection gates" in agents
     contributing = (ROOT / "CONTRIBUTING.md").read_text()
     assert "The VectA caller-removal hotfix must merge first" in contributing
     assert "Do not restore a compatibility workflow" in contributing
     assert "manually dispatched from `vecta-infra` main" in contributing
     assert "source_branch=main" in contributing
     assert "independent exact-SHA image-build evidence" in contributing
+    assert "authorized by the dispatching repository writer" in contributing
+    assert "no required reviewers or\nprotection rules" in contributing
+    assert "workflow secrets remain repository-level" in contributing
 
     active_build_docs = (
         agents,
         contributing,
         (ROOT / "docs/runbooks/ci-git-transport-and-proxy.md").read_text(),
         (ROOT / "docs/runbooks/mypc-data-structure-compatibility.md").read_text(),
+        (ROOT / "docs/runbooks/mypc-nexus-image-adoption.md").read_text(),
     )
     for content in active_build_docs:
         assert "workflow_call" not in content
         assert "reusable job" not in content
         assert "GitHub App" not in content
+        assert "production-environment approval" not in content
+        assert "manually approved production image" not in content
 
     retirement_report = (
         ROOT / "docs/runbooks/vtest-platform-jwt-bootstrap.md"
