@@ -53,7 +53,7 @@ jobs:
       SOURCE_BRANCH: ${{ inputs.source_branch }}
       NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082
       DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082
-      DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8082
+      DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083
       NPM_REGISTRY: http://127.0.0.1:8081/repository/vecta-npm-proxy/
       NPM_CONFIG_REGISTRY: http://127.0.0.1:8081/repository/vecta-npm-proxy/
       PIP_INDEX_URL: >-
