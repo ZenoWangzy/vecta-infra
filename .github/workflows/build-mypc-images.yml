@@ -378,19 +378,36 @@ jobs:
           });
           await upsert('docker', 'proxy', 'vecta-docker-remote', {
             name: 'vecta-docker-remote',
-            ...proxyDefaults('https://registry-1.docker.io'),
+            // 2026-08-19: hub direct is unreachable from this network (Nexus
+            // auto-blocked "Network is unreachable"); route via daocloud mirror.
+            ...proxyDefaults('https://docker.m.daocloud.io'),
             docker: { v1Enabled: false, forceBasicAuth: true },
             dockerProxy: {
               indexType: 'REGISTRY',
               indexUrl: 'https://index.docker.io/',
             },
           });
+          await upsert('docker', 'proxy', 'vecta-docker-ghcr-proxy', {
+            name: 'vecta-docker-ghcr-proxy',
+            ...proxyDefaults('https://ghcr.m.daocloud.io'),
+            proxy: {
+              remoteUrl: 'https://ghcr.m.daocloud.io',
+              contentMaxAge: 1440,
+              metadataMaxAge: 30,
+            },
+            docker: { v1Enabled: false, forceBasicAuth: true },
+            dockerProxy: { indexType: 'CUSTOM' },
+          });
           await upsert('docker', 'group', 'vecta-docker-virtual', {
             name: 'vecta-docker-virtual',
             online: true,
             storage,
             group: {
-              memberNames: ['vecta-docker-remote', 'vecta-docker-local'],
+              memberNames: [
+                'vecta-docker-remote',
+                'vecta-docker-ghcr-proxy',
+                'vecta-docker-local',
+              ],
             },
             docker: { v1Enabled: false, forceBasicAuth: true, httpPort: 8083 },
           });
