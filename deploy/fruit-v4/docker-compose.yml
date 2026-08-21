@@ -5,23 +5,112 @@ x-fruit-v4-labels: &fruit-v4-labels
   com.vecta.contract: fruit-v4-isolated-production-compose
   com.vecta.owner: vecta-infra
   com.vecta.service: fruit-industry-pack
-  com.vecta.source.repository: ZenoWangzy/vecta-infra
+  com.vecta.source.repository: ZenoWangzy/vecta
   com.vecta.source.revision: ${FRUIT_V4_SOURCE_SHA:?Set FRUIT_V4_SOURCE_SHA}
+  com.vecta.deployment.repository: ZenoWangzy/vecta-infra
+  com.vecta.deployment.revision: ${FRUIT_V4_INFRA_REVISION:?Set FRUIT_V4_INFRA_REVISION}
   com.vecta.image.repository: ${FRUIT_V4_IMAGE_REGISTRY:?Set FRUIT_V4_IMAGE_REGISTRY}/fruit-industry-pack
   com.vecta.image.digest: sha256:${FRUIT_V4_IMAGE_DIGEST:?Set FRUIT_V4_IMAGE_DIGEST}
-  org.opencontainers.image.source: https://github.com/ZenoWangzy/vecta-infra
+  org.opencontainers.image.source: https://github.com/ZenoWangzy/vecta
 
 services:
   fruit-v4-setup:
     image: *fruit-v4-image
     container_name: fruit-v4-isolated-setup
     hostname: fruit-v4-isolated-setup
-    command: ["node", "packages/fruit-industry-pack/dist/db/setup.js"]
+    profiles: [migration]
+    command:
+      - node
+      - --input-type=module
+      - -e
+      - |-
+          import { execFileSync } from "node:child_process";
+
+          const fail = (message) => {
+            console.error("Fruit V4 setup preflight failed: " + message);
+            process.exit(64);
+          };
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value || value.trim() !== value) fail(name + " is required");
+            return value;
+          };
+          const parseDsn = (name) => {
+            let value;
+            try {
+              value = new URL(required(name));
+            } catch {
+              fail(name + " must be a valid URL");
+            }
+            if (value.protocol !== "postgres:" && value.protocol !== "postgresql:") {
+              fail(name + " must use PostgreSQL");
+            }
+            return value;
+          };
+          const assertHex = (name, length) => {
+            const value = required(name);
+            if (value.length !== length || /[^0-9a-f]/.test(value)) {
+              fail(name + " has invalid format");
+            }
+          };
+
+          if (required("FRUIT_V4_MIGRATION_GATE") !== "approved-one-shot") {
+            fail("FRUIT_V4_MIGRATION_GATE is not approved-one-shot");
+          }
+          assertHex("FRUIT_V4_SOURCE_SHA", 40);
+          assertHex("FRUIT_V4_INFRA_REVISION", 40);
+          assertHex("FRUIT_V4_IMAGE_DIGEST", 64);
+          assertHex("FRUIT_V4_BACKUP_SHA256", 64);
+          required("FRUIT_V4_RESTORE_REHEARSAL_ID");
+          required("FRUIT_V4_OPERATOR_APPROVAL_ID");
+
+          const expectedHost = required("FRUIT_V4_EXPECTED_DATABASE_HOST");
+          const expectedPort = required("FRUIT_V4_EXPECTED_DATABASE_PORT");
+          const expectedPath = required("FRUIT_V4_EXPECTED_DATABASE_PATH");
+          if (/[^0-9]/.test(expectedPort)) {
+            fail("FRUIT_V4_EXPECTED_DATABASE_PORT must be numeric");
+          }
+          if (!expectedPath.startsWith("/")) {
+            fail("FRUIT_V4_EXPECTED_DATABASE_PATH must start with /");
+          }
+
+          const writer = parseDsn("DATABASE_URL");
+          const runtime = parseDsn("FRUIT_V4_RUNTIME_DATABASE_URL");
+          for (const [name, dsn] of [["writer", writer], ["runtime", runtime]]) {
+            if (
+              dsn.hostname !== expectedHost ||
+              dsn.port !== expectedPort ||
+              dsn.pathname !== expectedPath
+            ) {
+              fail(name + " DSN does not match the approved database host/port/path");
+            }
+            if (!dsn.username) fail(name + " DSN username is required");
+          }
+          if (writer.username === runtime.username) {
+            fail("writer and runtime DSN usernames must differ");
+          }
+
+          execFileSync(
+            process.execPath,
+            ["packages/fruit-industry-pack/dist/db/setup.js"],
+            { env: process.env, stdio: "inherit" },
+          );
     environment:
       DATABASE_URL: ${FRUIT_V4_WRITER_DATABASE_URL:?Set FRUIT_V4_WRITER_DATABASE_URL}
+      FRUIT_V4_RUNTIME_DATABASE_URL: ${FRUIT_V4_RUNTIME_DATABASE_URL:?Set FRUIT_V4_RUNTIME_DATABASE_URL}
       FRUIT_RUNTIME_DB_ROLE: ${FRUIT_V4_RUNTIME_DB_ROLE:?Set FRUIT_V4_RUNTIME_DB_ROLE}
       FRUIT_RUNTIME_DB_PASSWORD: ${FRUIT_V4_RUNTIME_DB_PASSWORD:?Set FRUIT_V4_RUNTIME_DB_PASSWORD}
       FRUIT_SETUP_WAIT_MS: ${FRUIT_V4_SETUP_WAIT_MS:-60000}
+      FRUIT_V4_EXPECTED_DATABASE_HOST: ${FRUIT_V4_EXPECTED_DATABASE_HOST:?Set FRUIT_V4_EXPECTED_DATABASE_HOST}
+      FRUIT_V4_EXPECTED_DATABASE_PORT: ${FRUIT_V4_EXPECTED_DATABASE_PORT:?Set FRUIT_V4_EXPECTED_DATABASE_PORT}
+      FRUIT_V4_EXPECTED_DATABASE_PATH: ${FRUIT_V4_EXPECTED_DATABASE_PATH:?Set FRUIT_V4_EXPECTED_DATABASE_PATH}
+      FRUIT_V4_SOURCE_SHA: ${FRUIT_V4_SOURCE_SHA:?Set FRUIT_V4_SOURCE_SHA}
+      FRUIT_V4_INFRA_REVISION: ${FRUIT_V4_INFRA_REVISION:?Set FRUIT_V4_INFRA_REVISION}
+      FRUIT_V4_IMAGE_DIGEST: ${FRUIT_V4_IMAGE_DIGEST:?Set FRUIT_V4_IMAGE_DIGEST}
+      FRUIT_V4_BACKUP_SHA256: ${FRUIT_V4_BACKUP_SHA256:?Set FRUIT_V4_BACKUP_SHA256}
+      FRUIT_V4_RESTORE_REHEARSAL_ID: ${FRUIT_V4_RESTORE_REHEARSAL_ID:?Set FRUIT_V4_RESTORE_REHEARSAL_ID}
+      FRUIT_V4_OPERATOR_APPROVAL_ID: ${FRUIT_V4_OPERATOR_APPROVAL_ID:?Set FRUIT_V4_OPERATOR_APPROVAL_ID}
+      FRUIT_V4_MIGRATION_GATE: ${FRUIT_V4_MIGRATION_GATE:?Set FRUIT_V4_MIGRATION_GATE}
     labels:
       <<: *fruit-v4-labels
       com.vecta.role: setup
@@ -39,9 +128,6 @@ services:
       FRUIT_ALLOWED_TENANT_IDS: ${FRUIT_V4_ALLOWED_TENANT_IDS:?Set FRUIT_V4_ALLOWED_TENANT_IDS}
       FRUIT_ALLOWED_EMPLOYEE_IDS: ${FRUIT_V4_ALLOWED_EMPLOYEE_IDS:?Set FRUIT_V4_ALLOWED_EMPLOYEE_IDS}
       FRUIT_PORT: "8002"
-    depends_on:
-      fruit-v4-setup:
-        condition: service_completed_successfully
     healthcheck:
       test:
         - CMD

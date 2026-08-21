@@ -1,11 +1,11 @@
 # Fruit V4 Isolated Production Compose Contract
 
-This contract is the `vecta-infra` owner for the isolated Fruit V4 UAT
+This contract is the `vecta-infra` owner for one isolated Fruit V4 UAT
 instance. It does not modify, restart, route, or remove any V3 service. The
-Compose project has no published host port and joins only the existing
-canonical production Docker network supplied by the operator.
+Compose project publishes no host port and joins only the operator-supplied
+canonical production Docker network.
 
-## Owned resources
+## Owned resources and provenance
 
 | Resource | Contract value |
 | --- | --- |
@@ -15,46 +15,93 @@ canonical production Docker network supplied by the operator.
 | UAT service/container | `fruit-v4-uat` / `fruit-v4-isolated-uat` |
 | UAT Docker DNS alias | `fruit-v4-isolated-uat` on the canonical network |
 | image input | `${FRUIT_V4_IMAGE_REGISTRY}/fruit-industry-pack@sha256:${FRUIT_V4_IMAGE_DIGEST}` |
+| image source | `ZenoWangzy/vecta` at `FRUIT_V4_SOURCE_SHA` |
+| deployment source | `ZenoWangzy/vecta-infra` at `FRUIT_V4_INFRA_REVISION` |
 
-Both services consume the same digest-only image anchor. The file contains no
+Setup and UAT consume the same digest-only image. The Compose file contains no
 `build`, floating tag, host `ports`, `env_file`, volume, or second network.
-The setup command is fixed to `node packages/fruit-industry-pack/dist/db/setup.js`;
-the UAT service command is fixed to the exact image's Fruit CLI.
+The setup service first performs an image-internal Node.js preflight and then
+executes `node packages/fruit-industry-pack/dist/db/setup.js`. UAT executes the
+exact image's Fruit CLI.
+
+`FRUIT_V4_SOURCE_SHA` is always the full VectA `main` source SHA represented
+by the image. It must never contain the infra revision. The independent
+`FRUIT_V4_INFRA_REVISION` label identifies the full `vecta-infra` deployment
+contract revision used by the operator.
 
 ## Required live inputs
 
-The operator supplies these values from the approved secret/configuration
-source. They are not committed here and must not be printed in evidence:
+The operator supplies these values from approved secret, release, backup, and
+change-control systems. They are not committed here and secret values must not
+be printed in evidence:
 
 - `FRUIT_V4_IMAGE_REGISTRY`: registry host (and optional port) without a path,
   tag, or digest; the contract fixes the repository to `fruit-industry-pack`.
 - `FRUIT_V4_IMAGE_DIGEST`: exactly 64 lowercase hexadecimal characters; the
-  Compose file supplies the `sha256:` algorithm prefix.
-- `FRUIT_V4_SOURCE_SHA`: the full 40-character source SHA represented by the
-  image build.
-- `FRUIT_V4_CANONICAL_NETWORK`: the pre-existing production Docker network.
+  Compose file supplies the `sha256:` prefix.
+- `FRUIT_V4_SOURCE_SHA`: full 40-character VectA `main` SHA represented by
+  the image.
+- `FRUIT_V4_INFRA_REVISION`: full 40-character `vecta-infra` deployment
+  revision containing this contract.
+- `FRUIT_V4_CANONICAL_NETWORK`: pre-existing canonical production network.
 - `FRUIT_V4_WRITER_DATABASE_URL`: setup-only migration/writer DSN.
+- `FRUIT_V4_RUNTIME_DATABASE_URL`: least-privilege runtime DSN. Setup receives
+  it only to compare its destination and username with the writer DSN.
+- `FRUIT_V4_EXPECTED_DATABASE_HOST`, `FRUIT_V4_EXPECTED_DATABASE_PORT`, and
+  `FRUIT_V4_EXPECTED_DATABASE_PATH`: independently approved database endpoint
+  components. Both DSNs must explicitly match all three values.
 - `FRUIT_V4_RUNTIME_DB_ROLE` and `FRUIT_V4_RUNTIME_DB_PASSWORD`: setup-only
   runtime-role provisioning inputs.
-- `FRUIT_V4_RUNTIME_DATABASE_URL`: least-privilege runtime DSN for UAT.
+- `FRUIT_V4_BACKUP_SHA256`: checksum of the fresh pre-migration custom dump.
+- `FRUIT_V4_RESTORE_REHEARSAL_ID`: evidence ID for the isolated restore and
+  exact-image setup rehearsal.
+- `FRUIT_V4_OPERATOR_APPROVAL_ID`: approval authorizing this one setup run.
+- `FRUIT_V4_MIGRATION_GATE`: must equal `approved-one-shot` for setup.
 - `FRUIT_V4_SERVICE_SECRET`: UAT service credential.
-- `FRUIT_V4_ALLOWED_TENANT_IDS` and `FRUIT_V4_ALLOWED_EMPLOYEE_IDS`: approved
-  UAT allowlists; no values are embedded in this contract.
+- `FRUIT_V4_ALLOWED_TENANT_IDS` and `FRUIT_V4_ALLOWED_EMPLOYEE_IDS`:
+  approved UAT allowlists.
 
-Compose uses `:?` for every required input. A missing DSN, secret, allowlist,
-source, digest, or network fails during `docker compose config`. A tag-only
-value cannot become an image reference because the contract constructs
-`@sha256:<digest>`; the operator must also reject a non-hex digest before pull.
+Compose uses `:?` interpolation for every required input. Missing inputs fail
+during `docker compose config`. The setup preflight additionally rejects an
+invalid full SHA/digest/checksum, a gate other than `approved-one-shot`, a DSN
+that is not PostgreSQL, either DSN not matching the approved host/explicit
+port/path, an empty username, or equal writer/runtime usernames.
 
-The setup container receives only the writer DSN, runtime-role name, and
-runtime-role password needed by `dist/db/setup.js`. The UAT container receives
-only the runtime DSN, service secret, and approved allowlists. No shared
-`env_file` is allowed, so V3 containers never receive these inputs.
+Only the setup container receives the writer DSN and runtime-role password.
+Only UAT receives the service secret and allowlists. V3 containers receive none
+of these values.
 
-## Read-only preflight and start
+## Mandatory migration evidence gate
 
-Run from the checkout containing this file. Do not run these commands against
-the V3 Compose project.
+Setup is a forward migration and authorization operation. The following gate is
+mandatory before setting `FRUIT_V4_MIGRATION_GATE=approved-one-shot`:
+
+1. Quiesce the approved migration window and create a fresh, custom-format
+   database dump using the approved backup tooling and protected destination.
+2. Compute the dump's SHA-256 checksum, store the dump and checksum in the
+   approved backup system, and set `FRUIT_V4_BACKUP_SHA256` to that recorded
+   checksum.
+3. Restore that exact dump into an isolated, non-production database.
+4. Against the isolated restore, run
+   `${FRUIT_V4_IMAGE_REGISTRY}/fruit-industry-pack@sha256:${FRUIT_V4_IMAGE_DIGEST}`
+   and execute its exact
+   `node packages/fruit-industry-pack/dist/db/setup.js`.
+5. Verify the isolated restore and setup rehearsal, then record the immutable
+   evidence as `FRUIT_V4_RESTORE_REHEARSAL_ID`.
+6. Obtain a separate operator approval for the exact VectA source SHA, image
+   digest, backup checksum, rehearsal ID, approved database host/port/path, and
+   infra revision. Record it as `FRUIT_V4_OPERATOR_APPROVAL_ID`.
+
+The Compose preflight proves only that required identifiers are present and
+well-formed and that the two DSNs match the approved endpoint inputs. It cannot
+prove that a backup is fresh or authentic, that a restore rehearsal happened,
+or that an approval is valid. Those facts remain external hard-gate evidence
+and must be independently accepted before setup.
+
+## Preflight, pull, setup, and UAT start
+
+Run from the checkout containing this file. Do not run these commands against a
+V3 Compose project.
 
 ```bash
 set -euo pipefail
@@ -63,11 +110,19 @@ contract=deploy/fruit-v4/docker-compose.yml
 : "${FRUIT_V4_IMAGE_REGISTRY:?required}"
 : "${FRUIT_V4_IMAGE_DIGEST:?required}"
 : "${FRUIT_V4_SOURCE_SHA:?required}"
+: "${FRUIT_V4_INFRA_REVISION:?required}"
 : "${FRUIT_V4_CANONICAL_NETWORK:?required}"
 : "${FRUIT_V4_WRITER_DATABASE_URL:?required}"
+: "${FRUIT_V4_RUNTIME_DATABASE_URL:?required}"
+: "${FRUIT_V4_EXPECTED_DATABASE_HOST:?required}"
+: "${FRUIT_V4_EXPECTED_DATABASE_PORT:?required}"
+: "${FRUIT_V4_EXPECTED_DATABASE_PATH:?required}"
 : "${FRUIT_V4_RUNTIME_DB_ROLE:?required}"
 : "${FRUIT_V4_RUNTIME_DB_PASSWORD:?required}"
-: "${FRUIT_V4_RUNTIME_DATABASE_URL:?required}"
+: "${FRUIT_V4_BACKUP_SHA256:?required}"
+: "${FRUIT_V4_RESTORE_REHEARSAL_ID:?required}"
+: "${FRUIT_V4_OPERATOR_APPROVAL_ID:?required}"
+: "${FRUIT_V4_MIGRATION_GATE:?required}"
 : "${FRUIT_V4_SERVICE_SECRET:?required}"
 : "${FRUIT_V4_ALLOWED_TENANT_IDS:?required}"
 : "${FRUIT_V4_ALLOWED_EMPLOYEE_IDS:?required}"
@@ -75,85 +130,105 @@ contract=deploy/fruit-v4/docker-compose.yml
 case "$FRUIT_V4_IMAGE_REGISTRY" in
   */*|*@*|'') echo 'image registry must not contain a path or digest' >&2; exit 1 ;;
 esac
+test "$FRUIT_V4_MIGRATION_GATE" = approved-one-shot
 printf '%s' "$FRUIT_V4_IMAGE_DIGEST" | grep -Eq '^[0-9a-f]{64}$'
 printf '%s' "$FRUIT_V4_SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+printf '%s' "$FRUIT_V4_INFRA_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+printf '%s' "$FRUIT_V4_BACKUP_SHA256" | grep -Eq '^[0-9a-f]{64}$'
 docker network inspect "$FRUIT_V4_CANONICAL_NETWORK" >/dev/null
 
-# --quiet validates interpolation without echoing DSNs or secrets.
-docker compose -f "$contract" config --quiet
-docker compose -f "$contract" config --images
-docker image inspect \
-  "${FRUIT_V4_IMAGE_REGISTRY}/fruit-industry-pack@sha256:${FRUIT_V4_IMAGE_DIGEST}" \
-  --format '{{.Id}}'
+# Validate setup and UAT interpolation without printing DSNs or secrets.
+docker compose --profile migration -f "$contract" config --quiet
+
+# First deployment pulls the approved immutable reference before inspecting it.
+image_ref="${FRUIT_V4_IMAGE_REGISTRY}/fruit-industry-pack@sha256:${FRUIT_V4_IMAGE_DIGEST}"
+docker compose --profile migration -f "$contract" pull fruit-v4-setup fruit-v4-uat
+docker image inspect "$image_ref" \
+  --format 'id={{.Id}} repo_digests={{join .RepoDigests ","}}'
 ```
 
-The final inspect must show the exact `repo@sha256:<digest>` input. Pull and
-start only after the preflight has been independently accepted:
+The inspect result must contain the approved exact digest. Only after the
+external migration evidence gate and pull/inspect evidence are independently
+accepted may the one-shot setup profile run:
 
 ```bash
-docker compose -f deploy/fruit-v4/docker-compose.yml pull
-docker compose -f deploy/fruit-v4/docker-compose.yml up -d --no-build
+docker compose --profile migration -f deploy/fruit-v4/docker-compose.yml \
+  up --no-build --no-deps --abort-on-container-exit \
+  --exit-code-from fruit-v4-setup fruit-v4-setup
+
+docker inspect fruit-v4-isolated-setup \
+  --format 'image_ref={{.Config.Image}} image_id={{.Image}} status={{.State.Status}} exit={{.State.ExitCode}}'
 ```
 
-The dependency condition starts UAT only after setup exits successfully. The
-UAT healthcheck is the readiness gate: `GET /healthz` must report HTTP 200 and
-Docker must report `healthy`. There is no host-port curl path; callers on the
-canonical network use `http://fruit-v4-isolated-uat:8002/mcp`.
+Default `docker compose up` does not execute setup: setup is behind the
+`migration` profile, UAT has no dependency that activates it, and the setup
+command requires the explicit one-shot gate. After setup exits successfully,
+start only UAT:
 
-## Evidence without secret disclosure
+```bash
+docker compose -f deploy/fruit-v4/docker-compose.yml up -d --no-build fruit-v4-uat
+docker compose -f deploy/fruit-v4/docker-compose.yml ps fruit-v4-uat
+```
 
-Capture the following after setup completion and UAT readiness. These commands
-show references, image IDs, labels, network membership, command, and health;
-the environment command redacts values before output.
+`GET /healthz` must report HTTP 200 and Docker must report `healthy`. There
+is no host-port curl path; approved callers on the canonical network use
+`http://fruit-v4-isolated-uat:8002/mcp`.
+
+## Digest, inspect, and readiness evidence
+
+Capture these commands after setup completion and UAT readiness. They expose
+references, image IDs, labels, network membership, command, and health without
+printing environment values:
 
 ```bash
 docker compose -f deploy/fruit-v4/docker-compose.yml ps
 
 for container in fruit-v4-isolated-setup fruit-v4-isolated-uat; do
   docker inspect "$container" \
-    --format 'name={{.Name}} image_ref={{.Config.Image}} image_id={{.Image}} status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
-  docker inspect "$container" \
-    --format '{{json .Config.Labels}}' | jq .
-  docker inspect "$container" \
-    --format '{{range .Config.Env}}{{println .}}{{end}}' |
-    sed -E 's/=.*$/=<redacted>/'
+    --format 'name={{.Name}} image_ref={{.Config.Image}} image_id={{.Image}} status={{.State.Status}} exit={{.State.ExitCode}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
+  docker inspect "$container" --format '{{json .Config.Labels}}' | jq .
 done
 
-docker image inspect \
-  "$(docker inspect -f '{{.Image}}' fruit-v4-isolated-uat)" \
-  --format 'repo_digests={{join .RepoDigests ","}}'
+uat_image_id="$(docker inspect -f '{{.Image}}' fruit-v4-isolated-uat)"
+docker image inspect "$uat_image_id" \
+  --format 'id={{.Id}} repo_digests={{join .RepoDigests ","}}'
 docker inspect fruit-v4-isolated-uat \
   --format '{{json .NetworkSettings.Networks}}' | jq .
 ```
 
-The labels must identify `vecta-infra`, this contract, the full source SHA,
-the repository, and the digest. The setup environment must not contain the
-UAT service secret or allowlists; the UAT environment must not contain the
-writer DSN or setup-only runtime-role password.
+Both containers must resolve to the same image ID and approved digest. Labels
+must independently identify VectA source repository/SHA and
+`vecta-infra` deployment repository/revision. Evidence must not print
+`.Config.Env`, because setup and UAT contain secret live inputs.
 
-## Stop, remove, and rollback order
+## Stop, remove, and additive-migration rollback
 
 Rollback is isolated to this project. Never use `down --volumes`, `docker
-network prune`, or a broad container/image cleanup, and never stop or restart
-V3 services as part of this sequence.
+network prune`, broad container/image cleanup, or any command that stops or
+restarts V3.
 
-1. Save the inspect/digest/health evidence for the current UAT container.
-2. Stop and remove `fruit-v4-uat` / `fruit-v4-isolated-uat` first.
-3. Stop and remove `fruit-v4-setup` / `fruit-v4-isolated-setup` second.
-4. Set the previously approved immutable Fruit image digest and matching source
-   SHA in the operator-only environment.
-5. Repeat the preflight, exact-image pull, setup completion check, and UAT
-   readiness check in that order.
-
-The concrete removal commands are:
+1. Suspend UAT callers or routing, then prevent further append-only UAT facts.
+2. Capture digest, labels, health, exit status, and database/audit evidence.
+3. Stop and remove UAT first.
+4. Stop and remove the exited setup container second.
+5. Leave the canonical external network and immutable image untouched.
 
 ```bash
 docker compose -f deploy/fruit-v4/docker-compose.yml stop fruit-v4-uat
 docker compose -f deploy/fruit-v4/docker-compose.yml rm -f fruit-v4-uat
-docker compose -f deploy/fruit-v4/docker-compose.yml stop fruit-v4-setup
-docker compose -f deploy/fruit-v4/docker-compose.yml rm -f fruit-v4-setup
+docker compose --profile migration -f deploy/fruit-v4/docker-compose.yml \
+  stop fruit-v4-setup
+docker compose --profile migration -f deploy/fruit-v4/docker-compose.yml \
+  rm -f fruit-v4-setup
 ```
 
-The canonical external network is never removed. A rollback digest, network
-name, DSN, secret, tenant, employee, or business fixture is a live input and
-must remain outside Git.
+The setup migration is additive and has no destructive Compose rollback. If
+setup has written schema/grant changes but no append-only UAT facts have been
+written, an independently approved database rollback may restore the fresh
+pre-migration backup after V4 is isolated. Once any append-only UAT fact exists,
+do **not** restore over the database: that would overwrite audit history.
+Suspend/isolate/stop V4, preserve the facts and evidence, and use a separately
+approved forward corrective migration.
+
+A rollback image digest, network, DSN, secret, tenant, employee, backup, restore
+rehearsal, or approval value is a live input and must remain outside Git.
