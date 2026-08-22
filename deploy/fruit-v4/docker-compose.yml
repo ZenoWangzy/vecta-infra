@@ -17,9 +17,92 @@ services:
     image: *fruit-v4-image
     container_name: fruit-v4-isolated-uat
     hostname: fruit-v4-isolated-uat
-    command: ["node", "packages/fruit-industry-pack/dist/cli.js"]
+    command:
+      - node
+      - --input-type=module
+      - -e
+      - |-
+          import { spawn } from "node:child_process";
+
+          const fail = (message) => {
+            console.error("Fruit V4 UAT preflight failed: " + message);
+            process.exit(64);
+          };
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value || value.trim() !== value) fail(name + " is required");
+            return value;
+          };
+          const parseDsn = (name) => {
+            let value;
+            try {
+              value = new URL(required(name));
+            } catch {
+              fail(name + " must be a valid URL");
+            }
+            if (value.protocol !== "postgres:" && value.protocol !== "postgresql:") {
+              fail(name + " must use PostgreSQL");
+            }
+            if (value.search || value.hash) {
+              fail(name + " must not include query parameters or fragments");
+            }
+            return value;
+          };
+          const decode = (value, name) => {
+            try {
+              return decodeURIComponent(value);
+            } catch {
+              fail(name + " must use valid URL encoding");
+            }
+          };
+
+          const expectedHost = required("FRUIT_V4_EXPECTED_DATABASE_HOST");
+          const expectedPort = required("FRUIT_V4_EXPECTED_DATABASE_PORT");
+          const expectedPath = required("FRUIT_V4_EXPECTED_DATABASE_PATH");
+          const runtime = parseDsn("DATABASE_URL");
+          const writer = parseDsn("FRUIT_V4_WRITER_DATABASE_URL");
+          for (const [name, dsn] of [["runtime", runtime], ["writer", writer]]) {
+            if (
+              dsn.hostname !== expectedHost ||
+              dsn.port !== expectedPort ||
+              dsn.pathname !== expectedPath
+            ) {
+              fail(name + " DSN does not match the approved database host/port/path");
+            }
+          }
+          const runtimeUsername = decode(runtime.username, "runtime DSN username");
+          const writerUsername = decode(writer.username, "writer DSN username");
+          if (!runtimeUsername || !decode(runtime.password, "runtime DSN password")) {
+            fail("runtime DSN username and password are required");
+          }
+          if (!writerUsername || !decode(writer.password, "writer DSN password")) {
+            fail("writer DSN username and password are required");
+          }
+          if (runtimeUsername === writerUsername) {
+            fail("writer and runtime DSN usernames must differ");
+          }
+
+          const child = spawn(
+            process.execPath,
+            ["packages/fruit-industry-pack/dist/cli.js"],
+            { env: process.env, stdio: "inherit" },
+          );
+          for (const signal of ["SIGINT", "SIGTERM"]) {
+            process.on(signal, () => child.kill(signal));
+          }
+          child.on("error", (error) => fail("CLI start failed: " + error.message));
+          child.on("exit", (code, signal) => {
+            if (signal) process.kill(process.pid, signal);
+            else process.exit(code ?? 1);
+          });
     environment:
       DATABASE_URL: ${FRUIT_V4_RUNTIME_DATABASE_URL:?Set FRUIT_V4_RUNTIME_DATABASE_URL}
+      FRUIT_V4_WRITER_DATABASE_URL: ${FRUIT_V4_WRITER_DATABASE_URL:?Set FRUIT_V4_WRITER_DATABASE_URL}
+      FRUIT_V4_EXPECTED_DATABASE_HOST: ${FRUIT_V4_EXPECTED_DATABASE_HOST:?Set FRUIT_V4_EXPECTED_DATABASE_HOST}
+      FRUIT_V4_EXPECTED_DATABASE_PORT: ${FRUIT_V4_EXPECTED_DATABASE_PORT:?Set FRUIT_V4_EXPECTED_DATABASE_PORT}
+      FRUIT_V4_EXPECTED_DATABASE_PATH: ${FRUIT_V4_EXPECTED_DATABASE_PATH:?Set FRUIT_V4_EXPECTED_DATABASE_PATH}
+      FRUIT_MODEL_PATH: /app/packages/fruit-industry-pack/model/fruit-model-v4.yaml
+      FRUIT_CONTROLLED_ENTRY_ENABLED: "true"
       FRUIT_SERVICE_SECRET: ${FRUIT_V4_SERVICE_SECRET:?Set FRUIT_V4_SERVICE_SECRET}
       FRUIT_ALLOWED_TENANT_IDS: ${FRUIT_V4_ALLOWED_TENANT_IDS:?Set FRUIT_V4_ALLOWED_TENANT_IDS}
       FRUIT_ALLOWED_EMPLOYEE_IDS: ${FRUIT_V4_ALLOWED_EMPLOYEE_IDS:?Set FRUIT_V4_ALLOWED_EMPLOYEE_IDS}
