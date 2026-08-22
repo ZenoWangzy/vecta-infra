@@ -185,13 +185,25 @@ jobs:
           }
           # ponytail: 30m absolute cap; add a progress watchdog only if a
           # successful exact-source clone exceeds it.
-          GIT_HTTP_LOW_SPEED_LIMIT=0 \
-            LC_ALL=C \
-            GIT_ASKPASS="$askpass" \
-            GIT_ASKPASS_REQUIRE=force \
-            GIT_TERMINAL_PROMPT=0 \
-            timeout 30m git clone --depth=1 --branch main --single-branch \
-              https://github.com/ZenoWangzy/vecta.git vecta
+          # ponytail: three attempts cover the observed transient disconnect;
+          # use a resumable source transport only if all three still fail.
+          for attempt in 1 2 3; do
+            if GIT_HTTP_LOW_SPEED_LIMIT=0 \
+              LC_ALL=C \
+              GIT_ASKPASS="$askpass" \
+              GIT_ASKPASS_REQUIRE=force \
+              GIT_TERMINAL_PROMPT=0 \
+              timeout 30m git clone --depth=1 --branch main --single-branch \
+                https://github.com/ZenoWangzy/vecta.git vecta; then
+              break
+            fi
+            rm -rf vecta
+            if [ "$attempt" -eq 3 ]; then
+              echo "VectA clone failed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "Retrying VectA clone after transient network failure"
+          done
           git -C vecta switch --detach "$SOURCE_SHA"
           checkout_sha="$(git -C vecta rev-parse HEAD)"
           if [ "$checkout_sha" != "$SOURCE_SHA" ]; then
