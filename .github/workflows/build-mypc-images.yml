@@ -179,13 +179,18 @@ jobs:
             echo "vecta source directory must not exist before clone" >&2
             exit 1
           }
-          GIT_HTTP_LOW_SPEED_LIMIT=1 \
-            GIT_HTTP_LOW_SPEED_TIME=300 \
+          command -v timeout >/dev/null || {
+            echo "timeout is required" >&2
+            exit 1
+          }
+          # ponytail: 30m absolute cap; add a progress watchdog only if a
+          # successful exact-source clone exceeds it.
+          GIT_HTTP_LOW_SPEED_LIMIT=0 \
             LC_ALL=C \
             GIT_ASKPASS="$askpass" \
             GIT_ASKPASS_REQUIRE=force \
             GIT_TERMINAL_PROMPT=0 \
-            git clone --depth=1 --branch main --single-branch \
+            timeout 30m git clone --depth=1 --branch main --single-branch \
               https://github.com/ZenoWangzy/vecta.git vecta
           git -C vecta switch --detach "$SOURCE_SHA"
           checkout_sha="$(git -C vecta rev-parse HEAD)"

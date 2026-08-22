@@ -121,8 +121,8 @@ def assert_static_contract(workflow: str) -> None:
         'GIT_ASKPASS="$askpass"',
         "GIT_ASKPASS_REQUIRE=force",
         "GIT_TERMINAL_PROMPT=0",
-        "GIT_HTTP_LOW_SPEED_LIMIT=1",
-        "GIT_HTTP_LOW_SPEED_TIME=300",
+        "command -v timeout >/dev/null",
+        "GIT_HTTP_LOW_SPEED_LIMIT=0",
         "LC_ALL=C",
         "git clone --depth=1 --branch main --single-branch",
         "https://github.com/ZenoWangzy/vecta.git vecta",
@@ -190,6 +190,17 @@ def assert_static_contract(workflow: str) -> None:
     assert "GITHUB_SHA: ${{ inputs.source_sha }}" not in workflow
     assert "/tarball/${SOURCE_SHA}" not in workflow
     download_script = extract_step_script(workflow, "Download selected VectA source")
+    clone_prefix = (
+        "GIT_HTTP_LOW_SPEED_LIMIT=0 \\\n"
+        "  LC_ALL=C \\\n"
+        '  GIT_ASKPASS="$askpass" \\\n'
+        "  GIT_ASKPASS_REQUIRE=force \\\n"
+        "  GIT_TERMINAL_PROMPT=0 \\\n"
+        "  timeout 30m git clone --depth=1 --branch main --single-branch"
+    )
+    assert clone_prefix in download_script
+    assert workflow.count("GIT_HTTP_LOW_SPEED_LIMIT") == 1
+    assert "GIT_HTTP_LOW_SPEED_TIME" not in workflow
     assert not re.search(r"\bgh\b", download_script)
     assert not re.search(r"\bgit\b[^\n]*\bconfig\b", download_script)
     assert "GIT_CONFIG_" not in download_script
