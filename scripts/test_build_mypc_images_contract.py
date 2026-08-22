@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -125,7 +126,8 @@ def assert_static_contract(workflow: str) -> None:
         "GIT_HTTP_LOW_SPEED_LIMIT=0",
         "LC_ALL=C",
         "git clone --depth=1 --branch main --single-branch",
-        "https://github.com/ZenoWangzy/vecta.git vecta",
+        'remote="https://github.com/ZenoWangzy/vecta.git"',
+        '"$1" vecta',
         "--depth=1 --branch main --single-branch",
         'git -C vecta switch --detach "$SOURCE_SHA"',
         'checkout_sha="$(git -C vecta rev-parse HEAD)"',
@@ -172,6 +174,12 @@ def assert_static_contract(workflow: str) -> None:
     assert workflow.count(checkout_step) == 1
     assert workflow.count(fruit_contract_step) == 1
     assert workflow.index(checkout_step) < workflow.index(fruit_contract_step)
+    assert "uses: actions/checkout@" not in workflow
+    assert "- name: Configure git proxy" not in workflow
+    assert "GIT_CONFIG_GLOBAL: /dev/null" in workflow
+    assert "GIT_CONFIG_SYSTEM: /dev/null" in workflow
+    assert 'GIT_NO_REPLACE_OBJECTS: "1"' in workflow
+    assert "working-directory: infra" in workflow
     assert "- name: Login to production Nexus Docker registry" not in workflow
     assert workflow.count("image_names:") == 1
     assert "main|develop" not in workflow
@@ -189,9 +197,30 @@ def assert_static_contract(workflow: str) -> None:
     assert f"{retired_environment.upper()}_IMAGE_NAMES" not in workflow
     assert "GITHUB_SHA: ${{ inputs.source_sha }}" not in workflow
     assert "/tarball/${SOURCE_SHA}" not in workflow
+    infra_script = extract_step_script(workflow, "Checkout infra contract")
+    for literal in (
+        'target="$GITHUB_WORKSPACE/infra"',
+        'old_objects="$GITHUB_WORKSPACE/.git/objects"',
+        'rm -rf "$target"',
+        'git init "$target"',
+        'GIT_ALTERNATE_OBJECT_DIRECTORIES="$old_objects"',
+        'printf \'%s\\n\' "$GITHUB_SHA" > "$target/.git/shallow"',
+        'git -C "$target" repack -a -d',
+        "for attempt in 1 2 3; do",
+        "timeout 10m git -C \"$target\" fetch --depth=1 origin",
+        'git -C "$target" fsck --connectivity-only "$GITHUB_SHA"',
+        'git -C "$target" checkout --detach --force "$GITHUB_SHA"',
+        'test "$(git -C "$target" rev-parse HEAD)" = "$GITHUB_SHA"',
+        'git -C "$target" status --porcelain --untracked-files=all',
+        "GIT_ASKPASS_REQUIRE=force",
+        "GIT_TERMINAL_PROMPT=0",
+    ):
+        assert literal in infra_script, literal
+    assert not re.search(r"https://[^\s/]*@github\.com", infra_script)
+    assert not re.search(r"\bset\s+-x\b|\bxtrace\b", infra_script)
     download_script = extract_step_script(workflow, "Download selected VectA source")
     clone_prefix = (
-        "if GIT_HTTP_LOW_SPEED_LIMIT=0 \\\n"
+        "  GIT_HTTP_LOW_SPEED_LIMIT=0 \\\n"
         "    LC_ALL=C \\\n"
         '    GIT_ASKPASS="$askpass" \\\n'
         "    GIT_ASKPASS_REQUIRE=force \\\n"
@@ -203,7 +232,14 @@ def assert_static_contract(workflow: str) -> None:
     assert 'rm -rf vecta' in download_script
     assert 'if [ "$attempt" -eq 3 ]; then' in download_script
     assert 'echo "VectA clone failed after 3 attempts" >&2' in download_script
-    assert workflow.count("GIT_HTTP_LOW_SPEED_LIMIT") == 1
+    assert 'cache="/home/github-runner/.cache/vecta-main.git"' in download_script
+    assert 'git --git-dir="$cache" cat-file -e "$SOURCE_SHA^{commit}"' in download_script
+    assert 'git --git-dir="$cache" rev-parse refs/heads/main' in download_script
+    assert 'git --git-dir="$cache" fsck --connectivity-only "$SOURCE_SHA"' in download_script
+    assert 'if clone_source "$cache"; then' in download_script
+    assert 'clone_source "$remote"' in download_script
+    assert "Cached VectA source unusable; falling back to GitHub" in download_script
+    assert download_script.count("GIT_HTTP_LOW_SPEED_LIMIT") == 1
     assert "GIT_HTTP_LOW_SPEED_TIME" not in workflow
     assert not re.search(r"\bgh\b", download_script)
     assert not re.search(r"\bgit\b[^\n]*\bconfig\b", download_script)
@@ -443,11 +479,142 @@ def assert_fake_contract(workflow: str) -> None:
         assert not leftovers, f"{label}: temporary DOCKER_CONFIG was not removed"
 
 
+def assert_local_checkout_isolation(workflow: str) -> None:
+    checkout_script = extract_step_script(workflow, "Checkout infra contract")
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        source = root / "source"
+        workspace = root / "workspace"
+        outside = root / "outside"
+        runner_temp = root / "runner"
+        hook_marker = root / "hook-ran"
+        source.mkdir()
+        outside.mkdir()
+        runner_temp.mkdir()
+
+        def git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", "-C", str(repo), *args],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+        git(source, "init")
+        git(source, "config", "user.name", "Contract Test")
+        git(source, "config", "user.email", "contract@example.invalid")
+        (source / "contract.txt").write_text("base\n")
+        git(source, "add", "contract.txt")
+        git(source, "commit", "-m", "base")
+        (source / "contract.txt").write_text("good\n")
+        git(source, "commit", "-am", "good")
+        good_sha = git(source, "rev-parse", "HEAD").stdout.strip()
+        subprocess.run(
+            ["git", "clone", "--depth=1", f"file://{source}", str(workspace)],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        git(workspace, "config", "user.name", "Contract Test")
+        git(workspace, "config", "user.email", "contract@example.invalid")
+        (workspace / "contract.txt").write_text("evil\n")
+        git(workspace, "commit", "-am", "evil")
+        evil_sha = git(workspace, "rev-parse", "HEAD").stdout.strip()
+        git(workspace, "replace", good_sha, evil_sha)
+        hook = workspace / ".git" / "hooks" / "post-checkout"
+        hook.write_text(f"#!/bin/sh\ntouch '{hook_marker}'\n")
+        hook.chmod(0o700)
+        (outside / "keep").write_text("keep\n")
+        git(workspace, "config", "core.worktree", str(outside))
+
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "GITHUB_SHA": good_sha,
+                "GITHUB_WORKSPACE": str(workspace),
+                "PWD": str(workspace),
+                "INFRA_READ_TOKEN": "unused-local-object",
+                "RUNNER_TEMP": str(runner_temp),
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_SYSTEM": "/dev/null",
+                "GIT_NO_REPLACE_OBJECTS": "1",
+            }
+        )
+        result = subprocess.run(
+            ["bash", "-c", checkout_script],
+            cwd=workspace,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        checkout = workspace / "infra"
+        assert (checkout / "contract.txt").read_text() == "good\n"
+        assert not hook_marker.exists()
+        assert (outside / "keep").read_text() == "keep\n"
+        assert git(checkout, "rev-parse", "HEAD").stdout.strip() == good_sha
+        assert git(checkout, "status", "--porcelain").stdout == ""
+
+
+def assert_incomplete_cache_rejected() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        source = root / "source"
+        cache = root / "cache.git"
+        source.mkdir()
+        subprocess.run(["git", "-C", str(source), "init"], check=True)
+        subprocess.run(
+            ["git", "-C", str(source), "config", "user.name", "Contract Test"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(source),
+                "config",
+                "user.email",
+                "contract@example.invalid",
+            ],
+            check=True,
+        )
+        (source / "contract.txt").write_text("complete graph required\n")
+        subprocess.run(["git", "-C", str(source), "add", "contract.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(source), "commit", "-m", "source"], check=True
+        )
+        sha = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        subprocess.run(["git", "init", "--bare", str(cache)], check=True)
+        source_object = source / ".git" / "objects" / sha[:2] / sha[2:]
+        cache_object = cache / "objects" / sha[:2] / sha[2:]
+        cache_object.parent.mkdir(parents=True)
+        shutil.copyfile(source_object, cache_object)
+        subprocess.run(
+            ["git", f"--git-dir={cache}", "update-ref", "refs/heads/main", sha],
+            check=True,
+        )
+        result = subprocess.run(
+            ["git", f"--git-dir={cache}", "fsck", "--connectivity-only", sha],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+
+
 def main() -> None:
     workflow = WORKFLOW_PATH.read_text()
     assert_static_contract(workflow)
     assert_provisioning_contract()
     assert_fake_contract(workflow)
+    assert_local_checkout_isolation(workflow)
+    assert_incomplete_cache_rejected()
     print("build-mypc images contract: ok")
 
 

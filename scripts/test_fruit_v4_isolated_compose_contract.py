@@ -195,11 +195,10 @@ def main() -> None:
     assert "fruit-v4-setup:" not in base_source
     for name in MIGRATION_ENV:
         assert name not in base_source, f"setup-only input leaked into base: {name}"
-    assert (
-        "uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
-        in workflow
-    )
-    assert "persist-credentials: false" in workflow
+    assert "uses: actions/checkout@" not in workflow
+    assert 'git -C "$target" checkout --detach --force "$GITHUB_SHA"' in workflow
+    assert 'test "$(git -C "$target" rev-parse HEAD)" = "$GITHUB_SHA"' in workflow
+    assert "INFRA_READ_TOKEN: ${{ github.token }}" in workflow
     assert "Validate Fruit V4 isolated Compose contract" in workflow
     assert "python3 scripts/test_fruit_v4_isolated_compose_contract.py" in workflow
     assert "approved-one-shot" not in base_source + migration_source + runbook
