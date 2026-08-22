@@ -179,7 +179,8 @@ jobs:
             echo "vecta source directory must not exist before clone" >&2
             exit 1
           }
-          GIT_ASKPASS="$askpass" \
+          LC_ALL=C \
+            GIT_ASKPASS="$askpass" \
             GIT_ASKPASS_REQUIRE=force \
             GIT_TERMINAL_PROMPT=0 \
             git clone --depth=1 --branch main --single-branch \
