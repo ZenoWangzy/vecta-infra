@@ -113,8 +113,12 @@ def assert_static_contract(workflow: str) -> None:
         '"https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/main"',
         'echo "source_sha must be the current VectA main HEAD"',
         'if [ "$branch_sha" != "$SOURCE_SHA" ]; then',
-        "command -v gh >/dev/null",
-        'GH_TOKEN="$VECTA_READ_TOKEN" gh repo clone ZenoWangzy/vecta vecta',
+        "GIT_CONFIG_COUNT=1",
+        "GIT_CONFIG_KEY_0=http.extraHeader",
+        'GIT_CONFIG_VALUE_0="Authorization: Bearer ${VECTA_READ_TOKEN}"',
+        "GIT_TERMINAL_PROMPT=0",
+        "git clone --depth=1 --branch main --single-branch",
+        "https://github.com/ZenoWangzy/vecta.git vecta",
         "--depth=1 --branch main --single-branch",
         'git -C vecta switch --detach "$SOURCE_SHA"',
         'checkout_sha="$(git -C vecta rev-parse HEAD)"',
@@ -178,6 +182,17 @@ def assert_static_contract(workflow: str) -> None:
     assert f"{retired_environment.upper()}_IMAGE_NAMES" not in workflow
     assert "GITHUB_SHA: ${{ inputs.source_sha }}" not in workflow
     assert "/tarball/${SOURCE_SHA}" not in workflow
+    download_script = extract_step_script(workflow, "Download selected VectA source")
+    assert not re.search(r"\bgh\b", download_script)
+    assert not re.search(r"\bgit\b[^\n]*\bconfig\b", download_script)
+    assert not re.search(r"\bset\s+-x\b|\bxtrace\b", download_script)
+    assert not re.search(
+        r"\becho\b[^\n]*\$(?:VECTA_READ_TOKEN|\{VECTA_READ_TOKEN[^}]*\})",
+        download_script,
+    )
+    assert download_script.count("git clone ") == 1
+    assert download_script.count("https://github.com/ZenoWangzy/vecta.git") == 1
+    assert not re.search(r"https://[^\s/]*@github\.com", download_script)
 
 
 def assert_provisioning_contract() -> None:

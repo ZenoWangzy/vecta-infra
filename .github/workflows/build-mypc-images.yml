@@ -165,15 +165,16 @@ jobs:
             echo "expected=$SOURCE_SHA actual=$branch_sha" >&2
             exit 1
           fi
-          command -v gh >/dev/null || {
-            echo "gh is required for exact VectA checkout" >&2
-            exit 1
-          }
           [ ! -e vecta ] || {
             echo "vecta source directory must not exist before clone" >&2
             exit 1
           }
-          GH_TOKEN="$VECTA_READ_TOKEN" gh repo clone ZenoWangzy/vecta vecta -- --depth=1 --branch main --single-branch
+          GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.extraHeader \
+            GIT_CONFIG_VALUE_0="Authorization: Bearer ${VECTA_READ_TOKEN}" \
+            GIT_TERMINAL_PROMPT=0 \
+            git clone --depth=1 --branch main --single-branch \
+              https://github.com/ZenoWangzy/vecta.git vecta
           git -C vecta switch --detach "$SOURCE_SHA"
           checkout_sha="$(git -C vecta rev-parse HEAD)"
           if [ "$checkout_sha" != "$SOURCE_SHA" ]; then
