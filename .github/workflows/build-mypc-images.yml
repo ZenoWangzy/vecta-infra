@@ -48,7 +48,13 @@ jobs:
     runs-on: [self-hosted, mypc, prod-build]
     environment: production
     timeout-minutes: 240
+    defaults:
+      run:
+        working-directory: infra
     env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      GIT_NO_REPLACE_OBJECTS: "1"
       SOURCE_SHA: ${{ inputs.source_sha }}
       SOURCE_BRANCH: ${{ inputs.source_branch }}
       NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082
@@ -69,40 +75,84 @@ jobs:
       PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}
       NEXUS_ADMIN_PASSWORD_SECRET_NAME: MYPC_NEXUS_ADMIN_PASSWORD
     steps:
-      - name: Configure git proxy
+      - name: Checkout infra contract
+        working-directory: .
         run: |
-          if [ -z "${PROXY_USERNAME:-}" ] || [ -z "${PROXY_PASSWORD:-}" ]; then
-            echo "Proxy secrets not set; using default git network path"
-            exit 0
+          set -euo pipefail
+          [ -n "${INFRA_READ_TOKEN:-}" ] || {
+            echo "github.token is required" >&2
+            exit 1
+          }
+          if ! printf '%s' "$GITHUB_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "GITHUB_SHA must be a full lowercase Git SHA" >&2
+            exit 1
           fi
-          PU="$(printf '%s' "${PROXY_USERNAME}" \
-            | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
-          PP="$(printf '%s' "${PROXY_PASSWORD}" \
-            | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
-          PROXY="http://${PU}:${PP}@geraldsynnas.ddns.net:8888"
-          # Abort transfers that stall below 1KB/s for 30s: the proxy can pass a
-          # small probe yet stall on bulk data, which otherwise hangs git forever.
-          git config --global http.lowSpeedLimit 1024
-          git config --global http.lowSpeedTime 30
-          # Dead-proxy fallback: probe before enabling; on failure unset any proxy a
-          # previous job persisted into the runner's global git config and go direct.
-          if curl -sm 8 -x "$PROXY" -o /dev/null https://api.github.com/zen; then
-            git config --global http.proxy "$PROXY"
-            git config --global https.proxy "$PROXY"
-            echo "git proxy enabled"
-          else
-            git config --global --unset-all http.proxy || true
-            git config --global --unset-all https.proxy || true
-            echo "proxy unreachable; using direct GitHub access"
+          [ "$PWD" = "$GITHUB_WORKSPACE" ] || {
+            echo "infra checkout must run at GITHUB_WORKSPACE" >&2
+            exit 1
+          }
+          target="$GITHUB_WORKSPACE/infra"
+          old_objects="$GITHUB_WORKSPACE/.git/objects"
+          rm -rf "$target"
+          git init "$target"
+          git -C "$target" remote add origin \
+            https://github.com/ZenoWangzy/vecta-infra.git
+          if [ -d "$old_objects" ] \
+            && GIT_ALTERNATE_OBJECT_DIRECTORIES="$old_objects" \
+              git -C "$target" cat-file -e "$GITHUB_SHA^{commit}" 2>/dev/null; then
+            GIT_ALTERNATE_OBJECT_DIRECTORIES="$old_objects" \
+              git -C "$target" update-ref refs/remotes/origin/main "$GITHUB_SHA"
+            printf '%s\n' "$GITHUB_SHA" > "$target/.git/shallow"
+            GIT_ALTERNATE_OBJECT_DIRECTORIES="$old_objects" \
+              git -C "$target" repack -a -d
+          fi
+          if ! git -C "$target" cat-file -e "$GITHUB_SHA^{commit}" 2>/dev/null; then
+            askpass="$(mktemp)"
+            trap 'rm -f "$askpass"' EXIT
+            chmod 700 "$askpass"
+            cat > "$askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$INFRA_READ_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+            command -v timeout >/dev/null || {
+              echo "timeout is required" >&2
+              exit 1
+            }
+            # ponytail: exact local object avoids GitHub; fetch only on a cold runner.
+            for attempt in 1 2 3; do
+              if GIT_HTTP_LOW_SPEED_LIMIT=0 \
+                LC_ALL=C \
+                GIT_ASKPASS="$askpass" \
+                GIT_ASKPASS_REQUIRE=force \
+                GIT_TERMINAL_PROMPT=0 \
+                timeout 10m git -C "$target" fetch --depth=1 origin \
+                  "+$GITHUB_SHA:refs/remotes/origin/main"; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "infra fetch failed after 3 attempts" >&2
+                exit 1
+              fi
+              echo "Retrying infra fetch after transient network failure"
+            done
+          fi
+          git -C "$target" fsck --connectivity-only "$GITHUB_SHA"
+          git -C "$target" checkout --detach --force "$GITHUB_SHA"
+          test "$(git -C "$target" rev-parse HEAD)" = "$GITHUB_SHA"
+          if git -C "$target" symbolic-ref -q HEAD >/dev/null; then
+            echo "infra checkout must be detached" >&2
+            exit 1
+          fi
+          if [ -n "$(git -C "$target" status --porcelain --untracked-files=all)" ]; then
+            echo "infra checkout must be clean" >&2
+            exit 1
           fi
         env:
-          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
-          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
-
-      - name: Checkout infra contract
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
+          INFRA_READ_TOKEN: ${{ github.token }}
 
       - name: Validate selected SHA
         run: |
@@ -187,23 +237,47 @@ jobs:
           # successful exact-source clone exceeds it.
           # ponytail: three attempts cover the observed transient disconnect;
           # use a resumable source transport only if all three still fail.
-          for attempt in 1 2 3; do
-            if GIT_HTTP_LOW_SPEED_LIMIT=0 \
+          remote="https://github.com/ZenoWangzy/vecta.git"
+          cache="/home/github-runner/.cache/vecta-main.git"
+          clone_source() {
+            GIT_HTTP_LOW_SPEED_LIMIT=0 \
               LC_ALL=C \
               GIT_ASKPASS="$askpass" \
               GIT_ASKPASS_REQUIRE=force \
               GIT_TERMINAL_PROMPT=0 \
               timeout 30m git clone --depth=1 --branch main --single-branch \
-                https://github.com/ZenoWangzy/vecta.git vecta; then
-              break
+                "$1" vecta
+          }
+          cloned=false
+          if [ -d "$cache" ] \
+            && git --git-dir="$cache" cat-file -e "$SOURCE_SHA^{commit}" \
+            && [ "$(git --git-dir="$cache" rev-parse refs/heads/main)" \
+              = "$SOURCE_SHA" ] \
+            && git --git-dir="$cache" fsck --connectivity-only "$SOURCE_SHA" \
+              >/dev/null 2>&1; then
+            if clone_source "$cache"; then
+              cloned=true
+              echo "Using cached exact VectA source"
+            else
+              rm -rf vecta
+              echo "Cached VectA source unusable; falling back to GitHub"
             fi
-            rm -rf vecta
-            if [ "$attempt" -eq 3 ]; then
-              echo "VectA clone failed after 3 attempts" >&2
-              exit 1
-            fi
-            echo "Retrying VectA clone after transient network failure"
-          done
+          fi
+          if [ "$cloned" = false ]; then
+            for attempt in 1 2 3; do
+              if clone_source "$remote"; then
+                cloned=true
+                break
+              fi
+              rm -rf vecta
+              if [ "$attempt" -eq 3 ]; then
+                echo "VectA clone failed after 3 attempts" >&2
+                exit 1
+              fi
+              echo "Retrying VectA clone after transient network failure"
+            done
+          fi
+          test "$cloned" = true
           git -C vecta switch --detach "$SOURCE_SHA"
           checkout_sha="$(git -C vecta rev-parse HEAD)"
           if [ "$checkout_sha" != "$SOURCE_SHA" ]; then
@@ -478,11 +552,11 @@ jobs:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
       - name: Validate production image contract
-        working-directory: vecta
+        working-directory: infra/vecta
         run: pnpm check:production-images
 
       - name: Build and push production images
-        working-directory: vecta
+        working-directory: infra/vecta
         run: |
           set -euo pipefail
           : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
