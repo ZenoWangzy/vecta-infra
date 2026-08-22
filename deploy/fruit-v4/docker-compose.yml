@@ -1,0 +1,52 @@
+name: fruit-v4-isolated-production
+
+x-fruit-v4-image: &fruit-v4-image "${FRUIT_V4_IMAGE_REGISTRY:?Set FRUIT_V4_IMAGE_REGISTRY}/fruit-industry-pack@sha256:${FRUIT_V4_IMAGE_DIGEST:?Set FRUIT_V4_IMAGE_DIGEST}"
+x-fruit-v4-labels: &fruit-v4-labels
+  com.vecta.contract: fruit-v4-isolated-production-compose
+  com.vecta.owner: vecta-infra
+  com.vecta.service: fruit-industry-pack
+  com.vecta.expected.image.source.repository: ZenoWangzy/vecta
+  com.vecta.expected.image.source.revision: ${FRUIT_V4_SOURCE_SHA:?Set FRUIT_V4_SOURCE_SHA}
+  com.vecta.deployment.repository: ZenoWangzy/vecta-infra
+  com.vecta.deployment.revision: ${FRUIT_V4_INFRA_REVISION:?Set FRUIT_V4_INFRA_REVISION}
+  com.vecta.expected.image.repository: ${FRUIT_V4_IMAGE_REGISTRY:?Set FRUIT_V4_IMAGE_REGISTRY}/fruit-industry-pack
+  com.vecta.expected.image.digest: sha256:${FRUIT_V4_IMAGE_DIGEST:?Set FRUIT_V4_IMAGE_DIGEST}
+
+services:
+  fruit-v4-uat:
+    image: *fruit-v4-image
+    container_name: fruit-v4-isolated-uat
+    hostname: fruit-v4-isolated-uat
+    command: ["node", "packages/fruit-industry-pack/dist/cli.js"]
+    environment:
+      DATABASE_URL: ${FRUIT_V4_RUNTIME_DATABASE_URL:?Set FRUIT_V4_RUNTIME_DATABASE_URL}
+      FRUIT_SERVICE_SECRET: ${FRUIT_V4_SERVICE_SECRET:?Set FRUIT_V4_SERVICE_SECRET}
+      FRUIT_ALLOWED_TENANT_IDS: ${FRUIT_V4_ALLOWED_TENANT_IDS:?Set FRUIT_V4_ALLOWED_TENANT_IDS}
+      FRUIT_ALLOWED_EMPLOYEE_IDS: ${FRUIT_V4_ALLOWED_EMPLOYEE_IDS:?Set FRUIT_V4_ALLOWED_EMPLOYEE_IDS}
+      FRUIT_PORT: "8002"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:8002/healthz').then(
+          response => process.exit(response.ok ? 0 : 1),
+          () => process.exit(1)
+          )
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    labels:
+      <<: *fruit-v4-labels
+      com.vecta.role: uat
+    networks:
+      production:
+        aliases: [fruit-v4-isolated-uat]
+    restart: unless-stopped
+
+networks:
+  production:
+    name: ${FRUIT_V4_CANONICAL_NETWORK:?Set FRUIT_V4_CANONICAL_NETWORK}
+    external: true

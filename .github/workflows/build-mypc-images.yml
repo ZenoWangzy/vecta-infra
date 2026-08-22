@@ -99,6 +99,11 @@ jobs:
           PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
           PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
 
+      - name: Checkout infra contract
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
       - name: Validate selected SHA
         run: |
           if ! printf '%s' "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
@@ -182,6 +187,12 @@ jobs:
           command -v docker >/dev/null || {
             echo "docker is required" >&2; exit 1;
           }
+          docker compose version >/dev/null || {
+            echo "docker compose is required" >&2; exit 1;
+          }
+          command -v python3 >/dev/null || {
+            echo "python3 is required" >&2; exit 1;
+          }
           command -v node >/dev/null || {
             echo "node is required" >&2; exit 1;
           }
@@ -202,6 +213,9 @@ jobs:
             echo "at least 60GiB free disk is required" >&2
             exit 1
           fi
+
+      - name: Validate Fruit V4 isolated Compose contract
+        run: python3 scripts/test_fruit_v4_isolated_compose_contract.py
 
       - name: Ensure production Nexus is running
         run: |
