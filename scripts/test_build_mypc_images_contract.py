@@ -151,6 +151,11 @@ def assert_static_contract(workflow: str) -> None:
         '          trap \'rm -rf "$docker_config"\' EXIT'
     ) in workflow
     assert workflow.count("- name: Build and push production images") == 1
+    checkout_step = "- name: Checkout infra contract"
+    fruit_contract_step = "- name: Validate Fruit V4 isolated Compose contract"
+    assert workflow.count(checkout_step) == 1
+    assert workflow.count(fruit_contract_step) == 1
+    assert workflow.index(checkout_step) < workflow.index(fruit_contract_step)
     assert "- name: Login to production Nexus Docker registry" not in workflow
     assert workflow.count("image_names:") == 1
     assert "main|develop" not in workflow

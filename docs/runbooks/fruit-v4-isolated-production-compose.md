@@ -26,7 +26,10 @@ digest-only image reference and contain no `build`, floating tag, host
 
 `FRUIT_V4_SOURCE_SHA` is the full VectA `main` SHA represented by the image.
 `FRUIT_V4_INFRA_REVISION` is the independent full `vecta-infra` deployment
-contract revision.
+contract revision. Both registry-only and full provenance validation require it
+to be a 40-character lowercase SHA equal to `git rev-parse HEAD` in the current
+checkout. Validation also fails when any tracked or untracked file belonging to
+this contract is dirty.
 
 Compose service labels beginning with
 `com.vecta.expected.image.source.*` record operator expectations only. They
@@ -66,7 +69,8 @@ The following inputs are sufficient for base UAT `config` and `up`:
   digests, credentials, whitespace, and invalid/out-of-range ports are rejected.
 - `FRUIT_V4_IMAGE_DIGEST`: 64 lowercase hexadecimal characters.
 - `FRUIT_V4_SOURCE_SHA`: full 40-character VectA `main` SHA.
-- `FRUIT_V4_INFRA_REVISION`: full 40-character `vecta-infra` revision.
+- `FRUIT_V4_INFRA_REVISION`: full 40-character `vecta-infra` revision equal to
+  the current contract checkout HEAD.
 - `FRUIT_V4_CANONICAL_NETWORK`: pre-existing canonical production network.
 - `FRUIT_V4_RUNTIME_DATABASE_URL`: least-privilege runtime DSN.
 - `FRUIT_V4_SERVICE_SECRET`: UAT service credential.
@@ -89,8 +93,9 @@ The migration override additionally requires:
 - `FRUIT_V4_BACKUP_SHA256`: checksum of the fresh pre-migration custom dump.
 - `FRUIT_V4_RESTORE_REHEARSAL_ID`: isolated restore and exact-image setup
   rehearsal evidence ID.
-- `FRUIT_V4_OPERATOR_APPROVAL_ID`: approval for this exact one-shot setup.
-- `FRUIT_V4_MIGRATION_GATE=approved-one-shot`.
+- `FRUIT_V4_OPERATOR_APPROVAL_ID`: fresh approval for this exact migration
+  execution and its recorded evidence.
+- `FRUIT_V4_MIGRATION_GATE=approved-migration`.
 
 When migration is enabled, omission of any one of these values fails during
 `docker compose config`.
@@ -104,15 +109,16 @@ The image-internal Node preflight parses both DSNs and fails before setup unless
   `FRUIT_RUNTIME_DB_PASSWORD`;
 - source SHA, infra revision, image digest, and backup checksum have their exact
   required lowercase hexadecimal lengths;
-- rehearsal ID, approval ID, and the exact one-shot gate are present.
+- rehearsal ID, approval ID, and the exact migration gate are present.
 
 Only after those checks does the image execute
 `node packages/fruit-industry-pack/dist/db/setup.js`.
 
 ## Mandatory external migration evidence gate
 
-Setup is a forward migration and authorization operation. Before setting
-`FRUIT_V4_MIGRATION_GATE=approved-one-shot`:
+Setup is a forward migration and role-provisioning operation. Before every
+production execution and before setting
+`FRUIT_V4_MIGRATION_GATE=approved-migration`:
 
 1. Quiesce the approved migration window and create a fresh custom-format dump
    using approved backup tooling and a protected destination.
@@ -123,19 +129,43 @@ Setup is a forward migration and authorization operation. Before setting
    `fruit-industry-pack@sha256` image and execute its exact setup script.
 5. Verify the isolated restore and setup result, then record
    `FRUIT_V4_RESTORE_REHEARSAL_ID`.
-6. Obtain a separate approval covering the exact VectA SHA, image digest,
+6. Obtain a fresh separate approval covering this execution's exact VectA SHA,
+   image digest,
    backup checksum, rehearsal ID, expected database endpoint, and infra
    revision. Record `FRUIT_V4_OPERATOR_APPROVAL_ID`.
 
 Compose can validate only input presence, format, DSN relationships, and the
-one-shot gate. It cannot prove backup freshness/authenticity, rehearsal
-completion, or approval validity. Those remain independently accepted external
-hard-gate evidence.
+migration gate value. It cannot prove backup freshness/authenticity, rehearsal
+completion, or approval validity, and it cannot atomically consume an operator
+approval. Those remain independently accepted external hard-gate evidence.
+
+The setup script is an idempotent, repeatable migration and provisioning
+command: it applies idempotent migrations and creates or corrects the runtime
+role. Repeatability is not authorization. Every production execution requires
+a fresh operator approval and a fresh evidence record.
+The profile is a Compose service selector only; it is not an authorization
+boundary. Compose cannot
+prevent an operator who already has Docker access and the writer DSN from
+invoking the image or setup script outside this procedure, and it cannot prevent
+approval reuse or replay. Those controls remain external operational governance;
+this contract deliberately adds no local approval database, lock file, or
+workflow engine.
+
+## Exact infra checkout gate
+
+Run every command below from the exact approved `vecta-infra` checkout, with
+`FRUIT_V4_INFRA_REVISION` set to that checkout's `git rev-parse HEAD`. The
+provenance validator checks both registry-only and full modes. It fails closed
+if the revision is malformed or differs from HEAD, or if any tracked or
+untracked contract file is dirty. The bounded dirty check covers the Compose
+files, this runbook, the provenance validator, the two contract tests, and the
+CI workflow that runs them; unrelated repository paths are outside this
+deployment contract's checkout check.
 
 ## UAT-only config and start
 
-Run from the checkout containing this contract. Do not include the migration
-override for ordinary UAT configuration or lifecycle commands.
+Run from the exact clean contract checkout described above. Do not include the
+migration override for ordinary UAT configuration or lifecycle commands.
 
 ```bash
 set -euo pipefail
@@ -169,9 +199,10 @@ The health readiness gate is `GET /healthz` returning HTTP 200 and Docker
 reporting `healthy`. There is no host-port curl path. Approved callers on the
 canonical network use `http://fruit-v4-isolated-uat:8002/mcp`.
 
-## Explicit one-shot migration
+## Explicit migration execution
 
-Migration always supplies both Compose files and the migration profile:
+The canonical migration command supplies both Compose files and selects the
+setup service with the migration profile:
 
 ```bash
 set -euo pipefail
@@ -189,7 +220,7 @@ migration_contract=deploy/fruit-v4/docker-compose.migration.yml
 : "${FRUIT_V4_OPERATOR_APPROVAL_ID:?required}"
 : "${FRUIT_V4_MIGRATION_GATE:?required}"
 
-test "$FRUIT_V4_MIGRATION_GATE" = approved-one-shot
+test "$FRUIT_V4_MIGRATION_GATE" = approved-migration
 docker compose --profile migration \
   -f "$uat_contract" -f "$migration_contract" config --quiet
 
@@ -209,9 +240,12 @@ docker inspect fruit-v4-isolated-setup \
   --format 'image_ref={{.Config.Image}} image_id={{.Image}} status={{.State.Status}} exit={{.State.ExitCode}}'
 ```
 
-Default UAT commands use only the base file, so they cannot interpolate or
-expose migration authority. Setup requires all three explicit choices: the
-migration override, the `migration` profile, and the approved one-shot gate.
+Default UAT commands use only the base file, so they do not interpolate or
+expose writer credentials or other migration-only inputs. Supplying the
+migration override makes those inputs required, and the in-image preflight
+rejects a missing or incorrect gate and missing approval ID. The migration
+profile remains only the canonical service selector described above, not a
+security control.
 
 ## Running image and readiness evidence
 

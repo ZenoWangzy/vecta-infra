@@ -10,10 +10,21 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 
 EXPECTED_SOURCE = "https://github.com/ZenoWangzy/vecta"
 IMAGE_REPOSITORY = "fruit-industry-pack"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+CONTRACT_PATHS = (
+    ".github/workflows/build-mypc-images.yml",
+    "deploy/fruit-v4/docker-compose.yml",
+    "deploy/fruit-v4/docker-compose.migration.yml",
+    "docs/runbooks/fruit-v4-isolated-production-compose.md",
+    "scripts/test_build_mypc_images_contract.py",
+    "scripts/test_fruit_v4_isolated_compose_contract.py",
+    "scripts/validate_fruit_v4_image_provenance.py",
+)
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -28,6 +39,45 @@ def required_environment(name: str) -> str:
     if not value or value.strip() != value:
         raise ContractError(f"{name} is required")
     return value
+
+
+def git_output(*arguments: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(REPOSITORY_ROOT), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ContractError("Fruit V4 contract checkout git inspection failed")
+    return result.stdout.strip()
+
+
+def validate_infra_checkout(infra_revision: str) -> None:
+    if HEX_40.fullmatch(infra_revision) is None:
+        raise ContractError(
+            "FRUIT_V4_INFRA_REVISION must be 40 lowercase hex characters"
+        )
+
+    current_head = git_output("rev-parse", "HEAD")
+    if HEX_40.fullmatch(current_head) is None:
+        raise ContractError("current checkout HEAD is not a full lowercase Git SHA")
+    if infra_revision != current_head:
+        raise ContractError(
+            "FRUIT_V4_INFRA_REVISION does not match current checkout HEAD"
+        )
+
+    dirty_contract_paths = git_output(
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--",
+        *CONTRACT_PATHS,
+    )
+    if dirty_contract_paths:
+        raise ContractError(
+            "Fruit V4 contract checkout has dirty tracked or untracked files"
+        )
 
 
 def validate_registry(registry: str) -> None:
@@ -138,11 +188,13 @@ def main() -> int:
         registry = required_environment("FRUIT_V4_IMAGE_REGISTRY")
         digest = required_environment("FRUIT_V4_IMAGE_DIGEST")
         source_sha = required_environment("FRUIT_V4_SOURCE_SHA")
+        infra_revision = required_environment("FRUIT_V4_INFRA_REVISION")
         image_ref = build_image_ref(registry, digest)
         if HEX_40.fullmatch(source_sha) is None:
             raise ContractError(
                 "FRUIT_V4_SOURCE_SHA must be 40 lowercase hex characters"
             )
+        validate_infra_checkout(infra_revision)
         if arguments.registry_only:
             print("fruit-v4 image release inputs: ok")
             return 0

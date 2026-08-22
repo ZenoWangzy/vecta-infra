@@ -46,8 +46,8 @@ services:
             }
           };
 
-          if (required("FRUIT_V4_MIGRATION_GATE") !== "approved-one-shot") {
-            fail("FRUIT_V4_MIGRATION_GATE is not approved-one-shot");
+          if (required("FRUIT_V4_MIGRATION_GATE") !== "approved-migration") {
+            fail("FRUIT_V4_MIGRATION_GATE is not approved-migration");
           }
           assertHex("FRUIT_V4_SOURCE_SHA", 40);
           assertHex("FRUIT_V4_INFRA_REVISION", 40);

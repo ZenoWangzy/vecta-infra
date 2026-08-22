@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from unittest import mock
 
 
 sys.dont_write_bytecode = True
@@ -19,14 +20,32 @@ COMPOSE_PATH = ROOT / "deploy/fruit-v4/docker-compose.yml"
 MIGRATION_COMPOSE_PATH = ROOT / "deploy/fruit-v4/docker-compose.migration.yml"
 PROVENANCE_SCRIPT_PATH = ROOT / "scripts/validate_fruit_v4_image_provenance.py"
 WORKFLOW_PATH = ROOT / ".github/workflows/build-mypc-images.yml"
+RUNBOOK_PATH = ROOT / "docs/runbooks/fruit-v4-isolated-production-compose.md"
 
 COMPOSE_COMMAND = ("docker", "compose", "--env-file", "/dev/null")
+
+
+def read_current_head() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    head = result.stdout.strip()
+    assert re.fullmatch(r"[0-9a-f]{40}", head)
+    return head
+
+
+CURRENT_HEAD = read_current_head()
 
 UAT_ENV = {
     "FRUIT_V4_IMAGE_REGISTRY": "registry.invalid:5000",
     "FRUIT_V4_IMAGE_DIGEST": "a" * 64,
     "FRUIT_V4_SOURCE_SHA": "b" * 40,
-    "FRUIT_V4_INFRA_REVISION": "c" * 40,
+    "FRUIT_V4_INFRA_REVISION": CURRENT_HEAD,
     "FRUIT_V4_CANONICAL_NETWORK": "canonical-production-placeholder",
     "FRUIT_V4_RUNTIME_DATABASE_URL": (
         "postgresql://fruit_v4_runtime:placeholder@db.internal.invalid:5432/fruit_v4"
@@ -48,7 +67,7 @@ MIGRATION_ENV = {
     "FRUIT_V4_BACKUP_SHA256": "d" * 64,
     "FRUIT_V4_RESTORE_REHEARSAL_ID": "restore-rehearsal-placeholder",
     "FRUIT_V4_OPERATOR_APPROVAL_ID": "operator-approval-placeholder",
-    "FRUIT_V4_MIGRATION_GATE": "approved-one-shot",
+    "FRUIT_V4_MIGRATION_GATE": "approved-migration",
 }
 
 
@@ -140,12 +159,14 @@ def main() -> None:
         MIGRATION_COMPOSE_PATH,
         PROVENANCE_SCRIPT_PATH,
         WORKFLOW_PATH,
+        RUNBOOK_PATH,
     ):
         assert path.exists(), f"missing Fruit V4 contract file: {path}"
 
     base_source = COMPOSE_PATH.read_text()
     migration_source = MIGRATION_COMPOSE_PATH.read_text()
     workflow = WORKFLOW_PATH.read_text()
+    runbook = RUNBOOK_PATH.read_text()
     assert "env_file:" not in base_source + migration_source
     assert "fruit-v4-setup:" not in base_source
     for name in MIGRATION_ENV:
@@ -157,6 +178,11 @@ def main() -> None:
     assert "persist-credentials: false" in workflow
     assert "Validate Fruit V4 isolated Compose contract" in workflow
     assert "python3 scripts/test_fruit_v4_isolated_compose_contract.py" in workflow
+    assert "approved-one-shot" not in base_source + migration_source + runbook
+    assert "one-shot" not in runbook.lower()
+    assert "profile is a Compose service selector only" in runbook
+    assert "cannot atomically consume" in runbook
+    assert "cannot prevent" in runbook
 
     uat_env = clean_env(UAT_ENV)
     base_quiet = run_config("--quiet", env=uat_env)
@@ -227,7 +253,6 @@ def main() -> None:
             migration=True,
         )
         assert rejected.returncode != 0, f"missing {missing} did not fail closed"
-
     setup_environment = setup["environment"]
     assert setup_environment["DATABASE_URL"] == MIGRATION_ENV[
         "FRUIT_V4_WRITER_DATABASE_URL"
@@ -276,6 +301,12 @@ def main() -> None:
     )
     assert empty_runtime_password.returncode != 0
     assert "runtime DSN password is required" in empty_runtime_password.stderr
+    wrong_gate = run_setup_preflight(
+        setup,
+        {"FRUIT_V4_MIGRATION_GATE": "approved-one-shot"},
+    )
+    assert wrong_gate.returncode != 0
+    assert "FRUIT_V4_MIGRATION_GATE is not approved-migration" in wrong_gate.stderr
 
     provenance = load_provenance_module()
     registry_only = subprocess.run(
@@ -299,6 +330,55 @@ def main() -> None:
     )
     assert invalid_registry.returncode != 0
     assert "must be host[:port]" in invalid_registry.stderr
+    invalid_revision_env = uat_env.copy()
+    invalid_revision_env["FRUIT_V4_INFRA_REVISION"] = "not-a-sha"
+    invalid_revision = subprocess.run(
+        [sys.executable, str(PROVENANCE_SCRIPT_PATH), "--registry-only"],
+        cwd=ROOT,
+        env=invalid_revision_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert invalid_revision.returncode != 0
+    assert "must be 40 lowercase hex characters" in invalid_revision.stderr
+    different_revision_env = uat_env.copy()
+    replacement = "0" if CURRENT_HEAD[0] != "0" else "1"
+    different_revision_env["FRUIT_V4_INFRA_REVISION"] = (
+        replacement + CURRENT_HEAD[1:]
+    )
+    different_revision = subprocess.run(
+        [sys.executable, str(PROVENANCE_SCRIPT_PATH), "--registry-only"],
+        cwd=ROOT,
+        env=different_revision_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert different_revision.returncode != 0
+    assert "does not match current checkout HEAD" in different_revision.stderr
+    with mock.patch.object(
+        provenance,
+        "git_output",
+        side_effect=[
+            CURRENT_HEAD,
+            " M deploy/fruit-v4/docker-compose.yml",
+        ],
+    ) as git_output_mock:
+        assert_contract_error(
+            provenance,
+            lambda: provenance.validate_infra_checkout(CURRENT_HEAD),
+        )
+    assert git_output_mock.call_args_list == [
+        mock.call("rev-parse", "HEAD"),
+        mock.call(
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            *provenance.CONTRACT_PATHS,
+        ),
+    ]
     assert_contract_error(
         provenance,
         lambda: provenance.build_image_ref(
@@ -366,7 +446,7 @@ def main() -> None:
         )
         assert labels["com.vecta.expected.image.source.revision"] == "b" * 40
         assert labels["com.vecta.deployment.repository"] == "ZenoWangzy/vecta-infra"
-        assert labels["com.vecta.deployment.revision"] == "c" * 40
+        assert labels["com.vecta.deployment.revision"] == CURRENT_HEAD
         assert "org.opencontainers.image.source" not in labels
 
     print("fruit-v4 isolated Compose contract: ok")
