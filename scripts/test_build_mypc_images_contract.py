@@ -121,6 +121,8 @@ def assert_static_contract(workflow: str) -> None:
         'GIT_ASKPASS="$askpass"',
         "GIT_ASKPASS_REQUIRE=force",
         "GIT_TERMINAL_PROMPT=0",
+        "GIT_HTTP_LOW_SPEED_LIMIT=1",
+        "GIT_HTTP_LOW_SPEED_TIME=300",
         "LC_ALL=C",
         "git clone --depth=1 --branch main --single-branch",
         "https://github.com/ZenoWangzy/vecta.git vecta",

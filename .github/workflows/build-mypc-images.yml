@@ -179,7 +179,9 @@ jobs:
             echo "vecta source directory must not exist before clone" >&2
             exit 1
           }
-          LC_ALL=C \
+          GIT_HTTP_LOW_SPEED_LIMIT=1 \
+            GIT_HTTP_LOW_SPEED_TIME=300 \
+            LC_ALL=C \
             GIT_ASKPASS="$askpass" \
             GIT_ASKPASS_REQUIRE=force \
             GIT_TERMINAL_PROMPT=0 \
