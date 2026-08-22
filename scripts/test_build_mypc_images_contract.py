@@ -116,7 +116,7 @@ def assert_static_contract(workflow: str) -> None:
         '"https://api.github.com/repos/ZenoWangzy/vecta/tarball/${SOURCE_SHA}"',
         "NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082",
         "DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082",
-        "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8082",
+        "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083",
         "PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}",
         f"BUILDX_VERSION: {BUILDX_VERSION}",
         f"BUILDX_LINUX_AMD64_SHA256: {BUILDX_SHA256}",
