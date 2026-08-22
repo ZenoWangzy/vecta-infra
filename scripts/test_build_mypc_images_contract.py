@@ -113,9 +113,11 @@ def assert_static_contract(workflow: str) -> None:
         '"https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/main"',
         'echo "source_sha must be the current VectA main HEAD"',
         'if [ "$branch_sha" != "$SOURCE_SHA" ]; then',
-        "GIT_CONFIG_COUNT=1",
-        "GIT_CONFIG_KEY_0=http.extraHeader",
-        'GIT_CONFIG_VALUE_0="Authorization: Bearer ${VECTA_READ_TOKEN}"',
+        'askpass="$(mktemp)"',
+        'chmod 700 "$askpass"',
+        "*Username*) printf '%s\\n' x-access-token ;;",
+        "*Password*) printf '%s\\n' \"$VECTA_READ_TOKEN\" ;;",
+        'GIT_ASKPASS="$askpass"',
         "GIT_TERMINAL_PROMPT=0",
         "git clone --depth=1 --branch main --single-branch",
         "https://github.com/ZenoWangzy/vecta.git vecta",
@@ -185,6 +187,7 @@ def assert_static_contract(workflow: str) -> None:
     download_script = extract_step_script(workflow, "Download selected VectA source")
     assert not re.search(r"\bgh\b", download_script)
     assert not re.search(r"\bgit\b[^\n]*\bconfig\b", download_script)
+    assert "GIT_CONFIG_" not in download_script
     assert not re.search(r"\bset\s+-x\b|\bxtrace\b", download_script)
     assert not re.search(
         r"\becho\b[^\n]*\$(?:VECTA_READ_TOKEN|\{VECTA_READ_TOKEN[^}]*\})",

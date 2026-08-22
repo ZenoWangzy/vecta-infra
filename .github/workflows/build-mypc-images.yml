@@ -123,8 +123,18 @@ jobs:
             *) echo "source_branch must be main: $SOURCE_BRANCH" >&2; exit 1 ;;
           esac
           curl_config="$(mktemp)"
-          trap 'rm -f "$curl_config"' EXIT
+          askpass="$(mktemp)"
+          trap 'rm -f "$curl_config" "$askpass"' EXIT
           chmod 600 "$curl_config"
+          chmod 700 "$askpass"
+          cat > "$askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$VECTA_READ_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
           {
             printf 'header = "Authorization: Bearer %s"\n' "$VECTA_READ_TOKEN"
             printf 'header = "Accept: application/vnd.github+json"\n'
@@ -169,9 +179,8 @@ jobs:
             echo "vecta source directory must not exist before clone" >&2
             exit 1
           }
-          GIT_CONFIG_COUNT=1 \
-            GIT_CONFIG_KEY_0=http.extraHeader \
-            GIT_CONFIG_VALUE_0="Authorization: Bearer ${VECTA_READ_TOKEN}" \
+          GIT_ASKPASS="$askpass" \
+            GIT_ASKPASS_REQUIRE=force \
             GIT_TERMINAL_PROMPT=0 \
             git clone --depth=1 --branch main --single-branch \
               https://github.com/ZenoWangzy/vecta.git vecta
