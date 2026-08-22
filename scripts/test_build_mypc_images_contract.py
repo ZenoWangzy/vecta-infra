@@ -113,7 +113,12 @@ def assert_static_contract(workflow: str) -> None:
         '"https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/main"',
         'echo "source_sha must be the current VectA main HEAD"',
         'if [ "$branch_sha" != "$SOURCE_SHA" ]; then',
-        '"https://api.github.com/repos/ZenoWangzy/vecta/tarball/${SOURCE_SHA}"',
+        "command -v gh >/dev/null",
+        'GH_TOKEN="$VECTA_READ_TOKEN" gh repo clone ZenoWangzy/vecta vecta',
+        "--depth=1 --branch main --single-branch",
+        'git -C vecta switch --detach "$SOURCE_SHA"',
+        'checkout_sha="$(git -C vecta rev-parse HEAD)"',
+        'git -C vecta status --porcelain --untracked-files=all',
         "NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082",
         "DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082",
         "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083",
@@ -172,6 +177,7 @@ def assert_static_contract(workflow: str) -> None:
     assert f"build-push-{retired_environment}-images.mjs" not in workflow
     assert f"{retired_environment.upper()}_IMAGE_NAMES" not in workflow
     assert "GITHUB_SHA: ${{ inputs.source_sha }}" not in workflow
+    assert "/tarball/${SOURCE_SHA}" not in workflow
 
 
 def assert_provisioning_contract() -> None:

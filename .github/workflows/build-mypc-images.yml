@@ -123,7 +123,7 @@ jobs:
             *) echo "source_branch must be main: $SOURCE_BRANCH" >&2; exit 1 ;;
           esac
           curl_config="$(mktemp)"
-          trap 'rm -f "$curl_config" /tmp/vecta-source.tar.gz' EXIT
+          trap 'rm -f "$curl_config"' EXIT
           chmod 600 "$curl_config"
           {
             printf 'header = "Authorization: Bearer %s"\n' "$VECTA_READ_TOKEN"
@@ -165,17 +165,25 @@ jobs:
             echo "expected=$SOURCE_SHA actual=$branch_sha" >&2
             exit 1
           fi
-          mkdir -p vecta
-          source_cache="/home/github-runner/source-cache/vecta-${SOURCE_SHA}.tar.gz"
-          if [ -s "$source_cache" ]; then
-            cp "$source_cache" /tmp/vecta-source.tar.gz
-          else
-            curl -fL \
-              --config "$curl_config" \
-              -o /tmp/vecta-source.tar.gz \
-              "https://api.github.com/repos/ZenoWangzy/vecta/tarball/${SOURCE_SHA}"
+          command -v gh >/dev/null || {
+            echo "gh is required for exact VectA checkout" >&2
+            exit 1
+          }
+          [ ! -e vecta ] || {
+            echo "vecta source directory must not exist before clone" >&2
+            exit 1
+          }
+          GH_TOKEN="$VECTA_READ_TOKEN" gh repo clone ZenoWangzy/vecta vecta -- --depth=1 --branch main --single-branch
+          git -C vecta switch --detach "$SOURCE_SHA"
+          checkout_sha="$(git -C vecta rev-parse HEAD)"
+          if [ "$checkout_sha" != "$SOURCE_SHA" ]; then
+            echo "cloned VectA checkout does not match source_sha" >&2
+            exit 1
           fi
-          tar -xzf /tmp/vecta-source.tar.gz --strip-components=1 -C vecta
+          if [ -n "$(git -C vecta status --porcelain --untracked-files=all)" ]; then
+            echo "cloned VectA checkout must be clean" >&2
+            exit 1
+          fi
         env:
           VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
           PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}

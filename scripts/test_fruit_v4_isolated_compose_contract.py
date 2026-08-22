@@ -50,20 +50,25 @@ UAT_ENV = {
     "FRUIT_V4_RUNTIME_DATABASE_URL": (
         "postgresql://fruit_v4_runtime:placeholder@db.internal.invalid:5432/fruit_v4"
     ),
-    "FRUIT_V4_SERVICE_SECRET": "placeholder",
-    "FRUIT_V4_ALLOWED_TENANT_IDS": "placeholder",
-    "FRUIT_V4_ALLOWED_EMPLOYEE_IDS": "placeholder",
-}
-
-MIGRATION_ENV = {
     "FRUIT_V4_WRITER_DATABASE_URL": (
         "postgresql://fruit_v4_writer:placeholder@db.internal.invalid:5432/fruit_v4"
     ),
     "FRUIT_V4_EXPECTED_DATABASE_HOST": "db.internal.invalid",
     "FRUIT_V4_EXPECTED_DATABASE_PORT": "5432",
     "FRUIT_V4_EXPECTED_DATABASE_PATH": "/fruit_v4",
+    "FRUIT_V4_SERVICE_SECRET": "placeholder",
+    "FRUIT_V4_ALLOWED_TENANT_IDS": "placeholder",
+    "FRUIT_V4_ALLOWED_EMPLOYEE_IDS": "placeholder",
+}
+
+MIGRATION_ENV = {
+    "FRUIT_V4_MIGRATION_DATABASE_URL": (
+        "postgresql://fruit_v4_migration:placeholder@db.internal.invalid:5432/fruit_v4"
+    ),
     "FRUIT_V4_RUNTIME_DB_ROLE": "fruit_v4_runtime",
     "FRUIT_V4_RUNTIME_DB_PASSWORD": "placeholder",
+    "FRUIT_V4_WRITER_ROLE": "fruit_v4_writer",
+    "FRUIT_V4_WRITER_PASSWORD": "placeholder",
     "FRUIT_V4_BACKUP_SHA256": "d" * 64,
     "FRUIT_V4_RESTORE_REHEARSAL_ID": "restore-rehearsal-placeholder",
     "FRUIT_V4_OPERATOR_APPROVAL_ID": "operator-approval-placeholder",
@@ -153,6 +158,25 @@ def run_setup_preflight(
     )
 
 
+def run_uat_preflight(
+    uat: dict[str, object],
+    environment_updates: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment.update(
+        {name: str(value) for name, value in uat["environment"].items()}
+    )
+    environment.update(environment_updates)
+    return subprocess.run(
+        uat["command"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def main() -> None:
     for path in (
         COMPOSE_PATH,
@@ -215,11 +239,51 @@ def main() -> None:
     )
     for name in (
         "DATABASE_URL",
+        "FRUIT_V4_WRITER_DATABASE_URL",
         "FRUIT_SERVICE_SECRET",
         "FRUIT_ALLOWED_TENANT_IDS",
         "FRUIT_ALLOWED_EMPLOYEE_IDS",
     ):
         assert name in uat["environment"]
+    assert uat["environment"]["FRUIT_MODEL_PATH"] == (
+        "/app/packages/fruit-industry-pack/model/fruit-model-v4.yaml"
+    )
+    assert uat["environment"]["FRUIT_CONTROLLED_ENTRY_ENABLED"] == "true"
+    uat_command = "\n".join(uat["command"])
+    assert "writer and runtime DSN usernames must differ" in uat_command
+    assert "must not include query parameters or fragments" in uat_command
+    overlapping_uat_identities = run_uat_preflight(
+        uat,
+        {"FRUIT_V4_WRITER_DATABASE_URL": UAT_ENV["FRUIT_V4_RUNTIME_DATABASE_URL"]},
+    )
+    assert overlapping_uat_identities.returncode != 0
+    assert "writer and runtime DSN usernames must differ" in (
+        overlapping_uat_identities.stderr
+    )
+    query_bearing_uat_dsn = run_uat_preflight(
+        uat,
+        {
+            "DATABASE_URL": UAT_ENV["FRUIT_V4_RUNTIME_DATABASE_URL"]
+            + "?host=unapproved.internal"
+        },
+    )
+    assert query_bearing_uat_dsn.returncode != 0
+    assert "must not include query parameters or fragments" in (
+        query_bearing_uat_dsn.stderr
+    )
+    wrong_uat_endpoint = run_uat_preflight(
+        uat,
+        {
+            "FRUIT_V4_WRITER_DATABASE_URL": (
+                "postgresql://fruit_v4_writer:placeholder@"
+                "unapproved.internal:5432/fruit_v4"
+            )
+        },
+    )
+    assert wrong_uat_endpoint.returncode != 0
+    assert "does not match the approved database host/port/path" in (
+        wrong_uat_endpoint.stderr
+    )
     for name in (
         "FRUIT_RUNTIME_DB_ROLE",
         "FRUIT_RUNTIME_DB_PASSWORD",
@@ -227,6 +291,11 @@ def main() -> None:
         "FRUIT_V4_OPERATOR_APPROVAL_ID",
     ):
         assert name not in uat["environment"]
+    for missing in UAT_ENV:
+        missing_values = UAT_ENV.copy()
+        missing_values.pop(missing)
+        rejected = run_config("--quiet", env=clean_env(missing_values))
+        assert rejected.returncode != 0, f"missing {missing} did not fail closed"
 
     all_env_values = {**UAT_ENV, **MIGRATION_ENV}
     all_env = clean_env(all_env_values)
@@ -255,10 +324,20 @@ def main() -> None:
         assert rejected.returncode != 0, f"missing {missing} did not fail closed"
     setup_environment = setup["environment"]
     assert setup_environment["DATABASE_URL"] == MIGRATION_ENV[
-        "FRUIT_V4_WRITER_DATABASE_URL"
+        "FRUIT_V4_MIGRATION_DATABASE_URL"
     ]
     assert setup_environment["FRUIT_V4_RUNTIME_DATABASE_URL"] == UAT_ENV[
         "FRUIT_V4_RUNTIME_DATABASE_URL"
+    ]
+    assert setup_environment["FRUIT_V4_WRITER_DATABASE_URL"] == UAT_ENV[
+        "FRUIT_V4_WRITER_DATABASE_URL"
+    ]
+    assert setup_environment["FRUIT_CONTROLLED_ENTRY_ENABLED"] == "true"
+    assert setup_environment["FRUIT_V4_WRITER_ROLE"] == MIGRATION_ENV[
+        "FRUIT_V4_WRITER_ROLE"
+    ]
+    assert setup_environment["FRUIT_V4_WRITER_PASSWORD"] == MIGRATION_ENV[
+        "FRUIT_V4_WRITER_PASSWORD"
     ]
     for name in (
         "FRUIT_SERVICE_SECRET",
@@ -274,6 +353,19 @@ def main() -> None:
     assert "FRUIT_RUNTIME_DB_PASSWORD" in setup_command
     assert "execFileSync" in setup_command
     assert "packages/fruit-industry-pack/dist/db/setup.js" in setup_command
+    query_bearing_setup_dsn = run_setup_preflight(
+        setup,
+        {
+            "FRUIT_V4_RUNTIME_DATABASE_URL": UAT_ENV[
+                "FRUIT_V4_RUNTIME_DATABASE_URL"
+            ]
+            + "?host=unapproved.internal"
+        },
+    )
+    assert query_bearing_setup_dsn.returncode != 0
+    assert "must not include query parameters or fragments" in (
+        query_bearing_setup_dsn.stderr
+    )
 
     role_mismatch = run_setup_preflight(
         setup,
@@ -290,6 +382,34 @@ def main() -> None:
     assert password_mismatch.returncode != 0
     assert "runtime DSN password must equal FRUIT_RUNTIME_DB_PASSWORD" in (
         password_mismatch.stderr
+    )
+    writer_role_mismatch = run_setup_preflight(
+        setup,
+        {"FRUIT_V4_WRITER_ROLE": "different_writer_role"},
+    )
+    assert writer_role_mismatch.returncode != 0
+    assert "writer DSN username must equal FRUIT_V4_WRITER_ROLE" in (
+        writer_role_mismatch.stderr
+    )
+    writer_password_mismatch = run_setup_preflight(
+        setup,
+        {"FRUIT_V4_WRITER_PASSWORD": "different-password"},
+    )
+    assert writer_password_mismatch.returncode != 0
+    assert "writer DSN password must equal FRUIT_V4_WRITER_PASSWORD" in (
+        writer_password_mismatch.stderr
+    )
+    overlapping_runtime_writer = run_setup_preflight(
+        setup,
+        {
+            "FRUIT_V4_WRITER_DATABASE_URL": UAT_ENV[
+                "FRUIT_V4_RUNTIME_DATABASE_URL"
+            ]
+        },
+    )
+    assert overlapping_runtime_writer.returncode != 0
+    assert "writer and runtime DSN usernames must differ" in (
+        overlapping_runtime_writer.stderr
     )
     empty_runtime_password = run_setup_preflight(
         setup,

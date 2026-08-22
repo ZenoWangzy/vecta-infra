@@ -73,23 +73,29 @@ The following inputs are sufficient for base UAT `config` and `up`:
   the current contract checkout HEAD.
 - `FRUIT_V4_CANONICAL_NETWORK`: pre-existing canonical production network.
 - `FRUIT_V4_RUNTIME_DATABASE_URL`: least-privilege runtime DSN.
+- `FRUIT_V4_WRITER_DATABASE_URL`: controlled-entry writer DSN using a database
+  identity distinct from the runtime identity.
+- `FRUIT_V4_EXPECTED_DATABASE_HOST`, `FRUIT_V4_EXPECTED_DATABASE_PORT`, and
+  `FRUIT_V4_EXPECTED_DATABASE_PATH`: independently approved endpoint shared by
+  the runtime and writer DSNs.
 - `FRUIT_V4_SERVICE_SECRET`: UAT service credential.
 - `FRUIT_V4_ALLOWED_TENANT_IDS` and `FRUIT_V4_ALLOWED_EMPLOYEE_IDS`:
   approved UAT allowlists.
 
-The base Compose file contains no writer DSN, role-provisioning password,
-backup checksum, rehearsal ID, operator approval ID, or migration gate. Missing
+The base Compose file pins the V4 model and enables controlled entry. It
+contains no migration-authority DSN, role-provisioning password, backup
+checksum, rehearsal ID, operator approval ID, or migration gate. Missing
 setup-only values therefore cannot fail or leak into base UAT interpolation.
 
 ## Additional migration-only inputs
 
 The migration override additionally requires:
 
-- `FRUIT_V4_WRITER_DATABASE_URL`: setup-only writer DSN.
-- `FRUIT_V4_EXPECTED_DATABASE_HOST`, `FRUIT_V4_EXPECTED_DATABASE_PORT`, and
-  `FRUIT_V4_EXPECTED_DATABASE_PATH`: independently approved endpoint.
+- `FRUIT_V4_MIGRATION_DATABASE_URL`: setup-only migration-authority DSN.
 - `FRUIT_V4_RUNTIME_DB_ROLE` and `FRUIT_V4_RUNTIME_DB_PASSWORD`: setup-only
   runtime-role provisioning inputs.
+- `FRUIT_V4_WRITER_ROLE` and `FRUIT_V4_WRITER_PASSWORD`: setup-only
+  controlled-entry writer-role provisioning inputs.
 - `FRUIT_V4_BACKUP_SHA256`: checksum of the fresh pre-migration custom dump.
 - `FRUIT_V4_RESTORE_REHEARSAL_ID`: isolated restore and exact-image setup
   rehearsal evidence ID.
@@ -100,13 +106,19 @@ The migration override additionally requires:
 When migration is enabled, omission of any one of these values fails during
 `docker compose config`.
 
-The image-internal Node preflight parses both DSNs and fails before setup unless:
+The base UAT preflight rejects query-bearing DSNs, requires explicit credentials,
+requires distinct decoded runtime/writer usernames, and binds both DSNs to the
+approved host, port, and path before starting the CLI. The migration preflight
+applies the same DSN rules and fails before setup unless:
 
-- both use PostgreSQL and explicitly match the approved host, port, and path;
-- writer and runtime decoded usernames are non-empty and different;
+- the migration, runtime, and writer DSNs use PostgreSQL and explicitly match
+  the approved host, port, and path;
+- migration, writer, and runtime decoded usernames are non-empty and distinct;
 - the decoded runtime username equals `FRUIT_RUNTIME_DB_ROLE`;
 - the decoded runtime password is non-empty and equals
   `FRUIT_RUNTIME_DB_PASSWORD`;
+- the decoded writer username and password equal `FRUIT_V4_WRITER_ROLE` and
+  `FRUIT_V4_WRITER_PASSWORD`;
 - source SHA, infra revision, image digest, and backup checksum have their exact
   required lowercase hexadecimal lengths;
 - rehearsal ID, approval ID, and the exact migration gate are present.
@@ -177,6 +189,10 @@ uat_contract=deploy/fruit-v4/docker-compose.yml
 : "${FRUIT_V4_INFRA_REVISION:?required}"
 : "${FRUIT_V4_CANONICAL_NETWORK:?required}"
 : "${FRUIT_V4_RUNTIME_DATABASE_URL:?required}"
+: "${FRUIT_V4_WRITER_DATABASE_URL:?required}"
+: "${FRUIT_V4_EXPECTED_DATABASE_HOST:?required}"
+: "${FRUIT_V4_EXPECTED_DATABASE_PORT:?required}"
+: "${FRUIT_V4_EXPECTED_DATABASE_PATH:?required}"
 : "${FRUIT_V4_SERVICE_SECRET:?required}"
 : "${FRUIT_V4_ALLOWED_TENANT_IDS:?required}"
 : "${FRUIT_V4_ALLOWED_EMPLOYEE_IDS:?required}"
@@ -195,9 +211,10 @@ docker compose -f "$uat_contract" up -d --no-build fruit-v4-uat
 docker compose -f "$uat_contract" ps fruit-v4-uat
 ```
 
-The health readiness gate is `GET /healthz` returning HTTP 200 and Docker
-reporting `healthy`. There is no host-port curl path. Approved callers on the
-canonical network use `http://fruit-v4-isolated-uat:8002/mcp`.
+The health readiness gate is `GET /healthz` returning HTTP 200, the response
+reporting `modelVersion=fruit-v4`, and Docker reporting `healthy`. There is no
+host-port curl path. Approved callers on the canonical network use
+`http://fruit-v4-isolated-uat:8002/mcp`.
 
 ## Explicit migration execution
 
@@ -209,12 +226,14 @@ set -euo pipefail
 uat_contract=deploy/fruit-v4/docker-compose.yml
 migration_contract=deploy/fruit-v4/docker-compose.migration.yml
 
-: "${FRUIT_V4_WRITER_DATABASE_URL:?required}"
+: "${FRUIT_V4_MIGRATION_DATABASE_URL:?required}"
 : "${FRUIT_V4_EXPECTED_DATABASE_HOST:?required}"
 : "${FRUIT_V4_EXPECTED_DATABASE_PORT:?required}"
 : "${FRUIT_V4_EXPECTED_DATABASE_PATH:?required}"
 : "${FRUIT_V4_RUNTIME_DB_ROLE:?required}"
 : "${FRUIT_V4_RUNTIME_DB_PASSWORD:?required}"
+: "${FRUIT_V4_WRITER_ROLE:?required}"
+: "${FRUIT_V4_WRITER_PASSWORD:?required}"
 : "${FRUIT_V4_BACKUP_SHA256:?required}"
 : "${FRUIT_V4_RESTORE_REHEARSAL_ID:?required}"
 : "${FRUIT_V4_OPERATOR_APPROVAL_ID:?required}"
@@ -240,12 +259,13 @@ docker inspect fruit-v4-isolated-setup \
   --format 'image_ref={{.Config.Image}} image_id={{.Image}} status={{.State.Status}} exit={{.State.ExitCode}}'
 ```
 
-Default UAT commands use only the base file, so they do not interpolate or
-expose writer credentials or other migration-only inputs. Supplying the
-migration override makes those inputs required, and the in-image preflight
-rejects a missing or incorrect gate and missing approval ID. The migration
-profile remains only the canonical service selector described above, not a
-security control.
+Default UAT commands use only the base file, so they expose only the
+least-privilege runtime and controlled-entry writer DSNs required by the V4
+process. They do not interpolate the migration-authority DSN or role-
+provisioning credentials. Supplying the migration override makes those inputs
+required, and the in-image preflight rejects a missing or incorrect gate and
+missing approval ID. The migration profile remains only the canonical service
+selector described above, not a security control.
 
 ## Running image and readiness evidence
 
