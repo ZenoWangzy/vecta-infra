@@ -169,15 +169,18 @@ def assert_static_contract(workflow: str) -> None:
         '          trap \'rm -rf "$docker_config"\' EXIT'
     ) in workflow
     assert workflow.count("- name: Build and push production images") == 1
+    assert workflow.count("- name: Stage immutable RAG release handoff") == 1
     assert workflow.count("- name: Seed verified Hermes base image") == 1
     checkout_step = "- name: Checkout infra contract"
     fruit_contract_step = "- name: Validate Fruit V4 isolated Compose contract"
     hermes_seed_step = "- name: Seed verified Hermes base image"
     image_build_step = "- name: Build and push production images"
+    rag_release_stage_step = "- name: Stage immutable RAG release handoff"
     assert workflow.count(checkout_step) == 1
     assert workflow.count(fruit_contract_step) == 1
     assert workflow.index(checkout_step) < workflow.index(fruit_contract_step)
     assert workflow.index(hermes_seed_step) < workflow.index(image_build_step)
+    assert workflow.index(image_build_step) < workflow.index(rag_release_stage_step)
     assert "uses: actions/checkout@" not in workflow
     assert "- name: Configure git proxy" not in workflow
     assert "GIT_CONFIG_GLOBAL: /dev/null" in workflow
@@ -299,6 +302,38 @@ def assert_static_contract(workflow: str) -> None:
     ):
         assert literal in hermes_seed_script, literal
     assert "set -x" not in hermes_seed_script
+
+    rag_release_stage_script = extract_step_script(
+        workflow, "Stage immutable RAG release handoff"
+    )
+    for literal in (
+        "RAG immutable release handoff skipped; rag-service is not selected",
+        'if [ "$requested_image" = \'rag-service\' ]; then',
+        'docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-rag-release-stage.XXXXXX")"',
+        "unset DOCKER_HOST DOCKER_CONTEXT",
+        'docker buildx imagetools inspect "$image_tag"',
+        "RAG image manifest did not yield one immutable digest",
+        'RAG_SERVICE_IMAGE="${NEXUS_DOCKER_REGISTRY}/rag-service@${image_digest}"',
+        'docker pull "$RAG_SERVICE_IMAGE"',
+        'org.opencontainers.image.revision',
+        'com.vecta.source.repository',
+        "RAG image OCI provenance does not bind the selected VectA source",
+        'release_parent="/data/ocee/vecta-infra-releases/${GITHUB_SHA}/rag-service"',
+        'release_root="${release_parent}/${SOURCE_SHA}"',
+        'install -m 700 scripts/release-mypc-rag-service.sh',
+        'install -m 700 scripts/check-mypc-rag-release-contract.mjs',
+        'install -m 700 scripts/mypc-app-regression.sh',
+        'install -m 600 deploy/mypc/rag-hf-endpoint.override.yml',
+        'install -m 600 deploy/mypc/rag-service-image.override.yml',
+        'printf \'RAG_SERVICE_IMAGE=%s\\n\' "$RAG_SERVICE_IMAGE"',
+        'printf \'RAG_SOURCE_SHA=%s\\n\' "$SOURCE_SHA"',
+        'printf \'RAG_INFRA_SHA=%s\\n\' "$GITHUB_SHA"',
+        "sha256sum -c checksums.sha256",
+        'mv "$stage_dir" "$release_root"',
+    ):
+        assert literal in rag_release_stage_script, literal
+    assert "set -x" not in rag_release_stage_script
+    assert "echo \"$NEXUS_ADMIN_PASSWORD\"" not in rag_release_stage_script
 
 
 def assert_provisioning_contract() -> None:

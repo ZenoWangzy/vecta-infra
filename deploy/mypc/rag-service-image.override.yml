@@ -1,3 +1,9 @@
 services:
   rag-service:
     image: "${RAG_SERVICE_IMAGE:?RAG_SERVICE_IMAGE must name an immutable RAG image}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    memswap_limit: "2147483648"

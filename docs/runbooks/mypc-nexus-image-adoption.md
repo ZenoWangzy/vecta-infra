@@ -133,30 +133,52 @@ RAG runtime repair. It runs on `mypc`, uses the authoritative
 `/data/ocee/migration-compose.config.yml` as its base, and accepts only an
 already-local immutable Nexus digest. It never builds or pulls an image.
 
-Before any recreation it renders private mode-600 Compose snapshots and proves
-the live container matches the full baseline contract: image identity, complete
-environment map, mount set, networks and aliases, ports, command, entrypoint,
-user, restart policy, and rootfs/privilege flags. The desired contract may
-differ only by the immutable RAG digest and the versioned non-secret
-`HF_ENDPOINT` overlay. A missing or extra mount, environment drift, or any
-other mismatch stops before a Docker mutation.
+The protected `Build mypc production images` workflow stages the exact reviewed
+release source under
+`/data/ocee/vecta-infra-releases/<infra-sha>/rag-service/<source-sha>/` after
+it has pulled the Nexus digest locally and checked both OCI provenance labels:
+the VectA source SHA and `ZenoWangzy/vecta` repository. The stage directory has
+a mode-600 manifest and checksum file. Do not copy a local checkout or hand
+type an image reference in its place.
 
-Run the exact reviewed infra source copied to `mypc` only after the protected
-image build has made the digest local:
+Before any recreation the script renders private mode-600 Compose snapshots and
+checks the live container against the intended baseline: image ID, complete
+environment map, mount set, networks and aliases, ports, command, entrypoint,
+user, restart policy, logging, memory/CPU/memory-swap limits, and security
+settings. It also writes a private runtime snapshot whose environment values
+are SHA-256 hashes; the post-recreate assertion compares the complete Docker
+`HostConfig` and all non-endpoint environment hashes. The desired contract may
+differ only by the immutable RAG digest and the versioned non-secret
+`HF_ENDPOINT` overlay. A missing or extra mount, provenance mismatch, security
+drift, or any other preflight mismatch stops before a Compose mutation.
+
+Use the staged manifest after the protected image build completes:
 
 ```bash
-RAG_SERVICE_IMAGE=127.0.0.1:8082/rag-service@sha256:<64-hex> \
-  scripts/release-mypc-rag-service.sh --check
+release_root=/data/ocee/vecta-infra-releases/<infra-sha>/rag-service/<source-sha>
+(
+  cd "$release_root"
+  sha256sum -c checksums.sha256
+)
+set -a
+. "$release_root/release-manifest.env"
+set +a
+"$release_root/scripts/release-mypc-rag-service.sh" --check
 
 MYPC_DEPLOY_ENABLED=true \
-RAG_SERVICE_IMAGE=127.0.0.1:8082/rag-service@sha256:<64-hex> \
-  scripts/release-mypc-rag-service.sh --execute
+  "$release_root/scripts/release-mypc-rag-service.sh" --execute
 ```
 
 The execute path recreates only `rag-service` with `--no-build --pull never`
-and requires runtime readiness. Any failed recreate, contract assertion, or
-readiness check immediately recreates the original immutable full-SHA image and
-proves that exact baseline before returning non-zero. Rendered configuration and
+and `--no-deps`, so it cannot start Compose dependencies. Before the first
+mutation it makes checksummed, private backups of the existing Hugging Face
+cache volume and knowledge bind, plus durable non-secret evidence under
+`/data/ocee/backups/app-adoption/`. It runs the read-only app regression before
+and after the recreation. If any recreate, runtime-preservation, readiness, or
+regression assertion fails, it removes the target container, restores both
+state paths (retaining the failed copies under a timestamped `.failed-*` path),
+recreates the original immutable digest, and verifies that baseline's runtime,
+health, and regression before returning non-zero. Rendered configuration and
 live environment values are never printed.
 
 ### RAG Parser Repair - 2026-07-19
