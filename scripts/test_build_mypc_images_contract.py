@@ -95,8 +95,6 @@ def assert_static_contract(workflow: str) -> None:
     assert "\n    secrets:\n" not in workflow
     assert set(re.findall(r"\$\{\{ secrets\.([A-Z0-9_]+) \}\}", workflow)) == {
         "MYPC_NEXUS_ADMIN_PASSWORD",
-        "PROXY_PASSWORD",
-        "PROXY_USERNAME",
         "VECTA_READ_TOKEN",
     }
 
@@ -136,6 +134,12 @@ def assert_static_contract(workflow: str) -> None:
         "DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082",
         "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083",
         "PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}",
+        "DOCKER_CACHE_PRUNE_UNTIL: ${{ inputs.docker_cache_prune_until }}",
+        "docker_cache_prune_until must be never or a positive duration",
+        "scripts/verify-vecta-postsubmit.py",
+        "--repo ZenoWangzy/vecta",
+        '--sha "$SOURCE_SHA"',
+        '--branch "$SOURCE_BRANCH"',
         f"BUILDX_VERSION: {BUILDX_VERSION}",
         f"BUILDX_LINUX_AMD64_SHA256: {BUILDX_SHA256}",
         f"BUILDX_PLUGIN_PATH: {BUILDX_PLUGIN_PATH}",
@@ -195,6 +199,14 @@ def assert_static_contract(workflow: str) -> None:
     )
     assert "docker buildx create" not in workflow
     assert "docker-container" not in workflow
+    assert "ddns.net" not in workflow
+    assert "PROXY_USERNAME" not in workflow
+    assert "PROXY_PASSWORD" not in workflow
+    prune_script = extract_step_script(workflow, "Prune mypc Docker build cache")
+    assert '${{ inputs.docker_cache_prune_until }}' not in prune_script
+    assert "grep -Eq '^[1-9][0-9]*[smhd]$'" in prune_script
+    assert "refusing invalid Docker cache retention" in prune_script
+    assert 'until=${DOCKER_CACHE_PRUNE_UNTIL}' in prune_script
     image_build_script = extract_step_script(workflow, "Build and push production images")
     assert (
         'docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin'
@@ -242,20 +254,9 @@ def assert_static_contract(workflow: str) -> None:
     assert 'if [ "$attempt" -eq 3 ]; then' in download_script
     assert 'echo "VectA clone failed after 3 attempts" >&2' in download_script
     assert 'cache="/home/github-runner/.cache/vecta-main.git"' in download_script
-    assert 'clone_proxy=""' in download_script
-    assert 'clone_proxy="$PROXY"' in download_script
-    assert 'if [ -n "$clone_proxy" ]; then' in download_script
-    assert 'if curl -sm 8 -x "$PROXY" -o /dev/null https://api.github.com/zen; then' in download_script
-    assert 'export HTTPS_PROXY="$clone_proxy"' in download_script
-    assert 'export https_proxy="$clone_proxy"' in download_script
-    assert 'echo "exact-source clone proxy enabled"' in download_script
-    assert download_script.index('clone_proxy="$PROXY"') > download_script.index(
-        'if curl -sm 8 -x "$PROXY" -o /dev/null https://api.github.com/zen; then'
-    )
-    assert download_script.index('clone_proxy="$PROXY"') < download_script.index(
-        'echo "proxy unreachable; downloading direct"'
-    )
-    assert workflow.index('export HTTPS_PROXY="$clone_proxy"') < workflow.index("clone_source() {")
+    assert "proxy =" not in download_script
+    assert "HTTPS_PROXY" not in download_script
+    assert "https_proxy" not in download_script
     assert 'git --git-dir="$cache" cat-file -e "$SOURCE_SHA^{commit}"' in download_script
     assert 'git --git-dir="$cache" rev-parse refs/heads/main' in download_script
     assert 'git --git-dir="$cache" fsck --connectivity-only "$SOURCE_SHA"' in download_script
