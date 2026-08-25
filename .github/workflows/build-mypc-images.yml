@@ -339,8 +339,8 @@ jobs:
       - name: Validate Fruit V4 isolated Compose contract
         run: python3 scripts/test_fruit_v4_isolated_compose_contract.py
 
-      - name: Validate mypc RAG service environment contract
-        run: python3 scripts/test_mypc_rag_service_contract.py
+      - name: Validate mypc RAG immutable release contract
+        run: node scripts/test_mypc_rag_release_contract.mjs
 
       - name: Ensure production Nexus is running
         run: |

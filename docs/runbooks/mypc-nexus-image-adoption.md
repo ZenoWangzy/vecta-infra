@@ -126,30 +126,38 @@ Before replacement, compressed backups and checksum evidence were written under
 The RAG health endpoint, PostgreSQL, Redis, Fleet Gateway, and the full
 post-deploy regression passed after replacement.
 
-### RAG environment-only reconciliation
+### RAG immutable runtime release
 
-`playbooks/mypc-rag-service.yml` is the only configuration-only path for the
-existing mypc RAG container. It captures the running image reference rather
-than consuming the inventory's default image tag, rejects image upgrades, backs
-up the existing RAG state, and overlays only the versioned non-secret
-`rag_service_env_overrides` onto the captured live environment. This retains
-private environment values, the existing cache volume, and the knowledge bind.
+`scripts/release-mypc-rag-service.sh` is the one-service production path for a
+RAG runtime repair. It runs on `mypc`, uses the authoritative
+`/data/ocee/migration-compose.config.yml` as its base, and accepts only an
+already-local immutable Nexus digest. It never builds or pulls an image.
 
-Run it only after the versioned config revision is available, with the registry
-password obtained from the approved secure source and never written to logs or
-shell history:
+Before any recreation it renders private mode-600 Compose snapshots and proves
+the live container matches the full baseline contract: image identity, complete
+environment map, mount set, networks and aliases, ports, command, entrypoint,
+user, restart policy, and rootfs/privilege flags. The desired contract may
+differ only by the immutable RAG digest and the versioned non-secret
+`HF_ENDPOINT` overlay. A missing or extra mount, environment drift, or any
+other mismatch stops before a Docker mutation.
+
+Run the exact reviewed infra source copied to `mypc` only after the protected
+image build has made the digest local:
 
 ```bash
-ansible-playbook playbooks/mypc-rag-service.yml \
-  -i inventories/mypc/hosts.ini \
-  -e ansible_host=mypc \
-  -e mypc_deploy_enabled=true
+RAG_SERVICE_IMAGE=127.0.0.1:8082/rag-service@sha256:<64-hex> \
+  scripts/release-mypc-rag-service.sh --check
+
+MYPC_DEPLOY_ENABLED=true \
+RAG_SERVICE_IMAGE=127.0.0.1:8082/rag-service@sha256:<64-hex> \
+  scripts/release-mypc-rag-service.sh --execute
 ```
 
-The role validates the RAG regression before and after recreation. A preflight
-failure blocks before container replacement; if post-recreate regression fails,
-stop and use the recorded backup and captured live contract for recovery rather
-than substituting a new image or mount.
+The execute path recreates only `rag-service` with `--no-build --pull never`
+and requires runtime readiness. Any failed recreate, contract assertion, or
+readiness check immediately recreates the original immutable full-SHA image and
+proves that exact baseline before returning non-zero. Rendered configuration and
+live environment values are never printed.
 
 ### RAG Parser Repair - 2026-07-19
 

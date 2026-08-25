@@ -1,0 +1,3 @@
+services:
+  rag-service:
+    image: "${RAG_SERVICE_IMAGE:?RAG_SERVICE_IMAGE must name an immutable RAG image}"
