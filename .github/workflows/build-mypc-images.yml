@@ -73,6 +73,7 @@ jobs:
       BUILDX_LINUX_AMD64_SHA256: f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b
       BUILDX_PLUGIN_PATH: /usr/local/lib/docker/cli-plugins/docker-buildx
       PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}
+      DOCKER_CACHE_PRUNE_UNTIL: ${{ inputs.docker_cache_prune_until }}
       NEXUS_ADMIN_PASSWORD_SECRET_NAME: MYPC_NEXUS_ADMIN_PASSWORD
     steps:
       - name: Checkout infra contract
@@ -161,6 +162,15 @@ jobs:
             exit 1
           fi
 
+      - name: Validate Docker cache retention
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$DOCKER_CACHE_PRUNE_UNTIL" \
+            | grep -Eq '^(never|[1-9][0-9]*[smhd])$'; then
+            echo "docker_cache_prune_until must be never or a positive duration" >&2
+            exit 1
+          fi
+
       - name: Download selected VectA source
         run: |
           set -euo pipefail
@@ -189,29 +199,8 @@ jobs:
             printf 'header = "Authorization: Bearer %s"\n' "$VECTA_READ_TOKEN"
             printf 'header = "Accept: application/vnd.github+json"\n'
             printf 'retry = 5\nretry-delay = 5\nconnect-timeout = 30\n'
-            # Abort transfers that fall below 10KB/s for 60s: direct GitHub bulk
-            # downloads get GFW-throttled to a crawl and then killed mid-stream
-            # (2026-08-07: 45MB tarball crawled 29min at 27KB/s, died with err 92).
             printf 'speed-limit = 10240\nspeed-time = 60\n'
           } > "$curl_config"
-          # Route through the squid proxy when it is reachable; it is not subject
-          # to the direct-path throttling. Probe first so a dead proxy cannot
-          # take the build down with it.
-          clone_proxy=""
-          if [ -n "${PROXY_USERNAME:-}" ] && [ -n "${PROXY_PASSWORD:-}" ]; then
-            PU="$(printf '%s' "${PROXY_USERNAME}" \
-              | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
-            PP="$(printf '%s' "${PROXY_PASSWORD}" \
-              | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
-            PROXY="http://${PU}:${PP}@geraldsynnas.ddns.net:8888"
-            if curl -sm 8 -x "$PROXY" -o /dev/null https://api.github.com/zen; then
-              printf 'proxy = "%s"\n' "$PROXY" >> "$curl_config"
-              clone_proxy="$PROXY"
-              echo "source download proxy enabled"
-            else
-              echo "proxy unreachable; downloading direct"
-            fi
-          fi
           branch_json="$(curl -fsSL --config "$curl_config" \
             "https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/main")"
           branch_sha="$(printf '%s' "$branch_json" | node -e '
@@ -241,14 +230,6 @@ jobs:
           # use a resumable source transport only if all three still fail.
           remote="https://github.com/ZenoWangzy/vecta.git"
           cache="/home/github-runner/.cache/vecta-main.git"
-          # curl_config is intentionally local to curl. Propagate the already
-          # probed proxy to Git's libcurl transport too, otherwise the exact
-          # source clone silently falls back to the throttled direct path.
-          if [ -n "$clone_proxy" ]; then
-            export HTTPS_PROXY="$clone_proxy"
-            export https_proxy="$clone_proxy"
-            echo "exact-source clone proxy enabled"
-          fi
           clone_source() {
             GIT_HTTP_LOW_SPEED_LIMIT=0 \
               LC_ALL=C \
@@ -300,8 +281,6 @@ jobs:
           fi
         env:
           VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
-          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
-          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
 
       - name: Preflight production build runner
         run: |
@@ -335,6 +314,15 @@ jobs:
             echo "at least 60GiB free disk is required" >&2
             exit 1
           fi
+
+      - name: Require exact-SHA VectA Postsubmit evidence
+        run: >-
+          python3 scripts/verify-vecta-postsubmit.py
+          --repo ZenoWangzy/vecta
+          --sha "$SOURCE_SHA"
+          --branch "$SOURCE_BRANCH"
+        env:
+          VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
 
       - name: Validate Fruit V4 isolated Compose contract
         run: python3 scripts/test_fruit_v4_isolated_compose_contract.py
@@ -669,5 +657,10 @@ jobs:
         if: always() && inputs.docker_cache_prune_until != 'never'
         run: |
           set -euo pipefail
+          if ! printf '%s' "$DOCKER_CACHE_PRUNE_UNTIL" \
+            | grep -Eq '^[1-9][0-9]*[smhd]$'; then
+            echo "refusing invalid Docker cache retention" >&2
+            exit 1
+          fi
           docker builder prune --force \
-            --filter "until=${{ inputs.docker_cache_prune_until }}"
+            --filter "until=${DOCKER_CACHE_PRUNE_UNTIL}"
