@@ -280,6 +280,10 @@ if (args[0] === 'pause' && args[1] === 'openclaw-fleet-gateway') {
   process.exit(0);
 }
 if (args[0] === 'unpause' && args[1] === 'openclaw-fleet-gateway') {
+  if (process.env.FAKE_UNPAUSE_FAILURE === 'true') {
+    fs.appendFileSync(operationsPath, 'unpause:fleet:failed\n');
+    process.exit(93);
+  }
   const state = readState();
   state.fleetPaused = false;
   fs.writeFileSync(statePath, JSON.stringify(state));
@@ -536,5 +540,23 @@ test('a post-commit regression failure never overwrites state after Fleet resume
     assert.equal(JSON.parse(readFileSync(fake.statePath, 'utf8')).fleetPaused, false);
     assert.equal(existsSync(join(fake.knowledgePath, 'target-marker.txt')), true);
     assert.doesNotMatch(readFileSync(fake.operationsPath, 'utf8'), /rm|up:baseline/);
+  });
+});
+
+test('a Fleet unpause failure propagates and cleanup retains enough state to retry', () => {
+  withFake({}, (fake) => {
+    const result = runRelease(fake, {
+      execute: true,
+      env: { FAKE_UNPAUSE_FAILURE: 'true' },
+    });
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /Fleet could not resume/);
+    assert.match(result.stderr, /cleanup could not resume the Fleet writer/);
+    assert.equal(JSON.parse(readFileSync(fake.statePath, 'utf8')).stage, 'target');
+    assert.equal(JSON.parse(readFileSync(fake.statePath, 'utf8')).fleetPaused, true);
+    assert.equal(
+      readFileSync(fake.operationsPath, 'utf8'),
+      'regression:before\npause:fleet\nstop:rag\nup:target\nunpause:fleet:failed\nunpause:fleet:failed\n',
+    );
   });
 });

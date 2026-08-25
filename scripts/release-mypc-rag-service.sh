@@ -378,7 +378,7 @@ quiesce_writers() {
 
 resume_fleet_writer() {
   if (( FLEET_PAUSED_BY_RELEASE != 0 )); then
-    docker_local unpause "$FLEET_CONTAINER" >/dev/null
+    docker_local unpause "$FLEET_CONTAINER" >/dev/null || return 1
     FLEET_PAUSED_BY_RELEASE=0
   fi
 }
