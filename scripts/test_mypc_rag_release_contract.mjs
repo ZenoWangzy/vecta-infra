@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -50,6 +51,8 @@ function createFakeMypc({
   writeFileSync(operationsPath, '');
   writeFileSync(statePath, JSON.stringify({
     stage: 'baseline',
+    ragRunning: true,
+    fleetPaused: false,
     extraMount,
     extraSecurityOpt,
     targetHealthFailure,
@@ -80,6 +83,7 @@ function writeState(stage, imageRef) {
   const state = readState();
   state.stage = stage;
   state.imageRef = imageRef;
+  state.ragRunning = true;
   fs.writeFileSync(statePath, JSON.stringify(state));
 }
 function imageInfo(ref) {
@@ -133,7 +137,7 @@ function renderedConfig(includeEndpoint) {
     networks: { 'openclaw-net': { name: 'openclaw-enterprise_openclaw-net' } },
   };
 }
-function liveContainer() {
+function liveRagContainer() {
   const state = readState();
   const target = state.stage === 'target';
   const image = state.imageRef || (target ? targetImage : baselineImage);
@@ -155,7 +159,7 @@ function liveContainer() {
   return {
     Name: '/openclaw-rag-service',
     Image: imageId,
-    State: { Running: true },
+    State: { Running: state.ragRunning, Paused: false },
     Config: {
       Image: image,
       Env: environment,
@@ -184,6 +188,23 @@ function liveContainer() {
     },
   };
 }
+function liveFleetContainer() {
+  const state = readState();
+  return {
+    Name: '/openclaw-fleet-gateway',
+    Image: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    State: { Running: true, Paused: state.fleetPaused },
+    Config: { Image: 'fleet:baseline', Env: [], Cmd: ['node'], Entrypoint: null, User: 'node', WorkingDir: '/app' },
+    HostConfig: { RestartPolicy: { Name: 'unless-stopped' }, PortBindings: {} },
+    Mounts: [
+      { Type: 'bind', Source: knowledgePath, Destination: '/app/knowledge', RW: true },
+    ],
+    NetworkSettings: { Networks: {} },
+  };
+}
+function requestedContainer() {
+  return args.some(arg => arg === 'openclaw-fleet-gateway') ? liveFleetContainer() : liveRagContainer();
+}
 if (args[0] === 'volume' && args[1] === 'inspect') {
   if (args.includes('--format')) {
     process.stdout.write(cachePath);
@@ -199,17 +220,18 @@ if (args[0] === 'image' && args[1] === 'inspect') {
 if (args[0] === 'inspect') {
   if (args.includes('--format')) {
     const template = args[args.indexOf('--format') + 1];
-    const live = liveContainer();
+    const live = requestedContainer();
     if (template.includes('.Config.Image')) process.stdout.write(live.Config.Image);
     else if (template.includes('.State.Running')) process.stdout.write(String(live.State.Running));
+    if (template.includes('.State.Paused')) process.stdout.write(':' + String(live.State.Paused));
     else process.exit(2);
   } else {
-    process.stdout.write(JSON.stringify([liveContainer()]));
+    process.stdout.write(JSON.stringify([requestedContainer()]));
   }
   process.exit(0);
 }
 if (args[0] === 'container' && args[1] === 'inspect') {
-  process.stdout.write(JSON.stringify([liveContainer()]));
+  process.stdout.write(JSON.stringify([requestedContainer()]));
   process.exit(0);
 }
 if (args[0] === 'compose' && args.includes('config') && args.includes('--format')) {
@@ -222,10 +244,19 @@ if (args[0] === 'compose' && args.includes('up')) {
     process.stderr.write('rag release must not start dependencies\\n');
     process.exit(98);
   }
-  const configPath = args.filter(arg => arg.endsWith('.json')).at(-1);
+  const configPath = args[args.lastIndexOf('-f') + 1];
+  if (!configPath.startsWith('/proc/')) {
+    process.stderr.write('rendered config must be anonymous\n');
+    process.exit(95);
+  }
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const endpoint = Object.prototype.hasOwnProperty.call(config.services['rag-service'].environment, 'HF_ENDPOINT');
   const stage = endpoint ? 'target' : 'baseline';
+  const current = readState();
+  if (stage === 'target' && (!current.fleetPaused || current.ragRunning)) {
+    process.stderr.write('writers were not quiesced before target mutation\n');
+    process.exit(94);
+  }
   writeState(stage, config.services['rag-service'].image);
   if (stage === 'target') {
     fs.writeFileSync(cachePath + '/target-marker.txt', 'target cache mutation\n');
@@ -235,7 +266,38 @@ if (args[0] === 'compose' && args.includes('up')) {
   process.exit(0);
 }
 if (args[0] === 'rm' && args.includes('openclaw-rag-service')) {
+  const state = readState();
+  state.ragRunning = false;
+  fs.writeFileSync(statePath, JSON.stringify(state));
   fs.appendFileSync(operationsPath, 'rm\n');
+  process.exit(0);
+}
+if (args[0] === 'pause' && args[1] === 'openclaw-fleet-gateway') {
+  const state = readState();
+  state.fleetPaused = true;
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  fs.appendFileSync(operationsPath, 'pause:fleet\n');
+  process.exit(0);
+}
+if (args[0] === 'unpause' && args[1] === 'openclaw-fleet-gateway') {
+  const state = readState();
+  state.fleetPaused = false;
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  fs.appendFileSync(operationsPath, 'unpause:fleet\n');
+  process.exit(0);
+}
+if (args[0] === 'stop' && args.at(-1) === 'openclaw-rag-service') {
+  const state = readState();
+  state.ragRunning = false;
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  fs.appendFileSync(operationsPath, 'stop:rag\n');
+  process.exit(0);
+}
+if (args[0] === 'start' && args[1] === 'openclaw-rag-service') {
+  const state = readState();
+  state.ragRunning = true;
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  fs.appendFileSync(operationsPath, 'start:rag\n');
   process.exit(0);
 }
 process.stderr.write('unexpected docker invocation\n');
@@ -249,7 +311,7 @@ process.stdout.write(healthy ? '{"ok":true,"service":"rag-service"}' : '{"ok":fa
 `;
   const fakeHostname = '#!/usr/bin/env bash\nprintf mypc\n';
   const fakeId = '#!/usr/bin/env bash\nprintf 0\n';
-  const fakeRegression = '#!/usr/bin/env bash\nset -euo pipefail\nprintf \'regression:%s\\n\' "${4:-unknown}" >> "$FAKE_OPERATIONS"\n';
+  const fakeRegression = '#!/usr/bin/env bash\nset -euo pipefail\nphase="${4:-unknown}"\nprintf \'regression:%s\\n\' "$phase" >> "$FAKE_OPERATIONS"\nif [[ "$phase" == after && "${FAKE_REGRESSION_FAIL_AFTER:-}" == true ]]; then exit 1; fi\n';
   writeExecutable(join(binDir, 'docker'), fakeDocker);
   writeExecutable(join(binDir, 'curl'), fakeCurl);
   writeExecutable(join(binDir, 'hostname'), fakeHostname);
@@ -330,7 +392,10 @@ test('execute recreates only RAG with the target digest and endpoint contract', 
     const result = runRelease(fake, { execute: true });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /RESULT=changed/);
-    assert.equal(readFileSync(fake.operationsPath, 'utf8'), 'regression:before\nup:target\nregression:after\n');
+    assert.equal(
+      readFileSync(fake.operationsPath, 'utf8'),
+      'regression:before\npause:fleet\nstop:rag\nup:target\nunpause:fleet\nregression:after\n',
+    );
     assert.equal(JSON.parse(readFileSync(fake.statePath, 'utf8')).stage, 'target');
     const backupDirectory = join(fake.backupRoot, readdirSync(fake.backupRoot)[0]);
     const evidence = readFileSync(join(backupDirectory, 'release-evidence.env'), 'utf8');
@@ -388,6 +453,25 @@ test('execute rejects an invalid retry contract before a Compose mutation', () =
   });
 });
 
+test('execute rejects a backup root that overlaps live mutable state before quiescing writers', () => {
+  withFake({}, (fake) => {
+    for (const backupRoot of [
+      fake.knowledgePath,
+      join(fake.knowledgePath, 'nested-backups'),
+      fake.root,
+    ]) {
+      const result = runRelease(fake, {
+        execute: true,
+        env: { RAG_STATE_BACKUP_ROOT: backupRoot },
+      });
+      assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.match(result.stderr, /must not overlap/);
+      assert.equal(readFileSync(fake.operationsPath, 'utf8'), '');
+      assert.equal(JSON.parse(readFileSync(fake.statePath, 'utf8')).fleetPaused, false);
+    }
+  });
+});
+
 test('a second check against the already-adopted immutable target is a non-mutating no-op', () => {
   withFake({}, (fake) => {
     const first = runRelease(fake, { execute: true });
@@ -397,7 +481,7 @@ test('a second check against the already-adopted immutable target is a non-mutat
     assert.match(second.stdout, /RESULT=noop/);
     assert.equal(
       readFileSync(fake.operationsPath, 'utf8'),
-      'regression:before\nup:target\nregression:after\nregression:after\n',
+      'regression:before\npause:fleet\nstop:rag\nup:target\nunpause:fleet\nregression:after\nregression:after\n',
     );
   });
 });
@@ -409,7 +493,7 @@ test('execute rolls back when a host runtime field outside the rendered Compose 
     assert.match(result.stderr, /exact baseline restored/);
     assert.equal(
       readFileSync(fake.operationsPath, 'utf8'),
-      'regression:before\nup:target\nrm\nup:baseline\nregression:after\n',
+      'regression:before\npause:fleet\nstop:rag\nup:target\nrm\nup:baseline\nunpause:fleet\nregression:after\n',
     );
     assert.equal(JSON.parse(readFileSync(fake.statePath, 'utf8')).stage, 'baseline');
   });
@@ -417,17 +501,40 @@ test('execute rolls back when a host runtime field outside the rendered Compose 
 
 test('execute rolls back to the exact baseline if target readiness fails', () => {
   withFake({ targetHealthFailure: true }, (fake) => {
+    const knowledgeInode = statSync(fake.knowledgePath).ino;
+    const cacheInode = statSync(fake.cachePath).ino;
     const result = runRelease(fake, { execute: true });
     assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stderr, /exact baseline restored/);
-    assert.equal(readFileSync(fake.operationsPath, 'utf8'), 'regression:before\nup:target\nrm\nup:baseline\nregression:after\n');
+    assert.equal(
+      readFileSync(fake.operationsPath, 'utf8'),
+      'regression:before\npause:fleet\nstop:rag\nup:target\nrm\nup:baseline\nunpause:fleet\nregression:after\n',
+    );
     assert.equal(JSON.parse(readFileSync(fake.statePath, 'utf8')).stage, 'baseline');
     assert.equal(readFileSync(join(fake.cachePath, 'baseline-cache.txt'), 'utf8'), 'baseline cache\n');
     assert.equal(readFileSync(join(fake.knowledgePath, 'baseline-knowledge.txt'), 'utf8'), 'baseline knowledge\n');
     assert.equal(existsSync(join(fake.cachePath, 'target-marker.txt')), false);
     assert.equal(existsSync(join(fake.knowledgePath, 'target-marker.txt')), false);
-    assert.ok(readdirSync(fake.root).some((entry) => entry.startsWith('rag-cache.failed-')));
-    assert.ok(readdirSync(fake.root).some((entry) => entry.startsWith('knowledge.failed-')));
+    assert.equal(statSync(fake.knowledgePath).ino, knowledgeInode);
+    assert.equal(statSync(fake.cachePath).ino, cacheInode);
+    const backupDirectory = join(fake.backupRoot, readdirSync(fake.backupRoot)[0]);
+    assert.ok(readdirSync(backupDirectory).some((entry) => entry.startsWith('cache_metadata-failed-')));
+    assert.ok(readdirSync(backupDirectory).some((entry) => entry.startsWith('knowledge_metadata-failed-')));
     assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /secret-rag-token|secret-db/);
+  });
+});
+
+test('a post-commit regression failure never overwrites state after Fleet resumes', () => {
+  withFake({}, (fake) => {
+    const result = runRelease(fake, {
+      execute: true,
+      env: { FAKE_REGRESSION_FAIL_AFTER: 'true' },
+    });
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /post-commit regression failed/);
+    assert.equal(JSON.parse(readFileSync(fake.statePath, 'utf8')).stage, 'target');
+    assert.equal(JSON.parse(readFileSync(fake.statePath, 'utf8')).fleetPaused, false);
+    assert.equal(existsSync(join(fake.knowledgePath, 'target-marker.txt')), true);
+    assert.doesNotMatch(readFileSync(fake.operationsPath, 'utf8'), /rm|up:baseline/);
   });
 });

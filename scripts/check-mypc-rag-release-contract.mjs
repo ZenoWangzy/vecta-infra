@@ -303,7 +303,7 @@ function currentSpec(container) {
 
 function currentContainer(container) {
   const live = parseDockerJson(['inspect', container], 'container inspection')[0];
-  if (!live?.Config || !live?.HostConfig || !live?.State || !live.State.Running) {
+  if (!live?.Config || !live?.HostConfig || !live?.State || !live.State.Running || live.State.Paused) {
     fail('RAG container is not running with a complete production contract');
   }
   return live;
@@ -369,8 +369,9 @@ function assertSourceProvenance(reference, sourceSha) {
   return image;
 }
 
-function statePaths(container) {
+function statePaths(container, fleetContainer) {
   const live = currentContainer(container);
+  const fleet = currentContainer(fleetContainer);
   const cache = (live.Mounts ?? []).find((mount) => (
     mount.Type === 'volume'
     && mount.Destination === '/home/node/.cache/huggingface'
@@ -383,6 +384,14 @@ function statePaths(container) {
   ));
   if (!cache?.Name || !knowledge?.Source) {
     fail('RAG mutable state mounts are incomplete');
+  }
+  const fleetKnowledge = (fleet.Mounts ?? []).find((mount) => (
+    mount.Type === 'bind'
+    && mount.Destination === '/app/knowledge'
+    && mount.RW === true
+  ));
+  if (!fleetKnowledge?.Source || fleetKnowledge.Source !== knowledge.Source) {
+    fail('Fleet and RAG do not share the same writable knowledge bind');
   }
   return { cacheVolume: cache.Name, knowledgePath: knowledge.Source };
 }
@@ -442,7 +451,8 @@ function main() {
   }
 
   if (args.mode === 'state-paths') {
-    const paths = statePaths(args.container);
+    if (!args['fleet-container']) usage();
+    const paths = statePaths(args.container, args['fleet-container']);
     process.stdout.write(`RESULT=state-paths\nCACHE_VOLUME=${paths.cacheVolume}\nKNOWLEDGE_PATH=${paths.knowledgePath}\n`);
     return;
   }

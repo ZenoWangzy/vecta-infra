@@ -141,8 +141,10 @@ the VectA source SHA and `ZenoWangzy/vecta` repository. The stage directory has
 a mode-600 manifest and checksum file. Do not copy a local checkout or hand
 type an image reference in its place.
 
-Before any recreation the script renders private mode-600 Compose snapshots and
-checks the live container against the intended baseline: image ID, complete
+Before any recreation the script renders Compose snapshots into unlinked
+process-owned file descriptors, so a hard-killed release cannot leave plaintext
+environment values in a named temporary file. It checks the live container
+against the intended baseline: image ID, complete
 environment map, mount set, networks and aliases, ports, command, entrypoint,
 user, restart policy, logging, memory/CPU/memory-swap limits, and security
 settings. It also writes a private runtime snapshot whose environment values
@@ -170,16 +172,22 @@ MYPC_DEPLOY_ENABLED=true \
 ```
 
 The execute path recreates only `rag-service` with `--no-build --pull never`
-and `--no-deps`, so it cannot start Compose dependencies. Before the first
-mutation it makes checksummed, private backups of the existing Hugging Face
-cache volume and knowledge bind, plus durable non-secret evidence under
-`/data/ocee/backups/app-adoption/`. It runs the read-only app regression before
-and after the recreation. If any recreate, runtime-preservation, readiness, or
-regression assertion fails, it removes the target container, restores both
-state paths (retaining the failed copies under a timestamped `.failed-*` path),
-recreates the original immutable digest, and verifies that baseline's runtime,
-health, and regression before returning non-zero. Rendered configuration and
-live environment values are never printed.
+and `--no-deps`, so it cannot start Compose dependencies. Fleet Gateway writes
+the shared knowledge bind and RAG writes the model/OCR cache, so the script
+pauses Fleet and stops RAG before making checksummed, private backups. Backup,
+cache, and knowledge paths must be mutually non-overlapping after canonical path
+resolution. The target RAG must pass its full runtime contract and readiness
+while Fleet remains paused. A failure before that point removes the target,
+archives its failed state, restores both directories in place (preserving bind
+mount inodes), compares the restored trees with the baseline archives, and
+recreates the original immutable digest before Fleet resumes.
+
+Resuming Fleet is the data transaction's commit point: customer writes may
+restart after it. The read-only full app regression runs immediately after that
+commit. If it fails, the release returns non-zero and records durable evidence,
+but it deliberately keeps the validated target and never overwrites possible
+post-commit customer writes with the old snapshot. Rendered configuration and
+live environment values are never printed or persisted by pathname.
 
 ### RAG Parser Repair - 2026-07-19
 

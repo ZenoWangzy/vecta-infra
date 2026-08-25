@@ -6,6 +6,7 @@ export LC_ALL=C
 readonly EXPECTED_HOSTNAME='mypc'
 readonly RAG_SERVICE='rag-service'
 readonly RAG_CONTAINER='openclaw-rag-service'
+readonly FLEET_CONTAINER='openclaw-fleet-gateway'
 readonly EXPECTED_HF_ENDPOINT='https://hf-mirror.com'
 readonly SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly BASE_COMPOSE="${RAG_BASE_COMPOSE:-/data/ocee/migration-compose.config.yml}"
@@ -23,9 +24,10 @@ readonly SHA256SUM_BIN="${RAG_SHA256SUM_BIN:-/usr/bin/sha256sum}"
 readonly STAT_BIN="${RAG_STAT_BIN:-/usr/bin/stat}"
 readonly DU_BIN="${RAG_DU_BIN:-/usr/bin/du}"
 readonly DF_BIN="${RAG_DF_BIN:-/usr/bin/df}"
-readonly MV_BIN="${RAG_MV_BIN:-/usr/bin/mv}"
+readonly FIND_BIN="${RAG_FIND_BIN:-/usr/bin/find}"
+readonly REALPATH_BIN="${RAG_REALPATH_BIN:-/usr/bin/realpath}"
 readonly LOCK_FILE="${RAG_RELEASE_LOCK_FILE:-/run/vecta-rag-service-release.lock}"
-readonly BACKUP_ROOT="${RAG_STATE_BACKUP_ROOT:-/data/ocee/backups/app-adoption}"
+BACKUP_ROOT="${RAG_STATE_BACKUP_ROOT:-/data/ocee/backups/app-adoption}"
 readonly RETRIES="${RAG_RELEASE_RETRIES:-30}"
 readonly RETRY_DELAY_SECONDS="${RAG_RELEASE_RETRY_DELAY_SECONDS:-5}"
 readonly HEALTH_URL="${RAG_HEALTH_URL:-http://127.0.0.1:8000/healthz}"
@@ -34,6 +36,8 @@ readonly RELEASE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WORK_DIR=''
 BASELINE_CONFIG=''
 TARGET_CONFIG=''
+BASELINE_CONFIG_FD=''
+TARGET_CONFIG_FD=''
 BASELINE_RUNTIME=''
 BASELINE_IMAGE=''
 BASELINE_IMAGE_ID=''
@@ -43,6 +47,8 @@ CACHE_MOUNTPOINT=''
 KNOWLEDGE_PATH=''
 BACKUP_DIR=''
 MUTATION_STARTED=0
+FLEET_PAUSED_BY_RELEASE=0
+RAG_STOPPED_BY_RELEASE=0
 LOCK_HELD=0
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; return 1; }
@@ -110,7 +116,8 @@ require_files() {
   [[ -x "$STAT_BIN" ]] || fail 'stat binary is unavailable'
   [[ -x "$DU_BIN" ]] || fail 'du binary is unavailable'
   [[ -x "$DF_BIN" ]] || fail 'df binary is unavailable'
-  [[ -x "$MV_BIN" ]] || fail 'mv binary is unavailable'
+  [[ -x "$FIND_BIN" ]] || fail 'find binary is unavailable'
+  [[ -x "$REALPATH_BIN" ]] || fail 'realpath binary is unavailable'
   command -v node >/dev/null || fail 'node is unavailable'
   [[ -f "$BASE_COMPOSE" ]] || fail 'authoritative mypc Compose source is unavailable'
   [[ -f "$ENDPOINT_OVERRIDE" ]] || fail 'versioned RAG endpoint override is unavailable'
@@ -135,7 +142,39 @@ release_lock() {
   fi
 }
 
+close_config_fds() {
+  if [[ "$BASELINE_CONFIG_FD" =~ ^[0-9]+$ ]]; then
+    exec {BASELINE_CONFIG_FD}>&-
+    BASELINE_CONFIG_FD=''
+  fi
+  if [[ "$TARGET_CONFIG_FD" =~ ^[0-9]+$ ]]; then
+    exec {TARGET_CONFIG_FD}>&-
+    TARGET_CONFIG_FD=''
+  fi
+}
+
+resume_writers_best_effort() {
+  if (( RAG_STOPPED_BY_RELEASE != 0 )); then
+    if docker_local start "$RAG_CONTAINER" >/dev/null 2>&1; then
+      RAG_STOPPED_BY_RELEASE=0
+    else
+      printf 'FAIL: cleanup could not restart the baseline RAG container\n' >&2
+    fi
+  fi
+  if (( FLEET_PAUSED_BY_RELEASE != 0 )); then
+    if docker_local unpause "$FLEET_CONTAINER" >/dev/null 2>&1; then
+      FLEET_PAUSED_BY_RELEASE=0
+    else
+      printf 'FAIL: cleanup could not resume the Fleet writer\n' >&2
+    fi
+  fi
+}
+
 cleanup() {
+  if (( MUTATION_STARTED == 0 )); then
+    resume_writers_best_effort
+  fi
+  close_config_fds
   release_lock
   if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
     rm -rf -- "$WORK_DIR"
@@ -150,25 +189,34 @@ acquire_lock() {
 }
 
 create_work_dir() {
+  local baseline_path target_path
   umask 077
   WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vecta-rag-release.XXXXXX")"
-  BASELINE_CONFIG="${WORK_DIR}/baseline.json"
-  TARGET_CONFIG="${WORK_DIR}/target.json"
+  baseline_path="$(mktemp "${WORK_DIR}/baseline.XXXXXX")"
+  target_path="$(mktemp "${WORK_DIR}/target.XXXXXX")"
+  exec {BASELINE_CONFIG_FD}<>"$baseline_path"
+  exec {TARGET_CONFIG_FD}<>"$target_path"
+  rm -f -- "$baseline_path" "$target_path"
+  BASELINE_CONFIG="/proc/$$/fd/${BASELINE_CONFIG_FD}"
+  TARGET_CONFIG="/proc/$$/fd/${TARGET_CONFIG_FD}"
   BASELINE_RUNTIME="${WORK_DIR}/baseline-runtime.json"
 }
 
 render_config() {
-  local image="$1" override="$2" output="$3" base_dir
+  local image="$1" output="$2" include_endpoint="$3" base_dir
+  local compose_files=(-f "$BASE_COMPOSE" -f "$IMAGE_OVERRIDE")
   base_dir="$(dirname "$BASE_COMPOSE")"
+  if [[ "$include_endpoint" == 'true' ]]; then
+    compose_files+=(-f "$ENDPOINT_OVERRIDE")
+  fi
   if ! /usr/bin/env -u DOCKER_HOST -u DOCKER_CONTEXT -u DOCKER_CONFIG \
     RAG_SERVICE_IMAGE="$image" "$DOCKER_BIN" compose \
       --project-directory "$base_dir" \
-      -f "$BASE_COMPOSE" -f "$override" config --format json \
-      >"$output" 2>"${WORK_DIR}/compose.stderr"; then
+      "${compose_files[@]}" config --format json \
+      >"$output" 2>/dev/null; then
     fail 'failed to render the RAG Compose release contract'
     return 1
   fi
-  chmod 600 "$output"
 }
 
 result_field() {
@@ -195,17 +243,44 @@ verify_target_provenance() {
 
 capture_state_paths() {
   local result
-  result="$(checker --mode state-paths --container "$RAG_CONTAINER")" || return 1
+  result="$(checker --mode state-paths --container "$RAG_CONTAINER" \
+    --fleet-container "$FLEET_CONTAINER")" || return 1
   CACHE_VOLUME="$(result_field "$result" CACHE_VOLUME)"
   KNOWLEDGE_PATH="$(result_field "$result" KNOWLEDGE_PATH)"
-  [[ "$CACHE_VOLUME" =~ ^[A-Za-z0-9_.-]+$ ]] || fail 'RAG cache volume name is unsafe'
-  [[ "$KNOWLEDGE_PATH" == /* && "$KNOWLEDGE_PATH" != / ]] || fail 'RAG knowledge path is unsafe'
-  [[ -d "$KNOWLEDGE_PATH" ]] || fail 'RAG knowledge path is unavailable'
+  [[ "$CACHE_VOLUME" =~ ^[A-Za-z0-9_.-]+$ ]] \
+    || { fail 'RAG cache volume name is unsafe'; return 1; }
+  [[ "$KNOWLEDGE_PATH" == /* && "$KNOWLEDGE_PATH" != / ]] \
+    || { fail 'RAG knowledge path is unsafe'; return 1; }
+  [[ -d "$KNOWLEDGE_PATH" ]] || { fail 'RAG knowledge path is unavailable'; return 1; }
   CACHE_MOUNTPOINT="$(docker_local volume inspect --format '{{.Mountpoint}}' "$CACHE_VOLUME")" || {
     fail 'RAG cache volume is unavailable'; return 1;
   }
   [[ "$CACHE_MOUNTPOINT" == /* && "$CACHE_MOUNTPOINT" != / && -d "$CACHE_MOUNTPOINT" ]] \
-    || fail 'RAG cache mountpoint is unsafe or unavailable'
+    || { fail 'RAG cache mountpoint is unsafe or unavailable'; return 1; }
+  validate_state_path_separation || return 1
+}
+
+paths_overlap() {
+  local left="$1" right="$2"
+  [[ "$left" == "$right" || "$left" == "$right/"* || "$right" == "$left/"* ]]
+}
+
+validate_state_path_separation() {
+  local backup cache knowledge
+  backup="$($REALPATH_BIN -m -- "$BACKUP_ROOT")" || return 1
+  cache="$($REALPATH_BIN -m -- "$CACHE_MOUNTPOINT")" || return 1
+  knowledge="$($REALPATH_BIN -m -- "$KNOWLEDGE_PATH")" || return 1
+  [[ "$backup" != / && "$cache" != / && "$knowledge" != / ]] \
+    || { fail 'RAG state paths must not resolve to the filesystem root'; return 1; }
+  ! paths_overlap "$cache" "$knowledge" \
+    || { fail 'RAG cache and knowledge paths must not overlap'; return 1; }
+  ! paths_overlap "$backup" "$cache" \
+    || { fail 'RAG backup root must not overlap the cache path'; return 1; }
+  ! paths_overlap "$backup" "$knowledge" \
+    || { fail 'RAG backup root must not overlap the knowledge path'; return 1; }
+  BACKUP_ROOT="$backup"
+  CACHE_MOUNTPOINT="$cache"
+  KNOWLEDGE_PATH="$knowledge"
 }
 
 checker_match() {
@@ -241,14 +316,14 @@ checker_preserve() {
 prepare_contract() {
   verify_target_provenance || return 1
   capture_baseline || return 1
-  render_config "$BASELINE_IMAGE" "$IMAGE_OVERRIDE" "$BASELINE_CONFIG" || return 1
-  render_config "$RAG_SERVICE_IMAGE" "$ENDPOINT_OVERRIDE" "$TARGET_CONFIG" || return 1
+  render_config "$BASELINE_IMAGE" "$BASELINE_CONFIG" false || return 1
+  render_config "$RAG_SERVICE_IMAGE" "$TARGET_CONFIG" true || return 1
   if checker_match "$TARGET_CONFIG" "$EXPECTED_HF_ENDPOINT" >/dev/null 2>&1; then
     printf 'RESULT=noop\n'
     return 10
   fi
   if ! checker_baseline_match "$BASELINE_CONFIG" >/dev/null 2>&1; then
-    render_config "$BASELINE_IMAGE" "$ENDPOINT_OVERRIDE" "$BASELINE_CONFIG" || return 1
+    render_config "$BASELINE_IMAGE" "$BASELINE_CONFIG" true || return 1
     checker_baseline_match "$BASELINE_CONFIG" "$EXPECTED_HF_ENDPOINT" >/dev/null || return 1
   fi
   checker_transition || return 1
@@ -287,6 +362,25 @@ write_evidence() {
   [[ -n "$BACKUP_DIR" ]] || return 0
   printf '%s=%s\n' "$key" "$value" >> "${BACKUP_DIR}/release-evidence.env"
   chmod 600 "${BACKUP_DIR}/release-evidence.env"
+}
+
+quiesce_writers() {
+  local fleet_state
+  fleet_state="$(docker_local inspect --format '{{.State.Running}}:{{.State.Paused}}' "$FLEET_CONTAINER")" \
+    || { fail 'Fleet writer state is unavailable'; return 1; }
+  [[ "$fleet_state" == 'true:false' ]] \
+    || { fail 'Fleet writer must be running and unpaused before the RAG release'; return 1; }
+  docker_local pause "$FLEET_CONTAINER" >/dev/null
+  FLEET_PAUSED_BY_RELEASE=1
+  docker_local stop --time 30 "$RAG_CONTAINER" >/dev/null
+  RAG_STOPPED_BY_RELEASE=1
+}
+
+resume_fleet_writer() {
+  if (( FLEET_PAUSED_BY_RELEASE != 0 )); then
+    docker_local unpause "$FLEET_CONTAINER" >/dev/null
+    FLEET_PAUSED_BY_RELEASE=0
+  fi
 }
 
 backup_state() {
@@ -334,20 +428,30 @@ metadata_value() {
 }
 
 restore_one_state() {
-  local path="$1" archive="$2" metadata_key="$3" metadata failed_path mode uid gid
+  local path="$1" archive="$2" metadata_key="$3" metadata failed_archive mode uid gid
+  local archive_entries live_entries
   metadata="$(metadata_value "$metadata_key")"
   IFS=: read -r mode uid gid <<< "$metadata"
   [[ "$mode" =~ ^[0-7]{3,4}$ && "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] \
     || { fail 'RAG state metadata is invalid'; return 1; }
   [[ -d "$path" ]] || { fail 'RAG mutable state path is unavailable for rollback'; return 1; }
-  failed_path="${path}.failed-${RELEASE_ID}"
-  [[ ! -e "$failed_path" ]] || { fail 'RAG rollback preservation path already exists'; return 1; }
-  "$MV_BIN" -- "$path" "$failed_path" || return 1
-  mkdir -p -- "$path" || return 1
+  failed_archive="${BACKUP_DIR}/${metadata_key}-failed-${RELEASE_ID}.tgz"
+  [[ ! -e "$failed_archive" ]] || { fail 'RAG rollback preservation archive already exists'; return 1; }
+  "$TAR_BIN" --xattrs --acls --numeric-owner -C "$path" -czf "$failed_archive" . || return 1
+  "$SHA256SUM_BIN" "$failed_archive" > "${failed_archive}.sha256" || return 1
+  "$FIND_BIN" "$path" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + || return 1
   chmod "$mode" "$path" || return 1
   chown "$uid:$gid" "$path" || return 1
   "$TAR_BIN" --xattrs --acls --numeric-owner -C "$path" -xzf "$archive" || return 1
-  write_evidence "${metadata_key}_failed_path" "$failed_path"
+  chmod "$mode" "$path" || return 1
+  chown "$uid:$gid" "$path" || return 1
+  "$TAR_BIN" --xattrs --acls --numeric-owner -C "$path" -dzf "$archive" >/dev/null || return 1
+  archive_entries="$($TAR_BIN -tzf "$archive" | wc -l | tr -d '[:space:]')" || return 1
+  live_entries="$($FIND_BIN "$path" -mindepth 1 -printf '.' | wc -c | tr -d '[:space:]')" || return 1
+  [[ "$archive_entries" =~ ^[0-9]+$ && "$live_entries" =~ ^[0-9]+$ \
+    && "$archive_entries" -eq $((live_entries + 1)) ]] \
+    || { fail 'RAG restored state contains missing or extra entries'; return 1; }
+  write_evidence "${metadata_key}_failed_archive" "$failed_archive"
 }
 
 restore_state() {
@@ -384,7 +488,7 @@ remove_target_container() {
 }
 
 rollback() {
-  local original_status="$1" remove_status restore_status recreate_status contract_status preserve_status health_status regression_status
+  local original_status="$1" remove_status restore_status recreate_status contract_status preserve_status health_status resume_status regression_status
   trap - ERR INT TERM
   set +e
   if (( MUTATION_STARTED == 0 )); then
@@ -401,24 +505,34 @@ rollback() {
   if (( remove_status == 0 && restore_status == 0 )); then
     compose_recreate "$BASELINE_CONFIG"
     recreate_status=$?
+    (( recreate_status == 0 )) && RAG_STOPPED_BY_RELEASE=0
     checker_match "$BASELINE_CONFIG"
     contract_status=$?
     checker_preserve
     preserve_status=$?
     check_rag_health
     health_status=$?
-    run_regression after "$BASELINE_IMAGE"
-    regression_status=$?
   else
     recreate_status=1
     contract_status=1
     preserve_status=1
     health_status=1
-    regression_status=1
   fi
-  if (( remove_status != 0 || restore_status != 0 || recreate_status != 0 || contract_status != 0 || preserve_status != 0 || health_status != 0 || regression_status != 0 )); then
+  if (( remove_status != 0 || restore_status != 0 || recreate_status != 0 || contract_status != 0 || preserve_status != 0 || health_status != 0 )); then
     write_evidence rollback failed
     printf 'FAIL: release failed and exact baseline was not proven\n' >&2
+    exit 1
+  fi
+  MUTATION_STARTED=0
+  resume_fleet_writer
+  resume_status=$?
+  run_regression after "$BASELINE_IMAGE"
+  regression_status=$?
+  if (( resume_status != 0 || regression_status != 0 )); then
+    write_evidence rollback_state restored
+    write_evidence rollback_runtime degraded
+    write_evidence result rollback_needs_operator
+    printf 'FAIL: release failed; baseline state was restored but runtime recovery needs an operator\n' >&2
     exit 1
   fi
   write_evidence rollback_state restored
@@ -476,6 +590,7 @@ run_execute() {
   (( result == 0 )) || return "$result"
   check_rag_health
   run_regression before
+  quiesce_writers
   backup_state
   write_evidence pre_health verified
   write_evidence pre_regression verified
@@ -485,6 +600,7 @@ run_execute() {
   if ! compose_recreate "$TARGET_CONFIG"; then
     rollback 1
   fi
+  RAG_STOPPED_BY_RELEASE=0
   if ! checker_match "$TARGET_CONFIG" "$EXPECTED_HF_ENDPOINT"; then
     rollback 1
   fi
@@ -495,11 +611,20 @@ run_execute() {
     rollback 1
   fi
   write_evidence post_health verified
+  write_evidence runtime_contract verified
+  write_evidence transaction_commit target_validated
+  MUTATION_STARTED=0
+  if ! resume_fleet_writer; then
+    write_evidence result post_commit_fleet_resume_failed
+    fail 'target RAG was committed but Fleet could not resume; old state was not restored'
+    return 1
+  fi
   if ! run_regression after "$RAG_SERVICE_IMAGE"; then
-    rollback 1
+    write_evidence result post_commit_regression_failed
+    fail 'target RAG was committed but the post-commit regression failed; old state was not restored'
+    return 1
   fi
   trap - INT TERM
-  write_evidence runtime_contract verified
   write_evidence post_regression verified
   write_evidence result changed
   printf 'RESULT=changed\n'
