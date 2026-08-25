@@ -605,7 +605,12 @@ jobs:
             docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
           printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
             docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin
-          NEXUS_SYNC_ONLY="$expected_target" \
+          command -v skopeo >/dev/null || {
+            echo 'skopeo is required to preserve the Hermes OCI index' >&2
+            exit 1
+          }
+          NEXUS_DOCKER_GROUP_REGISTRY="$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" \
+            NEXUS_SYNC_ONLY="$expected_target" \
             scripts/sync-mypc-nexus-images.sh --execute
           bash scripts/verify-nexus-image-digest.sh \
             "$expected_group_tag_ref" "$expected_manifest_digest"
@@ -643,6 +648,8 @@ jobs:
           fi
           printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
             docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
+          printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
+            docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin
           nice -n 10 ionice -c2 -n7 \
             node scripts/build-push-production-images.mjs
         env:

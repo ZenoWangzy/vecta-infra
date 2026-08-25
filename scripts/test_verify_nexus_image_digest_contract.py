@@ -21,21 +21,17 @@ def run_verifier(resolved_digest: str | None) -> subprocess.CompletedProcess[str
     with tempfile.TemporaryDirectory() as temporary:
         fake_bin = Path(temporary) / "bin"
         fake_bin.mkdir()
-        docker = fake_bin / "docker"
-        payload = (
-            '{"Descriptor":{"digest":"' + resolved_digest + '"}}'
-            if resolved_digest is not None
-            else '{}'
-        )
-        docker.write_text(
+        skopeo = fake_bin / "skopeo"
+        payload = resolved_digest if resolved_digest is not None else "not-a-digest"
+        skopeo.write_text(
             "#!/bin/sh\n"
-            "if [ \"$1\" = manifest ] && [ \"$2\" = inspect ] && [ \"$3\" = --verbose ]; then\n"
+            "if [ \"$1\" = inspect ] && [ \"$2\" = --no-tags ] && [ \"$3\" = --tls-verify=false ] && [ \"$4\" = --format ] && [ \"$5\" = '{{.Digest}}' ] && [ \"$6\" = 'docker://127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19-3811ed13' ]; then\n"
             f"  printf '%s\\n' '{payload}'\n"
             "  exit 0\n"
             "fi\n"
             "exit 64\n"
         )
-        docker.chmod(0o755)
+        skopeo.chmod(0o755)
         environment = os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"}
         return subprocess.run(
             ["bash", str(VERIFY), GROUP_TAG, EXPECTED_DIGEST],

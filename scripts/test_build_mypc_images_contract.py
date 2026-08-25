@@ -195,6 +195,11 @@ def assert_static_contract(workflow: str) -> None:
     )
     assert "docker buildx create" not in workflow
     assert "docker-container" not in workflow
+    image_build_script = extract_step_script(workflow, "Build and push production images")
+    assert (
+        'docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin'
+        in image_build_script
+    )
     retired_environment = "".join(("v", "test"))
     assert f"check:{retired_environment}-images" not in workflow
     assert f"build-push-{retired_environment}-images.mjs" not in workflow
@@ -268,9 +273,11 @@ def assert_static_contract(workflow: str) -> None:
         "Hermes base sync skipped; employee-runtime is not selected",
         "vecta/scripts/production-image-contract.json",
         'NEXUS_SYNC_ONLY="$expected_target"',
+        'NEXUS_DOCKER_GROUP_REGISTRY="$DOCKER_BASE_IMAGE_SOURCE_REGISTRY"',
         "scripts/sync-mypc-nexus-images.sh --execute",
         'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin',
         'docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin',
+        "command -v skopeo >/dev/null",
         "scripts/verify-nexus-image-digest.sh",
         '"$expected_group_tag_ref" "$expected_manifest_digest"',
         'docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-hermes-sync.XXXXXX")"',
@@ -449,6 +456,7 @@ printf 'node %s\n' "$*" >> "$FAKE_LOG"
                 "FAKE_LOG": str(log_path),
                 "NEXUS_ADMIN_PASSWORD": "contract-secret",
                 "NEXUS_DOCKER_REGISTRY": "127.0.0.1:8082",
+                "DOCKER_BASE_IMAGE_SOURCE_REGISTRY": "127.0.0.1:8083",
             }
         )
         for stub_name in ("nice", "ionice"):
@@ -483,6 +491,7 @@ def assert_fake_contract(workflow: str) -> None:
     assert "docker buildx use default" in success_log
     assert "docker buildx inspect default" in success_log
     assert "docker login 127.0.0.1:8082 -u admin --password-stdin" in success_log
+    assert "docker login 127.0.0.1:8083 -u admin --password-stdin" in success_log
     assert (
         "nice -n 10 ionice -c2 -n7 "
         "node scripts/build-push-production-images.mjs"

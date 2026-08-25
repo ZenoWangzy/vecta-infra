@@ -15,25 +15,13 @@ if ! printf '%s' "$expected_digest" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
   exit 2
 fi
 
-if ! manifest_json="$(docker manifest inspect --verbose "$group_ref")"; then
-  echo "could not inspect Nexus group manifest: $group_ref" >&2
+if ! actual_digest="$(skopeo inspect --no-tags --tls-verify=false \
+  --format '{{.Digest}}' "docker://${group_ref}")"; then
+  echo "could not inspect a manifest digest from Nexus group: $group_ref" >&2
   exit 1
 fi
 
-if ! actual_digest="$(printf '%s' "$manifest_json" | node -e '
-  let raw = "";
-  process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (chunk) => { raw += chunk; });
-  process.stdin.on("end", () => {
-    try {
-      const digest = JSON.parse(raw)?.Descriptor?.digest;
-      if (!/^sha256:[a-f0-9]{64}$/.test(digest || "")) process.exit(1);
-      process.stdout.write(digest);
-    } catch {
-      process.exit(1);
-    }
-  });
-')"; then
+if ! printf '%s' "$actual_digest" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
   echo "could not read a manifest digest from Nexus group: $group_ref" >&2
   exit 1
 fi

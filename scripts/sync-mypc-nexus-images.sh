@@ -5,6 +5,7 @@
 set -euo pipefail
 
 registry="${NEXUS_DOCKER_REGISTRY:-127.0.0.1:8082}"
+group_registry="${NEXUS_DOCKER_GROUP_REGISTRY:-127.0.0.1:8083}"
 sync_only="${NEXUS_SYNC_ONLY:-}"
 mode="dry-run"
 
@@ -109,6 +110,28 @@ sync_image() {
   push_image "$target"
 }
 
+sync_manifest_index() {
+  target_path="$1"
+  source="$2"
+  target="${registry}/${target_path}"
+
+  if ! target_selected "$target_path"; then
+    log "skip ${target}; not selected"
+    return 0
+  fi
+
+  if [ "$mode" = "execute" ] && ! command -v skopeo >/dev/null 2>&1; then
+    echo "skopeo is required to preserve the manifest index for ${target}" >&2
+    return 1
+  fi
+
+  log "target ${target}"
+  log "manifest index ${source} -> ${target}"
+  run skopeo copy --all --preserve-digests \
+    --src-tls-verify=false --dest-tls-verify=false \
+    "docker://${source}" "docker://${target}"
+}
+
 log "mode ${mode}; registry ${registry}"
 
 sync_image 'pgvector/pgvector:pg16' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/pgvector/pgvector:pg16;pgvector/pgvector:pg16'
@@ -123,10 +146,11 @@ sync_image 'open-webui/open-webui:v0.9.2' 'swr.cn-north-4.myhuaweicloud.com/ddn-
 sync_image 'library/nginx:alpine' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/nginx:alpine;nginx:alpine'
 sync_image 'keking/kkfileview:latest' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/keking/kkfileview:latest;keking/kkfileview:latest'
 sync_image 'onlyoffice/documentserver:8.2' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/onlyoffice/documentserver:8.2;onlyoffice/documentserver:8.2'
-# Hermes v2026.8.19 is the reviewed upstream runtime base for the corresponding
-# VectA production image. The hosted tag includes the locked digest prefix for
-# auditability; the production workflow separately verifies the group-resolved
-# digest before it builds from the digest-pinned VectA contract.
-sync_image 'nousresearch/hermes-agent:v2026.8.19-3811ed13' 'nousresearch/hermes-agent:v2026.8.19@sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09'
+# Hermes v2026.8.19 is a reviewed OCI index. Copy it through the Nexus group
+# with its original descriptor intact: a Docker pull/tag/push would reduce the
+# index to the runner platform manifest and invalidate the digest-pinned build
+# contract. The hosted tag remains audit-friendly; the workflow verifies the
+# group-resolved digest before it builds from that contract.
+sync_manifest_index 'nousresearch/hermes-agent:v2026.8.19-3811ed13' "${group_registry}/nousresearch/hermes-agent:v2026.8.19@sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09"
 sync_image 'vecta-hermes-withopenclaw:v2026.5.16' 'vecta-hermes-withopenclaw:v2026.5.16' true
 sync_image 'alpine/openclaw:2026.5.18' 'alpine/openclaw:2026.5.18'
