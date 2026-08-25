@@ -19,6 +19,7 @@ def main() -> None:
     for literal in (
         "user:shiyao:rwx",
         "default:user:shiyao:rwx",
+        "setfacl -m u:shiyao:rwx,m::rwx,d:u:shiyao:rwx,d:m::rwx",
         "docker pause",
         "docker unpause",
         "unexpectedly paused container",

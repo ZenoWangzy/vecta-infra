@@ -37,7 +37,7 @@ if ! printf '%s' "$SESSION_ID" | grep -Eq '^hermes-fleet-[0-9]{8}T[0-9]{6}Z$'; t
   exit 2
 fi
 
-for command in docker getfacl realpath sha256sum base64; do
+for command in docker getfacl setfacl realpath sha256sum base64; do
   command -v "$command" >/dev/null || {
     echo "$command is required" >&2
     exit 1
@@ -225,5 +225,9 @@ printf 'complete\n' > "$staging_dir/COMPLETE"
 )
 
 mv -- "$staging_dir" "$final_dir"
+setfacl -m u:shiyao:rwx,m::rwx,d:u:shiyao:rwx,d:m::rwx "$final_dir"
 getfacl -cp "$final_dir" | grep -qx 'user:shiyao:rwx'
+getfacl -cp "$final_dir" | grep -qx 'mask::rwx'
+getfacl -cp "$final_dir" | grep -qx 'default:user:shiyao:rwx'
+getfacl -cp "$final_dir" | grep -qx 'default:mask::rwx'
 printf 'backup_complete=%s\n' "$final_dir"
