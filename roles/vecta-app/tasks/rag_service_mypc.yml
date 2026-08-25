@@ -27,6 +27,17 @@
     fail_msg: "The existing RAG container is not a valid migration source."
   no_log: true
 
+- name: Require a versioned RAG environment overlay
+  ansible.builtin.assert:
+    that:
+      - rag_service_env_overrides is mapping
+      - rag_service_env_overrides.HF_ENDPOINT is string
+      - rag_service_env_overrides.HF_ENDPOINT | trim | length > 0
+    fail_msg: >-
+      The RAG Hugging Face endpoint must be a non-empty versioned production
+      environment contract before this container can be recreated.
+  no_log: true
+
 - name: Require the reviewed mypc RAG state mounts
   ansible.builtin.shell: >-
     set -o pipefail;
@@ -123,7 +134,11 @@
     restart_policy: "{{ rag_service_restart_policy }}"
     command: "{{ mypc_rag_service_live.Config.Cmd }}"
     entrypoint: "{{ mypc_rag_service_live.Config.Entrypoint }}"
-    env: "{{ dict(mypc_rag_service_live.Config.Env | map('split', '=', 1)) }}"
+    env: >-
+      {{
+        dict(mypc_rag_service_live.Config.Env | map('split', '=', 1))
+        | combine(rag_service_env_overrides)
+      }}
     ports: "{{ rag_service_published_ports }}"
     volumes:
       - "{{ rag_model_cache_volume }}:{{ rag_model_cache_container_path }}:rw"

@@ -1,0 +1,49 @@
+---
+# One-service production RAG reconciliation. It preserves the captured live
+# state contract and accepts only the versioned non-secret environment overlay.
+- name: Reconcile the mypc RAG service contract
+  hosts: mypc
+  gather_facts: false
+  pre_tasks:
+    - name: Guard against accidental mypc RAG deployment
+      ansible.builtin.assert:
+        that: mypc_deploy_enabled | default(false) | bool
+        fail_msg: >-
+          Set mypc_deploy_enabled=true and configure the real mypc host before
+          reconciling the production RAG service.
+      tags: [always]
+
+    - name: Reject image upgrades in the RAG configuration-only path
+      ansible.builtin.assert:
+        that: not (rag_service_allow_image_upgrade | default(false) | bool)
+        fail_msg: >-
+          The RAG configuration-only path must retain the running image. Use a
+          separately reviewed immutable-image repair for an image upgrade.
+      tags: [always]
+
+    - name: Capture the running RAG image reference
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - --format
+          - "{{ '{{' }}.Config.Image{{ '}}' }}"
+          - "{{ rag_service_container_name }}"
+      register: mypc_rag_service_current_image
+      changed_when: false
+      no_log: true
+
+    - name: Retain the running RAG image for configuration-only reconciliation
+      ansible.builtin.set_fact:
+        rag_service_image: "{{ mypc_rag_service_current_image.stdout | trim }}"
+      no_log: true
+  tasks:
+    - name: Authenticate to the production-local Nexus registry
+      ansible.builtin.import_role:
+        name: vecta-app
+        tasks_from: login.yml
+
+    - name: Reconcile only the mypc RAG service
+      ansible.builtin.import_role:
+        name: vecta-app
+        tasks_from: rag_service_mypc.yml

@@ -126,6 +126,31 @@ Before replacement, compressed backups and checksum evidence were written under
 The RAG health endpoint, PostgreSQL, Redis, Fleet Gateway, and the full
 post-deploy regression passed after replacement.
 
+### RAG environment-only reconciliation
+
+`playbooks/mypc-rag-service.yml` is the only configuration-only path for the
+existing mypc RAG container. It captures the running image reference rather
+than consuming the inventory's default image tag, rejects image upgrades, backs
+up the existing RAG state, and overlays only the versioned non-secret
+`rag_service_env_overrides` onto the captured live environment. This retains
+private environment values, the existing cache volume, and the knowledge bind.
+
+Run it only after the versioned config revision is available, with the registry
+password obtained from the approved secure source and never written to logs or
+shell history:
+
+```bash
+ansible-playbook playbooks/mypc-rag-service.yml \
+  -i inventories/mypc/hosts.ini \
+  -e ansible_host=mypc \
+  -e mypc_deploy_enabled=true
+```
+
+The role validates the RAG regression before and after recreation. A preflight
+failure blocks before container replacement; if post-recreate regression fails,
+stop and use the recorded backup and captured live contract for recovery rather
+than substituting a new image or mount.
+
 ### RAG Parser Repair - 2026-07-19
 
 A protected mypc build produced the immutable RAG image
