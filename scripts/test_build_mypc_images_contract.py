@@ -259,7 +259,9 @@ def assert_static_contract(workflow: str) -> None:
 
     hermes_seed_script = extract_step_script(workflow, "Seed verified Hermes base image")
     for literal in (
-        "expected_group_ref='127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19-3811ed13'",
+        "expected_group_tag_ref='127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19-3811ed13'",
+        "expected_manifest_digest='sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09'",
+        'expected_group_ref="${expected_group_tag_ref}@${expected_manifest_digest}"',
         "expected_target='nousresearch/hermes-agent:v2026.8.19-3811ed13'",
         'if [ -z "${PRODUCTION_IMAGE_NAMES:-}" ]; then',
         'if [ "$requested_image" = \'employee-runtime\' ]; then',
@@ -267,8 +269,10 @@ def assert_static_contract(workflow: str) -> None:
         "vecta/scripts/production-image-contract.json",
         'NEXUS_SYNC_ONLY="$expected_target"',
         "scripts/sync-mypc-nexus-images.sh --execute",
-        'docker manifest inspect "$expected_group_ref"',
         'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin',
+        'docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin',
+        "scripts/verify-nexus-image-digest.sh",
+        '"$expected_group_tag_ref" "$expected_manifest_digest"',
         'docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-hermes-sync.XXXXXX")"',
         "trap 'rm -rf \"$docker_config\"' EXIT",
     ):

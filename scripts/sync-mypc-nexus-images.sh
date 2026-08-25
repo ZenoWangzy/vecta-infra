@@ -124,8 +124,9 @@ sync_image 'library/nginx:alpine' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/dock
 sync_image 'keking/kkfileview:latest' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/keking/kkfileview:latest;keking/kkfileview:latest'
 sync_image 'onlyoffice/documentserver:8.2' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/onlyoffice/documentserver:8.2;onlyoffice/documentserver:8.2'
 # Hermes v2026.8.19 is the reviewed upstream runtime base for the corresponding
-# VectA production image. The hosted tag includes the locked digest prefix so a
-# Docker Hub tag cannot shadow the audited copy through the Nexus group.
+# VectA production image. The hosted tag includes the locked digest prefix for
+# auditability; the production workflow separately verifies the group-resolved
+# digest before it builds from the digest-pinned VectA contract.
 sync_image 'nousresearch/hermes-agent:v2026.8.19-3811ed13' 'nousresearch/hermes-agent:v2026.8.19@sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09'
 sync_image 'vecta-hermes-withopenclaw:v2026.5.16' 'vecta-hermes-withopenclaw:v2026.5.16' true
 sync_image 'alpine/openclaw:2026.5.18' 'alpine/openclaw:2026.5.18'

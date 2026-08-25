@@ -575,7 +575,9 @@ jobs:
             echo 'Hermes base sync skipped; employee-runtime is not selected'
             exit 0
           fi
-          expected_group_ref='127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19-3811ed13'
+          expected_group_tag_ref='127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19-3811ed13'
+          expected_manifest_digest='sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09'
+          expected_group_ref="${expected_group_tag_ref}@${expected_manifest_digest}"
           expected_target='nousresearch/hermes-agent:v2026.8.19-3811ed13'
           actual_group_ref="$(node -e '
             const fs = require("fs");
@@ -601,9 +603,12 @@ jobs:
           export DOCKER_CONFIG="$docker_config"
           printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
             docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
+          printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
+            docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin
           NEXUS_SYNC_ONLY="$expected_target" \
             scripts/sync-mypc-nexus-images.sh --execute
-          docker manifest inspect "$expected_group_ref" >/dev/null
+          bash scripts/verify-nexus-image-digest.sh \
+            "$expected_group_tag_ref" "$expected_manifest_digest"
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
