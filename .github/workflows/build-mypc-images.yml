@@ -197,6 +197,7 @@ jobs:
           # Route through the squid proxy when it is reachable; it is not subject
           # to the direct-path throttling. Probe first so a dead proxy cannot
           # take the build down with it.
+          clone_proxy=""
           if [ -n "${PROXY_USERNAME:-}" ] && [ -n "${PROXY_PASSWORD:-}" ]; then
             PU="$(printf '%s' "${PROXY_USERNAME}" \
               | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
@@ -205,6 +206,7 @@ jobs:
             PROXY="http://${PU}:${PP}@geraldsynnas.ddns.net:8888"
             if curl -sm 8 -x "$PROXY" -o /dev/null https://api.github.com/zen; then
               printf 'proxy = "%s"\n' "$PROXY" >> "$curl_config"
+              clone_proxy="$PROXY"
               echo "source download proxy enabled"
             else
               echo "proxy unreachable; downloading direct"
@@ -239,6 +241,14 @@ jobs:
           # use a resumable source transport only if all three still fail.
           remote="https://github.com/ZenoWangzy/vecta.git"
           cache="/home/github-runner/.cache/vecta-main.git"
+          # curl_config is intentionally local to curl. Propagate the already
+          # probed proxy to Git's libcurl transport too, otherwise the exact
+          # source clone silently falls back to the throttled direct path.
+          if [ -n "$clone_proxy" ]; then
+            export HTTPS_PROXY="$clone_proxy"
+            export https_proxy="$clone_proxy"
+            echo "exact-source clone proxy enabled"
+          fi
           clone_source() {
             GIT_HTTP_LOW_SPEED_LIMIT=0 \
               LC_ALL=C \
