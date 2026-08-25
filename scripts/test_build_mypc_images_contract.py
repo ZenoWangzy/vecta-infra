@@ -169,11 +169,15 @@ def assert_static_contract(workflow: str) -> None:
         '          trap \'rm -rf "$docker_config"\' EXIT'
     ) in workflow
     assert workflow.count("- name: Build and push production images") == 1
+    assert workflow.count("- name: Seed verified Hermes base image") == 1
     checkout_step = "- name: Checkout infra contract"
     fruit_contract_step = "- name: Validate Fruit V4 isolated Compose contract"
+    hermes_seed_step = "- name: Seed verified Hermes base image"
+    image_build_step = "- name: Build and push production images"
     assert workflow.count(checkout_step) == 1
     assert workflow.count(fruit_contract_step) == 1
     assert workflow.index(checkout_step) < workflow.index(fruit_contract_step)
+    assert workflow.index(hermes_seed_step) < workflow.index(image_build_step)
     assert "uses: actions/checkout@" not in workflow
     assert "- name: Configure git proxy" not in workflow
     assert "GIT_CONFIG_GLOBAL: /dev/null" in workflow
@@ -191,6 +195,11 @@ def assert_static_contract(workflow: str) -> None:
     )
     assert "docker buildx create" not in workflow
     assert "docker-container" not in workflow
+    image_build_script = extract_step_script(workflow, "Build and push production images")
+    assert (
+        'docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin'
+        in image_build_script
+    )
     retired_environment = "".join(("v", "test"))
     assert f"check:{retired_environment}-images" not in workflow
     assert f"build-push-{retired_environment}-images.mjs" not in workflow
@@ -252,6 +261,30 @@ def assert_static_contract(workflow: str) -> None:
     assert download_script.count("git clone ") == 1
     assert download_script.count("https://github.com/ZenoWangzy/vecta.git") == 1
     assert not re.search(r"https://[^\s/]*@github\.com", download_script)
+
+    hermes_seed_script = extract_step_script(workflow, "Seed verified Hermes base image")
+    for literal in (
+        "expected_group_tag_ref='127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19-3811ed13'",
+        "expected_manifest_digest='sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09'",
+        'expected_group_ref="${expected_group_tag_ref}@${expected_manifest_digest}"',
+        "expected_target='nousresearch/hermes-agent:v2026.8.19-3811ed13'",
+        'if [ -z "${PRODUCTION_IMAGE_NAMES:-}" ]; then',
+        'if [ "$requested_image" = \'employee-runtime\' ]; then',
+        "Hermes base sync skipped; employee-runtime is not selected",
+        "vecta/scripts/production-image-contract.json",
+        'NEXUS_SYNC_ONLY="$expected_target"',
+        'NEXUS_DOCKER_GROUP_REGISTRY="$DOCKER_BASE_IMAGE_SOURCE_REGISTRY"',
+        "scripts/sync-mypc-nexus-images.sh --execute",
+        'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin',
+        'docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin',
+        "command -v skopeo >/dev/null",
+        "scripts/verify-nexus-image-digest.sh",
+        '"$expected_group_tag_ref" "$expected_manifest_digest"',
+        'docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-hermes-sync.XXXXXX")"',
+        "trap 'rm -rf \"$docker_config\"' EXIT",
+    ):
+        assert literal in hermes_seed_script, literal
+    assert "set -x" not in hermes_seed_script
 
 
 def assert_provisioning_contract() -> None:
@@ -423,6 +456,7 @@ printf 'node %s\n' "$*" >> "$FAKE_LOG"
                 "FAKE_LOG": str(log_path),
                 "NEXUS_ADMIN_PASSWORD": "contract-secret",
                 "NEXUS_DOCKER_REGISTRY": "127.0.0.1:8082",
+                "DOCKER_BASE_IMAGE_SOURCE_REGISTRY": "127.0.0.1:8083",
             }
         )
         for stub_name in ("nice", "ionice"):
@@ -457,6 +491,7 @@ def assert_fake_contract(workflow: str) -> None:
     assert "docker buildx use default" in success_log
     assert "docker buildx inspect default" in success_log
     assert "docker login 127.0.0.1:8082 -u admin --password-stdin" in success_log
+    assert "docker login 127.0.0.1:8083 -u admin --password-stdin" in success_log
     assert (
         "nice -n 10 ionice -c2 -n7 "
         "node scripts/build-push-production-images.mjs"

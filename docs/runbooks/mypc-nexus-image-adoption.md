@@ -56,6 +56,13 @@ replacement is approved.
 Third-party and runtime images keep pinned tags and are synced into Nexus before
 the corresponding service is eligible for adoption.
 
+When a runtime input is pinned to a multi-platform OCI index, copy it from the
+Nexus group to hosted Nexus with `skopeo copy --all --preserve-digests`. Do not
+use `docker pull`, tag, and push: that selects one platform manifest and loses
+the index digest. Before a build consumes the readable group tag, verify that
+the group resolves to the same locked index digest; a mismatched remote or
+hosted tag stops the build.
+
 The mypc production-image workflow reads the repository secret
 `MYPC_NEXUS_ADMIN_PASSWORD` and maps it to the job-local environment variable
 `NEXUS_ADMIN_PASSWORD` for Docker login and Nexus API calls. All secrets used by
