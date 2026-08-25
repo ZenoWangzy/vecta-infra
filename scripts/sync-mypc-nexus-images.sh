@@ -112,12 +112,23 @@ sync_image() {
 
 sync_manifest_index() {
   target_path="$1"
-  source="$2"
+  source_repository="$2"
+  source_tag="$3"
+  source_digest="$4"
   target="${registry}/${target_path}"
+  source_tag_ref="${source_repository}:${source_tag}"
+  source_audit_ref="${source_tag_ref}@${source_digest}"
+  source_digest_ref="${source_repository}@${source_digest}"
 
   if ! target_selected "$target_path"; then
     log "skip ${target}; not selected"
     return 0
+  fi
+
+  if [ -z "$source_repository" ] || [ -z "$source_tag" ] \
+    || ! printf '%s' "$source_digest" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+    echo "manifest-index source must supply repository, tag, and sha256 digest" >&2
+    return 2
   fi
 
   if [ "$mode" = "execute" ] && ! command -v skopeo >/dev/null 2>&1; then
@@ -126,10 +137,12 @@ sync_manifest_index() {
   fi
 
   log "target ${target}"
-  log "manifest index ${source} -> ${target}"
+  # Keep the reviewed tag in the audit line, but feed skopeo a digest-only
+  # source reference: skopeo rejects Docker references that include both.
+  log "manifest index ${source_audit_ref} -> ${target}"
   run skopeo copy --all --preserve-digests \
     --src-tls-verify=false --dest-tls-verify=false \
-    "docker://${source}" "docker://${target}"
+    "docker://${source_digest_ref}" "docker://${target}"
 }
 
 log "mode ${mode}; registry ${registry}"
@@ -151,6 +164,9 @@ sync_image 'onlyoffice/documentserver:8.2' 'swr.cn-north-4.myhuaweicloud.com/ddn
 # index to the runner platform manifest and invalidate the digest-pinned build
 # contract. The hosted tag remains audit-friendly; the workflow verifies the
 # group-resolved digest before it builds from that contract.
-sync_manifest_index 'nousresearch/hermes-agent:v2026.8.19-3811ed13' "${group_registry}/nousresearch/hermes-agent:v2026.8.19@sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09"
+sync_manifest_index 'nousresearch/hermes-agent:v2026.8.19-3811ed13' \
+  "${group_registry}/nousresearch/hermes-agent" \
+  'v2026.8.19' \
+  'sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09'
 sync_image 'vecta-hermes-withopenclaw:v2026.5.16' 'vecta-hermes-withopenclaw:v2026.5.16' true
 sync_image 'alpine/openclaw:2026.5.18' 'alpine/openclaw:2026.5.18'
