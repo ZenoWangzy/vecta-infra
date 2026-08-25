@@ -242,6 +242,20 @@ def assert_static_contract(workflow: str) -> None:
     assert 'if [ "$attempt" -eq 3 ]; then' in download_script
     assert 'echo "VectA clone failed after 3 attempts" >&2' in download_script
     assert 'cache="/home/github-runner/.cache/vecta-main.git"' in download_script
+    assert 'clone_proxy=""' in download_script
+    assert 'clone_proxy="$PROXY"' in download_script
+    assert 'if [ -n "$clone_proxy" ]; then' in download_script
+    assert 'if curl -sm 8 -x "$PROXY" -o /dev/null https://api.github.com/zen; then' in download_script
+    assert 'export HTTPS_PROXY="$clone_proxy"' in download_script
+    assert 'export https_proxy="$clone_proxy"' in download_script
+    assert 'echo "exact-source clone proxy enabled"' in download_script
+    assert download_script.index('clone_proxy="$PROXY"') > download_script.index(
+        'if curl -sm 8 -x "$PROXY" -o /dev/null https://api.github.com/zen; then'
+    )
+    assert download_script.index('clone_proxy="$PROXY"') < download_script.index(
+        'echo "proxy unreachable; downloading direct"'
+    )
+    assert workflow.index('export HTTPS_PROXY="$clone_proxy"') < workflow.index("clone_source() {")
     assert 'git --git-dir="$cache" cat-file -e "$SOURCE_SHA^{commit}"' in download_script
     assert 'git --git-dir="$cache" rev-parse refs/heads/main' in download_script
     assert 'git --git-dir="$cache" fsck --connectivity-only "$SOURCE_SHA"' in download_script
