@@ -28,7 +28,7 @@ name: Build mypc production images
       image_names:
         type: string
         required: false
-        default: ''
+        default: ""
         description: >-
           Comma-separated subset of contract images to build; empty builds all.
 
@@ -554,6 +554,58 @@ jobs:
       - name: Validate production image contract
         working-directory: infra/vecta
         run: pnpm check:production-images
+
+      - name: Seed verified Hermes base image
+        run: |
+          set -euo pipefail
+          seed_hermes=false
+          if [ -z "${PRODUCTION_IMAGE_NAMES:-}" ]; then
+            seed_hermes=true
+          else
+            IFS=',' read -r -a requested_images <<< "$PRODUCTION_IMAGE_NAMES"
+            for requested_image in "${requested_images[@]}"; do
+              requested_image="${requested_image//[[:space:]]/}"
+              if [ "$requested_image" = 'employee-runtime' ]; then
+                seed_hermes=true
+                break
+              fi
+            done
+          fi
+          if [ "$seed_hermes" != true ]; then
+            echo 'Hermes base sync skipped; employee-runtime is not selected'
+            exit 0
+          fi
+          expected_group_ref='127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19-3811ed13'
+          expected_target='nousresearch/hermes-agent:v2026.8.19-3811ed13'
+          actual_group_ref="$(node -e '
+            const fs = require("fs");
+            const contract = JSON.parse(fs.readFileSync(
+              "vecta/scripts/production-image-contract.json", "utf8",
+            ));
+            const employeeRuntime = contract.images.find(
+              (image) => image.name === "employee-runtime",
+            );
+            const hermesBase = employeeRuntime?.baseImages?.find(
+              (baseImage) => baseImage.arg === "HERMES_BASE",
+            );
+            if (!hermesBase?.groupRef) process.exit(1);
+            process.stdout.write(hermesBase.groupRef);
+          ')"
+          if [ "$actual_group_ref" != "$expected_group_ref" ]; then
+            echo "unexpected Hermes base contract: $actual_group_ref" >&2
+            exit 1
+          fi
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+          docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-hermes-sync.XXXXXX")"
+          trap 'rm -rf "$docker_config"' EXIT
+          export DOCKER_CONFIG="$docker_config"
+          printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
+            docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
+          NEXUS_SYNC_ONLY="$expected_target" \
+            scripts/sync-mypc-nexus-images.sh --execute
+          docker manifest inspect "$expected_group_ref" >/dev/null
+        env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
       - name: Build and push production images
         working-directory: infra/vecta

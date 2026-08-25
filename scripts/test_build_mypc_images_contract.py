@@ -169,11 +169,15 @@ def assert_static_contract(workflow: str) -> None:
         '          trap \'rm -rf "$docker_config"\' EXIT'
     ) in workflow
     assert workflow.count("- name: Build and push production images") == 1
+    assert workflow.count("- name: Seed verified Hermes base image") == 1
     checkout_step = "- name: Checkout infra contract"
     fruit_contract_step = "- name: Validate Fruit V4 isolated Compose contract"
+    hermes_seed_step = "- name: Seed verified Hermes base image"
+    image_build_step = "- name: Build and push production images"
     assert workflow.count(checkout_step) == 1
     assert workflow.count(fruit_contract_step) == 1
     assert workflow.index(checkout_step) < workflow.index(fruit_contract_step)
+    assert workflow.index(hermes_seed_step) < workflow.index(image_build_step)
     assert "uses: actions/checkout@" not in workflow
     assert "- name: Configure git proxy" not in workflow
     assert "GIT_CONFIG_GLOBAL: /dev/null" in workflow
@@ -252,6 +256,24 @@ def assert_static_contract(workflow: str) -> None:
     assert download_script.count("git clone ") == 1
     assert download_script.count("https://github.com/ZenoWangzy/vecta.git") == 1
     assert not re.search(r"https://[^\s/]*@github\.com", download_script)
+
+    hermes_seed_script = extract_step_script(workflow, "Seed verified Hermes base image")
+    for literal in (
+        "expected_group_ref='127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19-3811ed13'",
+        "expected_target='nousresearch/hermes-agent:v2026.8.19-3811ed13'",
+        'if [ -z "${PRODUCTION_IMAGE_NAMES:-}" ]; then',
+        'if [ "$requested_image" = \'employee-runtime\' ]; then',
+        "Hermes base sync skipped; employee-runtime is not selected",
+        "vecta/scripts/production-image-contract.json",
+        'NEXUS_SYNC_ONLY="$expected_target"',
+        "scripts/sync-mypc-nexus-images.sh --execute",
+        'docker manifest inspect "$expected_group_ref"',
+        'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin',
+        'docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-hermes-sync.XXXXXX")"',
+        "trap 'rm -rf \"$docker_config\"' EXIT",
+    ):
+        assert literal in hermes_seed_script, literal
+    assert "set -x" not in hermes_seed_script
 
 
 def assert_provisioning_contract() -> None:

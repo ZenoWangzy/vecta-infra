@@ -187,7 +187,7 @@ def main() -> None:
     assert "source_sha must be the current VectA main HEAD" in workflow
     assert "NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082" in workflow
     assert "DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082" in workflow
-    assert "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8082" in workflow
+    assert "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083" in workflow
     assert workflow.count("image_names:") == 1
     assert "PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}" in workflow
     assert 'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin' in workflow

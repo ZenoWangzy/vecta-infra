@@ -5,6 +5,7 @@
 set -euo pipefail
 
 registry="${NEXUS_DOCKER_REGISTRY:-127.0.0.1:8082}"
+sync_only="${NEXUS_SYNC_ONLY:-}"
 mode="dry-run"
 
 if [ "${1:-}" = "--execute" ]; then
@@ -51,11 +52,30 @@ image_present() {
   docker image inspect "$1" >/dev/null 2>&1
 }
 
+target_selected() {
+  [ -z "$sync_only" ] && return 0
+
+  local selected
+  local selected_targets
+  IFS=',' read -r -a selected_targets <<< "$sync_only"
+  for selected in "${selected_targets[@]}"; do
+    if [ "$selected" = "$1" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 sync_image() {
   target_path="$1"
   sources="$2"
   local_only="${3:-false}"
   target="${registry}/${target_path}"
+
+  if ! target_selected "$target_path"; then
+    log "skip ${target}; not selected"
+    return 0
+  fi
 
   log "target ${target}"
   IFS=';' read -r -a source_list <<< "$sources"
@@ -103,5 +123,9 @@ sync_image 'open-webui/open-webui:v0.9.2' 'swr.cn-north-4.myhuaweicloud.com/ddn-
 sync_image 'library/nginx:alpine' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/nginx:alpine;nginx:alpine'
 sync_image 'keking/kkfileview:latest' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/keking/kkfileview:latest;keking/kkfileview:latest'
 sync_image 'onlyoffice/documentserver:8.2' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/onlyoffice/documentserver:8.2;onlyoffice/documentserver:8.2'
+# Hermes v2026.8.19 is the reviewed upstream runtime base for the corresponding
+# VectA production image. The hosted tag includes the locked digest prefix so a
+# Docker Hub tag cannot shadow the audited copy through the Nexus group.
+sync_image 'nousresearch/hermes-agent:v2026.8.19-3811ed13' 'nousresearch/hermes-agent:v2026.8.19@sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09'
 sync_image 'vecta-hermes-withopenclaw:v2026.5.16' 'vecta-hermes-withopenclaw:v2026.5.16' true
 sync_image 'alpine/openclaw:2026.5.18' 'alpine/openclaw:2026.5.18'
