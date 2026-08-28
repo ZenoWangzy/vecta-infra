@@ -18,6 +18,7 @@ from typing import NamedTuple, Sequence
 class Token(NamedTuple):
     kind: str
     text: str
+    leading: str = ""
 
 
 class Comparison(NamedTuple):
@@ -118,47 +119,63 @@ def _dollar_quote_end(source: str, start: int) -> int | None:
 
 def lex(source: str) -> list[Token]:
     tokens: list[Token] = []
+    pending_whitespace = ""
+
+    def add(kind: str, text: str) -> None:
+        nonlocal pending_whitespace
+        tokens.append(Token(kind, text, pending_whitespace))
+        pending_whitespace = ""
+
     index = 0
     while index < len(source):
         character = source[index]
         if character.isspace():
-            index += 1
+            end = index + 1
+            while end < len(source) and source[end].isspace():
+                end += 1
+            pending_whitespace += source[index:end]
+            index = end
             continue
         if source[index : index + 2] == "--":
             end = source.find("\n", index)
             if end < 0:
                 end = len(source)
-            tokens.append(Token("comment", source[index:end]))
+            add("comment", source[index:end])
             index = end
             continue
         if source[index : index + 2] == "/*":
             end = _read_block_comment(source, index)
-            tokens.append(Token("comment", source[index:end]))
+            add("comment", source[index:end])
             index = end
             continue
-        if character in "'\"":
+        if character == "'":
             end = _read_quoted(source, index, character)
-            tokens.append(Token("quoted", source[index:end]))
+            add("single_quoted_literal", source[index:end])
+            index = end
+            continue
+        if character == '"':
+            end = _read_quoted(source, index, character)
+            add("double_quoted_identifier", source[index:end])
             index = end
             continue
         if character == "$":
             end = _dollar_quote_end(source, index)
             if end is not None:
-                tokens.append(Token("quoted", source[index:end]))
+                add("dollar_quoted", source[index:end])
                 index = end
                 continue
         if character.isalpha() or character == "_":
             end = index + 1
             while end < len(source) and (source[end].isalnum() or source[end] == "_"):
                 end += 1
-            tokens.append(Token("word", source[index:end]))
+            add("word", source[index:end])
             index = end
             continue
         if character.isdigit():
             end = index + 1
             while end < len(source) and (source[end].isalnum() or source[end] in "._"):
                 end += 1
-            tokens.append(Token("number", source[index:end]))
+            add("number", source[index:end])
             index = end
             continue
         operator = next(
@@ -166,20 +183,27 @@ def lex(source: str) -> list[Token]:
             None,
         )
         if operator is not None:
-            tokens.append(Token("symbol", operator))
+            add("symbol", operator)
             index += len(operator)
             continue
-        tokens.append(Token("symbol", character))
+        add("symbol", character)
         index += 1
+    if pending_whitespace:
+        tokens.append(Token("whitespace", pending_whitespace))
     return tokens
 
 
 def _literal_span(tokens: Sequence[Token], start: int) -> tuple[int, int] | None:
     if start >= len(tokens):
         return None
-    if tokens[start].kind == "quoted":
+    if tokens[start].kind == "single_quoted_literal":
         return start, start + 1
-    if _is_word(tokens[start], "e") and start + 1 < len(tokens) and tokens[start + 1].kind == "quoted":
+    if (
+        _is_word(tokens[start], "e")
+        and start + 1 < len(tokens)
+        and tokens[start + 1].kind == "single_quoted_literal"
+        and tokens[start + 1].leading == ""
+    ):
         return start, start + 2
     return None
 
@@ -202,6 +226,8 @@ def _match_any_array(tokens: Sequence[Token], start: int) -> tuple[list[Token], 
 
     index = start + 2
     items: list[list[Token]] = []
+    separators: list[Token] = []
+    casts: list[tuple[Token, Token]] = []
     while True:
         literal = _literal_span(tokens, index)
         if literal is None:
@@ -214,10 +240,12 @@ def _match_any_array(tokens: Sequence[Token], start: int) -> tuple[list[Token], 
         if not _is_word(tokens[literal_end + 2], "varying"):
             return None
         items.append(list(tokens[literal_start:literal_end]))
+        casts.append((tokens[literal_end], tokens[literal_end + 1]))
         index = literal_end + 3
         if index >= len(tokens):
             return None
         if _is_symbol(tokens[index], ","):
+            separators.append(tokens[index])
             index += 1
             continue
         if not _is_symbol(tokens[index], "]"):
@@ -246,9 +274,15 @@ def _match_any_array(tokens: Sequence[Token], start: int) -> tuple[list[Token], 
     replacement = [tokens[start], tokens[start + 1]]
     for item_index, item in enumerate(items):
         if item_index:
-            replacement.append(Token("symbol", ","))
+            replacement.append(separators[item_index - 1])
         replacement.extend(item)
-        replacement.extend((Token("symbol", "::"), Token("word", "text")))
+        cast, cast_type = casts[item_index]
+        replacement.extend(
+            (
+                cast,
+                Token("word", "text", cast_type.leading),
+            )
+        )
     replacement.append(tokens[index])
 
     if array_wrapper:
@@ -287,6 +321,25 @@ def normalize_any_arrays(tokens: Sequence[Token]) -> tuple[list[Token], int]:
     return normalized, count
 
 
+OPENING_DELIMITERS = {"(": ")", "[": "]", "{": "}"}
+CLOSING_DELIMITERS = {closing: opening for opening, closing in OPENING_DELIMITERS.items()}
+
+
+def _validate_delimiters(tokens: Sequence[Token]) -> None:
+    stack: list[str] = []
+    for token in tokens:
+        if token.kind != "symbol":
+            continue
+        if token.text in OPENING_DELIMITERS:
+            stack.append(token.text)
+        elif token.text in CLOSING_DELIMITERS:
+            if not stack or stack[-1] != CLOSING_DELIMITERS[token.text]:
+                raise ValueError("unbalanced delimiter")
+            stack.pop()
+    if stack:
+        raise ValueError("unbalanced delimiter")
+
+
 def _matching(tokens: Sequence[Token], start: int, opening: str = "(", closing: str = ")") -> int:
     if start >= len(tokens) or not _is_symbol(tokens[start], opening):
         raise ValueError("unbalanced delimiter")
@@ -301,13 +354,15 @@ def _matching(tokens: Sequence[Token], start: int, opening: str = "(", closing: 
     raise ValueError("unbalanced delimiter")
 
 
-def _strip_full_outer_groups(tokens: Sequence[Token]) -> list[Token]:
+def _strip_full_outer_groups(tokens: Sequence[Token]) -> tuple[list[Token], bool]:
     result = list(tokens)
+    stripped = False
     while len(result) >= 2 and _is_symbol(result[0], "("):
         if _matching(result, 0) != len(result) - 1:
             break
         result = result[1:-1]
-    return result
+        stripped = True
+    return result, stripped
 
 
 def _split_top_level_and(tokens: Sequence[Token]) -> list[list[Token]] | None:
@@ -338,10 +393,10 @@ def _split_top_level_and(tokens: Sequence[Token]) -> list[list[Token]] | None:
     return parts
 
 
-def _and4_core(tokens: Sequence[Token]) -> list[Token] | None:
-    core = _strip_full_outer_groups(tokens)
+def _and4_core(tokens: Sequence[Token]) -> tuple[list[Token], bool] | None:
+    core, stripped = _strip_full_outer_groups(tokens)
     parts = _split_top_level_and(core)
-    return core if parts is not None else None
+    return (core, stripped) if parts is not None else None
 
 
 def normalize_four_item_and_groups(tokens: Sequence[Token]) -> tuple[list[Token], int]:
@@ -356,11 +411,12 @@ def normalize_four_item_and_groups(tokens: Sequence[Token]) -> tuple[list[Token]
         end = _matching(tokens, index)
         inner, nested_count = normalize_four_item_and_groups(tokens[index + 1 : end])
         count += nested_count
-        core = _and4_core(inner)
-        if core is None:
+        result = _and4_core(inner)
+        if result is None or not result[1]:
             normalized.extend((tokens[index], *inner, tokens[end]))
         else:
-            replacement = [Token("symbol", "("), *core, Token("symbol", ")")]
+            core, _ = result
+            replacement = [tokens[index], *core, Token("symbol", ")", tokens[end].leading)]
             original = [tokens[index], *inner, tokens[end]]
             if replacement != original:
                 count += 1
@@ -370,14 +426,22 @@ def normalize_four_item_and_groups(tokens: Sequence[Token]) -> tuple[list[Token]
 
 
 def _canonical_tokens(source: str) -> tuple[list[Token], int, int]:
-    tokens, array_count = normalize_any_arrays(lex(source))
+    tokens = lex(source)
+    _validate_delimiters(tokens)
+    tokens, array_count = normalize_any_arrays(tokens)
     tokens, and4_count = normalize_four_item_and_groups(tokens)
     return tokens, array_count, and4_count
 
 
 def _token_digest(tokens: Sequence[Token]) -> str:
     payload = b"".join(
-        token.kind.encode() + b"\0" + token.text.encode() + b"\0" for token in tokens
+        token.leading.encode()
+        + b"\0"
+        + token.kind.encode()
+        + b"\0"
+        + token.text.encode()
+        + b"\0"
+        for token in tokens
     )
     return hashlib.sha256(payload).hexdigest()
 
@@ -475,19 +539,39 @@ def self_test() -> None:
     assert result.source_and4_variants == 1
     assert result.restored_and4_variants == 0
 
-    def rejects(candidate: str) -> None:
-        assert not compare_bytes(source.encode(), candidate.encode()).equivalent
+    def rejects_pair(left: str, right: str) -> None:
+        try:
+            result = compare_bytes(left.encode(), right.encode())
+        except ValueError:
+            return
+        assert not result.equivalent
 
+    def rejects(candidate: str) -> None:
+        rejects_pair(source, candidate)
+
+    rejects(restored.replace("status = ANY", "status  = ANY", 1))
     rejects(restored.replace("'closed'::text", "'changed'::text", 1))
     rejects(restored.replace("ANY", "ALL", 1))
     rejects(restored.replace("'open'::text, 'closed'::text", "'closed'::text, 'open'::text", 1))
     rejects(restored.replace("'closed'::text", "'closed'::varchar", 1))
     rejects(restored.replace("'open'::text, 'closed'::text", "'open'::text", 1))
+    double_source = source.replace("'open'::character varying", '"open"::character varying', 1)
+    double_restored = restored.replace("'open'::text", '"open"::text', 1)
+    rejects_pair(double_source, double_restored)
+    dollar = "$tag$"
+    dollar_source = source.replace(
+        "'open'::character varying", f"{dollar}open{dollar}::character varying", 1
+    )
+    dollar_restored = restored.replace("'open'::text", f"{dollar}open{dollar}::text", 1)
+    rejects_pair(dollar_source, dollar_restored)
     rejects(restored.replace("view_0", "renamed_view", 1))
     rejects(restored + "DROP VIEW view_0;\n")
     rejects(restored.replace("CREATE VIEW", "ALTER VIEW", 1))
     rejects(restored + "CREATE TABLE unexpected (id integer);\n")
     rejects(restored + "SET search_path = public;\n")
+    for closing in (")", "]", "}"):
+        malformed = f"CREATE VIEW malformed AS SELECT 1{closing};"
+        rejects_pair(malformed, malformed)
     print("schema comparator self-check: ok (49 ANY-array + 1 AND variants; mutations rejected)")
 
 
