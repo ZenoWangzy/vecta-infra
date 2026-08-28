@@ -1,0 +1,4 @@
+services:
+  rag-service:
+    environment:
+      HF_ENDPOINT: https://hf-mirror.com

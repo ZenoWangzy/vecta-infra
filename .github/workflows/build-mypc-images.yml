@@ -327,6 +327,9 @@ jobs:
       - name: Validate Fruit V4 isolated Compose contract
         run: python3 scripts/test_fruit_v4_isolated_compose_contract.py
 
+      - name: Validate mypc RAG immutable release contract
+        run: node scripts/test_mypc_rag_release_contract.mjs
+
       - name: Ensure production Nexus is running
         run: |
           set -euo pipefail
@@ -650,6 +653,95 @@ jobs:
             docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin
           nice -n 10 ionice -c2 -n7 \
             node scripts/build-push-production-images.mjs
+        env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
+
+      - name: Stage immutable RAG release handoff
+        run: |
+          set -euo pipefail
+          if [ -n "${PRODUCTION_IMAGE_NAMES:-}" ]; then
+            rag_selected=false
+            IFS=',' read -r -a requested_images <<< "$PRODUCTION_IMAGE_NAMES"
+            for requested_image in "${requested_images[@]}"; do
+              requested_image="${requested_image//[[:space:]]/}"
+              if [ "$requested_image" = 'rag-service' ]; then
+                rag_selected=true
+                break
+              fi
+            done
+            if [ "$rag_selected" != true ]; then
+              echo 'RAG immutable release handoff skipped; rag-service is not selected'
+              exit 0
+            fi
+          fi
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+          docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-rag-release-stage.XXXXXX")"
+          stage_dir=''
+          cleanup() {
+            rm -rf -- "$docker_config"
+            if [ -n "$stage_dir" ]; then rm -rf -- "$stage_dir"; fi
+          }
+          trap cleanup EXIT
+          unset DOCKER_HOST DOCKER_CONTEXT
+          export DOCKER_CONFIG="$docker_config"
+          printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
+            docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
+          image_tag="${NEXUS_DOCKER_REGISTRY}/rag-service:${SOURCE_SHA}"
+          image_inspection="$(docker buildx imagetools inspect "$image_tag")"
+          image_digest="$(printf '%s\n' "$image_inspection" | sed -n 's/^Digest:[[:space:]]*//p')"
+          if ! printf '%s' "$image_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo 'RAG image manifest did not yield one immutable digest' >&2
+            exit 1
+          fi
+          RAG_SERVICE_IMAGE="${NEXUS_DOCKER_REGISTRY}/rag-service@${image_digest}"
+          docker pull "$RAG_SERVICE_IMAGE" >/dev/null
+          image_source_sha="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$RAG_SERVICE_IMAGE")"
+          image_source_repository="$(docker image inspect --format '{{ index .Config.Labels "com.vecta.source.repository" }}' "$RAG_SERVICE_IMAGE")"
+          if [ "$image_source_sha" != "$SOURCE_SHA" ] || [ "$image_source_repository" != 'ZenoWangzy/vecta' ]; then
+            echo 'RAG image OCI provenance does not bind the selected VectA source' >&2
+            exit 1
+          fi
+          release_parent="/data/ocee/vecta-infra-releases/${GITHUB_SHA}/rag-service"
+          release_root="${release_parent}/${SOURCE_SHA}"
+          if [ -e "$release_root" ]; then
+            [ -f "${release_root}/release-manifest.env" ] || {
+              echo 'existing RAG release handoff has no manifest' >&2; exit 1;
+            }
+            grep -qx "RAG_SERVICE_IMAGE=${RAG_SERVICE_IMAGE}" "${release_root}/release-manifest.env"
+            grep -qx "RAG_SOURCE_SHA=${SOURCE_SHA}" "${release_root}/release-manifest.env"
+            grep -qx "RAG_INFRA_SHA=${GITHUB_SHA}" "${release_root}/release-manifest.env"
+            (
+              cd "$release_root"
+              sha256sum -c checksums.sha256 >/dev/null
+            )
+          else
+            install -d -m 700 "$release_parent"
+            stage_dir="$(mktemp -d "${release_parent}/.${SOURCE_SHA}.XXXXXX")"
+            install -d -m 700 "${stage_dir}/scripts" "${stage_dir}/deploy/mypc"
+            install -m 700 scripts/release-mypc-rag-service.sh "${stage_dir}/scripts/release-mypc-rag-service.sh"
+            install -m 700 scripts/check-mypc-rag-release-contract.mjs "${stage_dir}/scripts/check-mypc-rag-release-contract.mjs"
+            install -m 700 scripts/mypc-app-regression.sh "${stage_dir}/scripts/mypc-app-regression.sh"
+            install -m 600 deploy/mypc/rag-hf-endpoint.override.yml "${stage_dir}/deploy/mypc/rag-hf-endpoint.override.yml"
+            install -m 600 deploy/mypc/rag-service-image.override.yml "${stage_dir}/deploy/mypc/rag-service-image.override.yml"
+            (
+              cd "$stage_dir"
+              sha256sum scripts/release-mypc-rag-service.sh \
+                scripts/check-mypc-rag-release-contract.mjs \
+                scripts/mypc-app-regression.sh \
+                deploy/mypc/rag-hf-endpoint.override.yml \
+                deploy/mypc/rag-service-image.override.yml > checksums.sha256
+            )
+            chmod 600 "${stage_dir}/checksums.sha256"
+            {
+              printf 'RAG_SERVICE_IMAGE=%s\n' "$RAG_SERVICE_IMAGE"
+              printf 'RAG_SOURCE_SHA=%s\n' "$SOURCE_SHA"
+              printf 'RAG_INFRA_SHA=%s\n' "$GITHUB_SHA"
+            } > "${stage_dir}/release-manifest.env"
+            chmod 600 "${stage_dir}/release-manifest.env"
+            mv "$stage_dir" "$release_root"
+            stage_dir=''
+          fi
+          echo "RAG immutable release handoff staged at ${release_root}"
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 

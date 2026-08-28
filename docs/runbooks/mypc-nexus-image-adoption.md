@@ -126,6 +126,69 @@ Before replacement, compressed backups and checksum evidence were written under
 The RAG health endpoint, PostgreSQL, Redis, Fleet Gateway, and the full
 post-deploy regression passed after replacement.
 
+### RAG immutable runtime release
+
+`scripts/release-mypc-rag-service.sh` is the one-service production path for a
+RAG runtime repair. It runs on `mypc`, uses the authoritative
+`/data/ocee/migration-compose.config.yml` as its base, and accepts only an
+already-local immutable Nexus digest. It never builds or pulls an image.
+
+The protected `Build mypc production images` workflow stages the exact reviewed
+release source under
+`/data/ocee/vecta-infra-releases/<infra-sha>/rag-service/<source-sha>/` after
+it has pulled the Nexus digest locally and checked both OCI provenance labels:
+the VectA source SHA and `ZenoWangzy/vecta` repository. The stage directory has
+a mode-600 manifest and checksum file. Do not copy a local checkout or hand
+type an image reference in its place.
+
+Before any recreation the script renders Compose snapshots into unlinked
+process-owned file descriptors, so a hard-killed release cannot leave plaintext
+environment values in a named temporary file. It checks the live container
+against the intended baseline: image ID, complete
+environment map, mount set, networks and aliases, ports, command, entrypoint,
+user, restart policy, logging, memory/CPU/memory-swap limits, and security
+settings. It also writes a private runtime snapshot whose environment values
+are SHA-256 hashes; the post-recreate assertion compares the complete Docker
+`HostConfig` and all non-endpoint environment hashes. The desired contract may
+differ only by the immutable RAG digest and the versioned non-secret
+`HF_ENDPOINT` overlay. A missing or extra mount, provenance mismatch, security
+drift, or any other preflight mismatch stops before a Compose mutation.
+
+Use the staged manifest after the protected image build completes:
+
+```bash
+release_root=/data/ocee/vecta-infra-releases/<infra-sha>/rag-service/<source-sha>
+(
+  cd "$release_root"
+  sha256sum -c checksums.sha256
+)
+set -a
+. "$release_root/release-manifest.env"
+set +a
+"$release_root/scripts/release-mypc-rag-service.sh" --check
+
+MYPC_DEPLOY_ENABLED=true \
+  "$release_root/scripts/release-mypc-rag-service.sh" --execute
+```
+
+The execute path recreates only `rag-service` with `--no-build --pull never`
+and `--no-deps`, so it cannot start Compose dependencies. Fleet Gateway writes
+the shared knowledge bind and RAG writes the model/OCR cache, so the script
+pauses Fleet and stops RAG before making checksummed, private backups. Backup,
+cache, and knowledge paths must be mutually non-overlapping after canonical path
+resolution. The target RAG must pass its full runtime contract and readiness
+while Fleet remains paused. A failure before that point removes the target,
+archives its failed state, restores both directories in place (preserving bind
+mount inodes), compares the restored trees with the baseline archives, and
+recreates the original immutable digest before Fleet resumes.
+
+Resuming Fleet is the data transaction's commit point: customer writes may
+restart after it. The read-only full app regression runs immediately after that
+commit. If it fails, the release returns non-zero and records durable evidence,
+but it deliberately keeps the validated target and never overwrites possible
+post-commit customer writes with the old snapshot. Rendered configuration and
+live environment values are never printed or persisted by pathname.
+
 ### RAG Parser Repair - 2026-07-19
 
 A protected mypc build produced the immutable RAG image
