@@ -35,6 +35,13 @@
   changed_when: false
   check_mode: false
   no_log: true
+  when: not (vecta_app_release_mode | default(false) | bool)
+
+- name: Require an immutable WeCom contact-sync release image
+  ansible.builtin.assert:
+    that: wechat_contact_sync_image is match('^.+@sha256:[0-9a-f]{64}$')
+    fail_msg: "Release mode requires an exact WeCom contact-sync image digest."
+  when: vecta_app_release_mode | default(false) | bool
 
 - name: Run WeCom contact-sync regression before Nexus adoption
   ansible.builtin.script:

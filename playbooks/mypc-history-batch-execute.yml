@@ -1,0 +1,210 @@
+---
+# Controlled batch execution is a separate, operator-approved serial phase.
+# The API owns tenant/ledger/confirmation checks; this play owns quiesce and
+# the no-concurrent-writer boundary.
+- name: Execute one confirmed historical batch
+  hosts: mypc
+  gather_facts: false
+  become: true
+  become_user: root
+  become_method: sudo
+  become_flags: '-n'
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - ../inventories/mypc/group_vars/mypc.yml
+  vars:
+    history_batch_api_origin: https://vecta.matrix-ai.com.cn
+    history_batch_api_path: /internal/controlled-entry/historical-batches
+  pre_tasks:
+    - name: Reject Ansible check mode for stateful batch execution
+      ansible.builtin.fail:
+        msg: >-
+          Stateful history execution is fail-closed in --check mode. Use only
+          --syntax-check or --list-tasks for static inspection.
+      when: ansible_check_mode
+
+    - name: Require the canonical history writer set
+      ansible.builtin.assert:
+        that:
+          - history_writer_containers is sequence
+          - history_writer_containers | length > 0
+          - history_writer_containers | select('match', '^[a-z0-9][a-z0-9_.-]+$') | list | length == history_writer_containers | length
+        fail_msg: "The protected history writer set must be a non-empty canonical container list."
+
+    - name: Require one confirmed serial batch execution
+      ansible.builtin.assert:
+        that:
+          - mypc_deploy_enabled | default(false) | bool
+          - history_execution_approved | default(false) | bool
+          - history_batch_id is string
+          - history_batch_id is match('^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+          - history_confirmation_ref is string
+          - history_confirmation_ref is match('^[A-Za-z0-9._:/-]{1,256}$')
+          - history_batch_api_origin == 'https://vecta.matrix-ai.com.cn'
+          - history_batch_api_path == '/internal/controlled-entry/historical-batches'
+          - release_source_sha is match('^[0-9a-f]{40}$')
+          - release_lock_owner is string
+          - release_lock_owner is match('^[A-Za-z0-9._:-]{8,128}$')
+          - lookup('env', 'HISTORY_BATCH_TOKEN') | length > 0
+        fail_msg: >-
+          Batch execution requires the exact source, a UUID batch id, a
+          redacted confirmation reference, the fixed allowlisted endpoint, and
+          an operator-provided API credential.
+      no_log: true
+
+  tasks:
+    - name: Verify the continuous target-host release lease before batch
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../scripts/mypc-release-lock.sh verify
+          {{ vecta_release_lock_path }}
+          {{ vecta_release_lock_state_path }}
+          {{ release_lock_owner }}
+      changed_when: false
+      no_log: true
+
+    - name: Run the locked confirmed batch sequence
+      ansible.builtin.shell: |
+        set -Eeuo pipefail
+        # The same lease covers deploy, health, and this serial writer path.
+        : "${HISTORY_BATCH_TOKEN:?HISTORY_BATCH_TOKEN is required}"
+        writers_json='{{ history_writer_containers | to_json }}'
+        mapfile -t writers < <(printf '%s' "$writers_json" | python3 -c "import json,sys; print(*json.load(sys.stdin), sep='\\n')")
+        batch_succeeded=false
+        quiesce_started=false
+        restart_failed=false
+        stop_writers() {
+          local failed=false state paused
+          for writer in "${writers[@]}"; do
+            state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer" 2>/dev/null || printf unknown)"
+            paused="$(docker inspect --format '{{ "{{.State.Paused}}" }}' "$writer" 2>/dev/null || printf unknown)"
+            if [ "$state" = true ] && [ "$paused" = false ]; then
+              docker stop --time 30 "$writer" >/dev/null || failed=true
+              state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer" 2>/dev/null || printf unknown)"
+              paused="$(docker inspect --format '{{ "{{.State.Paused}}" }}' "$writer" 2>/dev/null || printf unknown)"
+              if [ "$state" != false ] || [ "$paused" != false ]; then
+                failed=true
+              fi
+            elif [ "$state" != false ] || [ "$paused" != false ]; then
+              failed=true
+            fi
+          done
+          [ "$failed" = false ]
+        }
+        start_writers() {
+          local failed=false state paused
+          for writer in "${writers[@]}"; do
+            docker start "$writer" >/dev/null || failed=true
+            state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer" 2>/dev/null || printf unknown)"
+            paused="$(docker inspect --format '{{ "{{.State.Paused}}" }}' "$writer" 2>/dev/null || printf unknown)"
+            if [ "$state" != true ] || [ "$paused" != false ]; then
+              failed=true
+            fi
+          done
+          [ "$failed" = false ]
+        }
+        response_file="$(mktemp /tmp/vecta-history-batch-response.XXXXXX.json)"
+        cleanup() {
+          status=$?
+          set +e
+          if [ "$batch_succeeded" = true ]; then
+            if ! start_writers; then
+              echo "writer restart failed; writers were forced back to stopped state" >&2
+              for writer in "${writers[@]}"; do
+                docker stop --time 30 "$writer" >/dev/null 2>&1 || true
+              done
+              status=1
+            fi
+          else
+            echo "history batch failed; writers remain stopped for repair or rollback" >&2
+            if [ "$quiesce_started" = true ]; then
+              if ! stop_writers; then
+                echo "writer stop could not be proven; manual repair must keep the release blocked" >&2
+                status=1
+              fi
+            fi
+          fi
+          rm -f "$response_file"
+          exit "$status"
+        }
+        trap cleanup EXIT
+
+        for writer in "${writers[@]}"; do
+          state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer")"
+          paused="$(docker inspect --format '{{ "{{.State.Paused}}" }}' "$writer")"
+          [ "$state" = true ] && [ "$paused" = false ] || {
+            echo "history writer is not running and unpaused before execute" >&2
+            exit 1
+          }
+        done
+        quiesce_started=true
+        stop_writers
+
+        http_code="$(curl --silent --show-error --output "$response_file" \
+          --write-out '%{http_code}' \
+          --connect-timeout 15 --max-time 120 \
+          --request POST \
+          --header "Authorization: Bearer $HISTORY_BATCH_TOKEN" \
+          --header 'Content-Type: application/json' \
+          --header "X-Vecta-Source-Sha: {{ release_source_sha }}" \
+          --header "X-History-Confirmation-Ref: {{ history_confirmation_ref }}" \
+          --data '{
+            "batchId": "{{ history_batch_id }}",
+            "sourceSha": "{{ release_source_sha }}",
+            "confirmationRef": "{{ history_confirmation_ref }}"
+          }' \
+          '{{ history_batch_api_origin }}{{ history_batch_api_path }}/{{ history_batch_id }}/execute')"
+        [ "$http_code" = 200 ] || {
+          echo "controlled history endpoint rejected the confirmed batch" >&2
+          exit 1
+        }
+        node - "$response_file" '{{ history_batch_id }}' '{{ release_source_sha }}' '{{ history_confirmation_ref }}' <<'NODE'
+        const fs = require('node:fs');
+        const [responsePath, expectedBatchId, expectedSourceSha, expectedConfirmationRef] = process.argv.slice(2);
+        let response;
+        try {
+          response = JSON.parse(fs.readFileSync(responsePath, 'utf8'));
+        } catch {
+          process.exit(1);
+        }
+        if (response.batchId !== expectedBatchId
+          || response.sourceSha !== expectedSourceSha
+          || response.confirmationRef !== expectedConfirmationRef) {
+          process.exit(1);
+        }
+        const forbiddenStatuses = new Set([
+          'partial',
+          'replayed',
+          'already-executed',
+          'already_executed',
+          'rollback-required',
+          'rollback_required',
+          'compensation-required',
+          'compensation_required',
+        ]);
+        if (forbiddenStatuses.has(String(response.status).toLowerCase())
+          || response.status !== 'succeeded'
+          || response.terminal !== true
+          || response.replayed !== false) {
+          process.exit(1);
+        }
+        const completion = response.completion;
+        const isCount = value => Number.isSafeInteger(value) && value > 0;
+        if (!completion
+          || !isCount(completion.rows?.expected)
+          || !isCount(completion.rows?.completed)
+          || !isCount(completion.actions?.expected)
+          || !isCount(completion.actions?.completed)
+          || completion.rows.completed !== completion.rows.expected
+          || completion.actions.completed !== completion.actions.expected) {
+          process.exit(1);
+        }
+        NODE
+        batch_succeeded=true
+      args:
+        executable: /bin/bash
+      environment:
+        HISTORY_BATCH_TOKEN: "{{ lookup('env', 'HISTORY_BATCH_TOKEN') }}"
+      changed_when: true
+      no_log: true

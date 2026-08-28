@@ -1,0 +1,243 @@
+---
+# History migration admission. It is opt-in, serial, and keeps all Fruit
+# writers stopped from before migration through the read-only smoke.
+- name: Prepare the controlled history batch migration
+  hosts: mypc
+  gather_facts: false
+  become: true
+  become_user: root
+  become_method: sudo
+  become_flags: '-n'
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - ../inventories/mypc/group_vars/mypc.yml
+  vars:
+    history_lock_timeout: 5s
+    history_backup_helper_path: /tmp/vecta-mypc-postgres-adoption-evidence.sh
+  pre_tasks:
+    - name: Reject Ansible check mode for stateful migration
+      ansible.builtin.fail:
+        msg: >-
+          Stateful history migration is fail-closed in --check mode. Use only
+          --syntax-check or --list-tasks for static inspection.
+      when: ansible_check_mode
+
+    - name: Require the canonical history writer set
+      ansible.builtin.assert:
+        that:
+          - history_writer_containers is sequence
+          - history_writer_containers | length > 0
+          - history_writer_containers | select('match', '^[a-z0-9][a-z0-9_.-]+$') | list | length == history_writer_containers | length
+        fail_msg: "The protected history writer set must be a non-empty canonical container list."
+
+    - name: Require the explicit history migration boundary
+      ansible.builtin.assert:
+        that:
+          - mypc_deploy_enabled | default(false) | bool
+          - history_migration_enabled | default(false) | bool
+          - release_source_sha is match('^[0-9a-f]{40}$')
+          - deploy_image_refs is mapping
+          - deploy_image_refs.get('fruit-industry-pack', '') is match('^127\\.0\\.0\\.1:8082/[^@\\s]+@sha256:[0-9a-f]{64}$')
+          - history_0029_hash | default('') is match('^[0-9a-f]{64}$')
+          - history_0030_hash | default('') is match('^[0-9a-f]{64}$')
+          - history_loss_hash | default('') is match('^[0-9a-f]{64}$')
+          - history_loss_tag | default('') is match('^[0-9]{4}_[a-z0-9_]+$')
+          - history_loss_path | default('') is match('^packages/fruit-industry-pack/migrations/[0-9]{4}_[a-z0-9_]+\\.sql$')
+          - release_lock_owner is string
+          - release_lock_owner is match('^[A-Za-z0-9._:-]{8,128}$')
+          - docker_network is string
+          - docker_network | length > 0
+        fail_msg: >-
+          History migration requires explicit release authorization, the exact
+          source SHA, ordered journal hashes, the immutable Fruit Pack image,
+          and the protected Docker network.
+
+    - name: Verify the continuous target-host release lease before target mutation
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../scripts/mypc-release-lock.sh verify
+          {{ vecta_release_lock_path }}
+          {{ vecta_release_lock_state_path }}
+          {{ release_lock_owner }}
+      changed_when: false
+      no_log: true
+
+    - name: Materialize the exact backup helper before the locked sequence
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../scripts/mypc-postgres-adoption-evidence.sh'
+        dest: '{{ history_backup_helper_path }}'
+        owner: root
+        group: root
+        mode: '0700'
+
+  tasks:
+    - name: Run the locked 0029 to 0030 migration sequence
+      ansible.builtin.shell: |
+        set -Eeuo pipefail
+        # The same lease holder remains live across deploy, health, batch, and
+        # rollback; no task-local lock can create an inter-playbook gap.
+        set -a
+        . /data/ocee/.env
+        set +a
+        : "${POSTGRES_USER:?POSTGRES_USER is required}"
+        : "${POSTGRES_DB:?POSTGRES_DB is required}"
+        : "${FRUIT_V4_MIGRATION_DATABASE_URL:?FRUIT_V4_MIGRATION_DATABASE_URL is required}"
+        : "${FRUIT_V4_RUNTIME_DB_ROLE:?FRUIT_V4_RUNTIME_DB_ROLE is required}"
+        : "${FRUIT_V4_RUNTIME_DB_PASSWORD:?FRUIT_V4_RUNTIME_DB_PASSWORD is required}"
+        : "${FRUIT_V4_WRITER_ROLE:?FRUIT_V4_WRITER_ROLE is required}"
+        : "${FRUIT_V4_WRITER_PASSWORD:?FRUIT_V4_WRITER_PASSWORD is required}"
+
+        writers_json='{{ history_writer_containers | to_json }}'
+        mapfile -t writers < <(printf '%s' "$writers_json" | python3 -c "import json,sys; print(*json.load(sys.stdin), sep='\\n')")
+        sequence_succeeded=false
+        quiesce_started=false
+        restart_failed=false
+        stop_writers() {
+          local failed=false state
+          for writer in "${writers[@]}"; do
+            state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer" 2>/dev/null || printf unknown)"
+            if [ "$state" = true ]; then
+              docker stop --time 30 "$writer" >/dev/null || failed=true
+              state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer" 2>/dev/null || printf unknown)"
+              [ "$state" = false ] || failed=true
+            elif [ "$state" != false ]; then
+              failed=true
+            fi
+          done
+          [ "$failed" = false ]
+        }
+        start_writers() {
+          local failed=false state paused
+          for writer in "${writers[@]}"; do
+            docker start "$writer" >/dev/null || failed=true
+            state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer" 2>/dev/null || printf unknown)"
+            paused="$(docker inspect --format '{{ "{{.State.Paused}}" }}' "$writer" 2>/dev/null || printf unknown)"
+            if [ "$state" != true ] || [ "$paused" != false ]; then
+              failed=true
+            fi
+          done
+          [ "$failed" = false ]
+        }
+        cleanup() {
+          status=$?
+          set +e
+          if [ "$sequence_succeeded" = true ]; then
+            start_writers || restart_failed=true
+            if [ "$restart_failed" = true ]; then
+              echo "writer restart failed; writers were forced back to stopped state" >&2
+              for writer in "${writers[@]}"; do
+                docker stop --time 30 "$writer" >/dev/null 2>&1 || true
+              done
+              status=1
+            fi
+          else
+            echo "history sequence failed; writers remain stopped for repair or rollback" >&2
+            if [ "$quiesce_started" = true ]; then
+              if ! stop_writers; then
+                echo "writer stop could not be proven; manual repair must keep the release blocked" >&2
+                status=1
+              fi
+            fi
+          fi
+          rm -f '{{ history_backup_helper_path }}'
+          exit "$status"
+        }
+        trap cleanup EXIT
+
+        for writer in "${writers[@]}"; do
+          state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer")"
+          [ "$state" = true ] || {
+            echo "history writer is not running before quiesce" >&2
+            exit 1
+          }
+        done
+        quiesce_started=true
+        stop_writers
+
+        '{{ history_backup_helper_path }}' --execute
+
+        export PGOPTIONS="-c lock_timeout={{ history_lock_timeout }}"
+        docker run --rm \
+          --network '{{ docker_network }}' \
+          --env "DATABASE_URL=$FRUIT_V4_MIGRATION_DATABASE_URL" \
+          --env "PGOPTIONS=$PGOPTIONS" \
+          --env "FRUIT_RUNTIME_DB_ROLE=$FRUIT_V4_RUNTIME_DB_ROLE" \
+          --env "FRUIT_RUNTIME_DB_PASSWORD=$FRUIT_V4_RUNTIME_DB_PASSWORD" \
+          --env "FRUIT_V4_WRITER_ROLE=$FRUIT_V4_WRITER_ROLE" \
+          --env "FRUIT_V4_WRITER_PASSWORD=$FRUIT_V4_WRITER_PASSWORD" \
+          --env FRUIT_CONTROLLED_ENTRY_ENABLED=true \
+          --env "FRUIT_SETUP_WAIT_MS=${FRUIT_V4_SETUP_WAIT_MS:-60000}" \
+          '{{ deploy_image_refs['fruit-industry-pack'] }}' \
+          node packages/fruit-industry-pack/dist/db/setup.js
+
+        migration_check="$(docker exec openclaw-postgres psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+          -v expected_db="$POSTGRES_DB" -v expected_user="$POSTGRES_USER" \
+          -qAt -v ON_ERROR_STOP=1 -c "
+          SELECT
+          (current_database() = :'expected_db' AND current_user = :'expected_user')
+          AND
+          (SELECT count(*) = 2 FROM information_schema.tables
+           WHERE table_schema = 'fruit'
+             AND table_name IN ('v4_containers', 'v4_container_aliases'))
+          AND (SELECT count(*) = 5 FROM information_schema.tables
+               WHERE table_schema = 'fruit'
+                 AND table_name IN (
+                   'v4_historical_import_batches',
+                   'v4_historical_import_rows',
+                   'v4_historical_import_actions',
+                   'v4_historical_import_action_results',
+                   'v4_historical_import_confirmations'))
+          AND (SELECT count(*) = 5 FROM pg_class c
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = 'fruit'
+                 AND c.relkind = 'r'
+                 AND c.relname LIKE 'v4_historical_import_%'
+                 AND c.relforcerowsecurity)
+          AND (SELECT count(*) >= 31 FROM fruit_meta.__drizzle_migrations)
+          AND (SELECT count(*) = 1 FROM fruit_meta.__drizzle_migrations
+               WHERE hash = '{{ history_0029_hash }}')
+          AND (SELECT count(*) = 1 FROM fruit_meta.__drizzle_migrations
+               WHERE hash = '{{ history_0030_hash }}')
+          AND (SELECT count(*) = 1 FROM fruit_meta.__drizzle_migrations
+               WHERE hash = '{{ history_loss_hash }}')
+          AND (SELECT created_at
+               FROM fruit_meta.__drizzle_migrations
+               WHERE hash = '{{ history_0029_hash }}')
+              < (SELECT created_at
+                 FROM fruit_meta.__drizzle_migrations
+                 WHERE hash = '{{ history_0030_hash }}')
+          AND (SELECT created_at
+               FROM fruit_meta.__drizzle_migrations
+               WHERE hash = '{{ history_0030_hash }}')
+              <= (SELECT created_at
+                  FROM fruit_meta.__drizzle_migrations
+                  WHERE hash = '{{ history_loss_hash }}')
+          AND (SELECT position('''loss''' in pg_get_constraintdef(con.oid)) > 0
+               FROM pg_constraint con
+               JOIN pg_class c ON c.oid = con.conrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = 'fruit'
+                 AND c.relname = 'v4_documents'
+                 AND con.conname = 'v4_documents_type_chk');")"
+        [ "$migration_check" = true ] || {
+          echo "0029/0030/loss journal, schema, RLS, or loss CHECK verification failed" >&2
+          exit 1
+        }
+
+        smoke="$(docker exec openclaw-postgres psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+          -qAt -v ON_ERROR_STOP=1 -c "
+          BEGIN READ ONLY;
+          SELECT to_regclass('fruit.v4_documents') IS NOT NULL
+             AND to_regclass('fruit.v4_historical_import_batches') IS NOT NULL;
+          COMMIT;")"
+        [ "$(printf '%s\n' "$smoke" | tail -n 1)" = true ] || {
+          echo "non-write Fruit smoke failed" >&2
+          exit 1
+        }
+
+        sequence_succeeded=true
+      args:
+        executable: /bin/bash
+      changed_when: true
+      no_log: true

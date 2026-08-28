@@ -58,7 +58,12 @@ set +a
 : "${POSTGRES_DB:?POSTGRES_DB is required}"
 
 source_container=${POSTGRES_CONTAINER:-openclaw-postgres}
-postgres_image=${POSTGRES_RESTORE_IMAGE:-127.0.0.1:8082/pgvector/pgvector:pg16}
+postgres_image=${POSTGRES_RESTORE_IMAGE:-}
+if ! printf '%s' "$postgres_image" \
+  | grep -Eq '^127\.0\.0\.1:8082/pgvector/pgvector@sha256:[0-9a-f]{64}$'; then
+  echo "POSTGRES_RESTORE_IMAGE must be the approved Nexus pgvector image digest" >&2
+  exit 1
+fi
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 evidence_dir="${evidence_root%/}/postgres-adoption-${timestamp}"
 dump_file="$evidence_dir/postgres.dump"
@@ -114,7 +119,7 @@ capture_counts() {
   local output="$2"
   : > "$output"
   for table in "${count_tables[@]}"; do
-    count="$(docker exec "$container" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    count="$(docker exec "$container" psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
       -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM public.\"${table}\";")"
     printf '%s\t%s\n' "$table" "$count" >> "$output"
   done
@@ -123,7 +128,7 @@ capture_counts() {
 echo "Capturing PostgreSQL schema and logical backup evidence in $evidence_dir"
 docker exec "$source_container" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   --schema-only --no-owner --no-privileges > "$source_schema"
-docker exec "$source_container" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+docker exec "$source_container" psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   -v ON_ERROR_STOP=1 -At -c "$inventory_sql" > "$source_inventory"
 capture_counts "$source_container" "$source_counts"
 docker exec "$source_container" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
@@ -155,7 +160,7 @@ docker exec "$restore_container" pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB
 
 docker exec "$restore_container" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   --schema-only --no-owner --no-privileges > "$restore_schema"
-docker exec "$restore_container" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+docker exec "$restore_container" psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   -v ON_ERROR_STOP=1 -At -c "$inventory_sql" > "$restore_inventory"
 capture_counts "$restore_container" "$restore_counts"
 

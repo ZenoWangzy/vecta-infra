@@ -1,79 +1,86 @@
 # Contributing To VectA Infrastructure
 
-## Repository Responsibilities
+## Repository responsibilities
 
-- `vecta` owns product code, schemas, tests, application image definitions, and
-  the GitHub workflow that selects branch delivery lanes.
-- `vecta-infra` owns Ansible roles, inventories, Nexus registry operations,
-  environment deployment contracts, and post-deploy verification.
-- A change crossing these repositories must update both contracts in the same
-  delivery sequence. Do not make one repository rely on unpublished work in the
-  other.
+- `vecta` owns product code, schemas, application image definitions, and the
+  source-SHA contract.
+- `vecta-infra` owns Nexus operations, Ansible roles/inventories, deployment
+  preflight, backup/rollback, health, and release evidence.
+- A cross-repository change must record both candidate commits explicitly.
+  Neither repository may rely on an unpublished commit in the other.
 
-## vtest Retirement Merge Order
+## Active delivery lane
 
-vtest is permanently retired. Its removal is a two-repository delivery with one
-safe order:
+The only active trunk is VectA `main`. The release path is:
 
-1. The VectA caller-removal hotfix must merge first and publish a state with no
-   caller of the retired infrastructure workflow.
-2. The matching `vecta-infra` removal merges only after that caller-free VectA
-   state exists.
+1. implement on a topic branch;
+2. fixed-SHA static review and targeted repair by the same owner;
+3. merge to VectA `main`;
+4. manually dispatch this repository's single release workflow with the full
+   current `main` SHA;
+5. retain separate build, immutable digest, backup/contention, exact-digest
+   deployment, health, real-user path, business Oracle, and rollback evidence.
 
-Do not restore a compatibility workflow, wrapper, fallback, or runner because a
-local dirty worktree or unpublished branch still contains an old caller. The
-cross-repository synchronization principle above remains mandatory for future
-contract changes.
+Old promotion configuration is transition-only and is removed by the
+one-time trunk cutover runbook after both repositories and their consumers
+have been reconciled. It is not a new release gate.
 
-## Branch Delivery Convention
+## Release workflow contract
 
-- Normal VectA changes start on a topic branch and merge to `develop` first.
-  That merged SHA must complete the required postsubmit and promotion evidence
-  before it can promote through `develop -> main`.
-- A production repair starts on `hotfix/<name>` from VectA `main` and merges to
-  `main`. Once the main SHA is verified, the exact change returns through
-  `main -> develop` before later promotion.
-- VectA `main` is the production release lane. It runs the protected mypc
-  release checks. A production deploy remains a separately approved action.
-- Infrastructure workflows must preserve those branch and runner boundaries,
-  policy checks, and promotion evidence. Do not broaden an image build into a
-  production deploy.
-- Images use immutable full Git SHA tags for normal delivery. Production cache
-  adoption uses immutable `cache-<image-id>` tags only when preserving a live
-  container image is required.
+`.github/workflows/build-mypc-images.yml` is the release entry point. It is
+manual and defaults to inert production execution. Its source checkout must
+match the current VectA `main` HEAD, selected images are pushed under that
+source SHA, and the resulting `sha256` digest manifest is the only image
+reference accepted by Ansible.
 
-## Production Image Build Evidence
+The workflow uses the existing Nexus and Ansible roles. Existing application
+mounts, networks, environment, tenant/RBAC boundaries, ledger/idempotency
+controls, and stateful data owners remain authoritative. Database writes,
+migrations, and historical imports are serial and require their own approved
+preflight. A failed deterministic step stops with a concrete repair owner;
+only transient checkout/fetch/runner/Nexus/registry startup failures may retry
+three times at the same SHA.
 
-The production image build is manually dispatched from `vecta-infra` main and
-is authorized by the dispatching repository writer. The `production`
-environment is an audit label; it currently has no required reviewers or
-protection rules. Existing workflow secrets remain repository-level and are not
-migrated by this contract. The operator supplies a full `source_sha`,
-`source_branch=main`, and an optional `image_names` subset. The workflow rejects
-any SHA that is not the current VectA main HEAD.
+The default path does not add Vitest, vtest, Testcontainers, or an independent
+test stage. Build/typecheck, YAML/static contract, schema/migration/backup,
+health, real-user, and business-Oracle evidence are the relevant controls.
 
-A successful run is independent exact-SHA image-build evidence. It is not a
-VectA postsubmit result, merge result, production deployment, or production
-health claim.
+The optional history mode validates the checked-out VectA source itself before
+using it. It may consume the frozen 0029/0030 migration contract only after
+that exact source is selected; it must not require an unpublished future
+candidate or its unreconciled runbook for ordinary image builds. If enabled,
+the mode remains fail-closed until backup/restore, writer quiesce, exact
+digests, serial batch/rollback evidence, row evidence for every loss Action,
+and the `v4_documents_type_chk` loss update (in 0030 or a later journal entry)
+with its restoring rollback are present. The constraint DDL runs only inside
+the quiesced shared release lock window. For the current 0030 contract, the
+loss CHECK ALTER is the final executable migration segment and Drizzle's
+PostgreSQL migrator holds the migration transaction, including the
+`ACCESS EXCLUSIVE` lock, through commit. History execution is ordered as
+stop/quiesce writers → bounded `lock_timeout` → migrate → journal/schema
+verification → read-only smoke → restart. Rollback is self-contained and
+transactional, locks `fruit.v4_documents` before
+`fruit.v4_historical_import_batches`, guards before DROP/restore, and requires
+the same writer-quiesce boundary.
 
-## Change Rules
+## Safety boundaries
 
-1. Read `AGENTS.md` and this file before non-trivial work.
-2. Keep a dirty worktree intact. Use a clean worktree for branch merges and
-   release validation.
-3. Validate the narrowest affected contract, then run broader regression when a
-   change crosses application, workflow, registry, or deployment boundaries.
-4. Production/myPC state is data-first: preserve existing volume names, bind
-   paths, ports, networks, environment contracts, and rollback evidence. Never
-   create replacement data volumes or prune state as part of an image migration.
-5. Commit cohesive changes with a clear scope. Push or merge only when
-   explicitly requested or required by an approved delivery step.
+- Never deploy, migrate, or write production data from a local validation run.
+- Never create replacement state volumes or alter live mount paths during an
+  image release.
+- Keep Ansible credentials in the secret store; do not echo, inspect, or write
+  their values. Use `no_log` on credential-bearing tasks.
+- Preserve exact prior image digests and backup evidence for rollback.
+- Commit cohesive changes. Push, merge, branch deletion, and cutover require
+  explicit authorization outside this candidate work.
 
-## Required Evidence
+## Required local evidence
 
-- Workflow changes: YAML parse, relevant workflow contract tests, and a review
-  of branch and runner conditions.
-- Deployment changes: Ansible syntax check, pre/post regression, and immutable
-  image evidence.
-- Stateful adoption: backup/checksum evidence, original mount mapping, service
-  health, and full post-adoption regression.
+- Workflow changes: YAML parse, `scripts/check-mypc-release-workflow.py`,
+  `git diff --check`, and branch/runner/production-guard inspection.
+- Deployment changes: Ansible syntax check and `--list-tasks` against the
+  empty non-production syntax fixture; the release workflow requires a
+  protected external inventory and no production execution is implied.
+- Stateful or migration changes: explicit schema/ledger inventory, backup
+  checksum, restore/rollback path, and post-change health evidence from the
+  approved operator run.

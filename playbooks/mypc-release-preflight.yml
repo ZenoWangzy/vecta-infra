@@ -1,0 +1,48 @@
+# Read-only admission checks for the single application release lane. This play
+# deliberately runs before the target-host lease is acquired; it cannot mutate
+# the target or claim a stateful release phase.
+- name: mypc release contention and data preflight
+  hosts: mypc
+  gather_facts: false
+  become: true
+  become_user: root
+  become_method: sudo
+  become_flags: '-n'
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - ../inventories/mypc/group_vars/mypc.yml
+  pre_tasks:
+    - name: Require explicit production execution
+      ansible.builtin.assert:
+        that:
+          - mypc_deploy_enabled | default(false) | bool
+          - release_source_sha is match('^[0-9a-f]{40}$')
+          - not (mypc_stateful_services_enabled | default(false) | bool)
+          - not (mypc_release_database_writes | default(false) | bool)
+        fail_msg: >-
+          The application release preflight is fail-closed unless the real
+          mypc target is explicitly enabled and all database writes remain
+          disabled.
+  tasks:
+    - name: Verify PostgreSQL is ready before an application release
+      ansible.builtin.command:
+        argv: [docker, exec, openclaw-postgres, pg_isready]
+      changed_when: false
+      check_mode: false
+
+    - name: Verify Redis is ready before an application release
+      ansible.builtin.command:
+        argv: [docker, exec, openclaw-redis, redis-cli, ping]
+      register: mypc_release_redis_ready
+      changed_when: false
+      check_mode: false
+      failed_when: mypc_release_redis_ready.stdout | trim != 'PONG'
+
+    - name: Run the existing read-only application/data preflight
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../scripts/mypc-data-layer-regression.sh
+          --service fleet-gateway --phase before
+      changed_when: false
+      check_mode: false

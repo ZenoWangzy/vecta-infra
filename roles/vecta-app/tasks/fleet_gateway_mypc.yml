@@ -73,10 +73,15 @@
   ansible.builtin.assert:
     that:
       - mypc_fleet_gateway_image_ids.stdout_lines | length == 2
-      - mypc_fleet_gateway_image_ids.stdout_lines[0] == mypc_fleet_gateway_image_ids.stdout_lines[1]
+      - >-
+        mypc_fleet_gateway_image_ids.stdout_lines[0] == mypc_fleet_gateway_image_ids.stdout_lines[1]
+        or (
+          vecta_app_release_mode | default(false) | bool
+          and fleet_gateway_image is match('^.+@sha256:[0-9a-f]{64}$')
+        )
     fail_msg: >-
-      The mypc Fleet Gateway image must match the live image ID for this
-      configuration-only recreation.
+      The mypc Fleet Gateway image must match the live image ID, or be an
+      exact digest in the explicit release mode.
 
 - name: Capture running per-user runtime count before Fleet adoption
   ansible.builtin.shell: >-

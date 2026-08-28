@@ -71,13 +71,20 @@
       - >-
         mypc_rag_service_image_ids.stdout_lines[0] == mypc_rag_service_image_ids.stdout_lines[1]
         or (
-          rag_service_allow_image_upgrade | default(false) | bool
-          and rag_service_image is match('^.+:[0-9a-f]{40}$')
+          (
+            vecta_app_release_mode | default(false) | bool
+            and rag_service_image is match('^.+@sha256:[0-9a-f]{64}$')
+          )
+          or (
+            rag_service_allow_image_upgrade | default(false) | bool
+            and rag_service_image is match('^.+:[0-9a-f]{40}$')
+          )
         )
     fail_msg: >-
-      A different mypc RAG image requires rag_service_allow_image_upgrade=true
-      and an immutable full-SHA image tag. The live container and its state
-      mounts remain untouched when this gate rejects the deployment.
+      A different mypc RAG image requires explicit release mode with an
+      immutable digest, or the existing one-service full-SHA repair gate. The
+      live container and its state mounts remain untouched when this gate
+      rejects the deployment.
 
 - name: Back up mypc RAG state before Nexus adoption
   ansible.builtin.shell: |

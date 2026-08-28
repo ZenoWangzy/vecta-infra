@@ -31,7 +31,18 @@ check_http() {
   local name="$1" url="$2" code attempt
   for attempt in 1 2 3; do
     code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 5 "$url" || true)"
-    [ "$code" = 200 ] && { echo "OK   $name $code"; return 0; }
+    case "$code" in
+      200) echo "OK   $name $code"; return 0 ;;
+      000|408|425|429|502|503|504) ;;
+      401|403|404)
+        echo "FAIL $name returned deterministic HTTP $code; repair owner=release" >&2
+        exit 1
+        ;;
+      *)
+        echo "FAIL $name returned unexpected HTTP $code; repair owner=release" >&2
+        exit 1
+        ;;
+    esac
     [ "$attempt" = 3 ] || sleep 2
   done
   echo "FAIL $name returned ${code:-curl-error}" >&2

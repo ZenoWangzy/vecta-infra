@@ -1,7 +1,8 @@
 ---
-# Repository-writer-initiated production build evidence. It builds the current
-# VectA main HEAD into the production-local Nexus on the mypc runner only.
-name: Build mypc production images
+# Repository-writer-initiated single production release. It always binds the
+# current VectA main HEAD; deploy is disabled by default and Nexus bootstrap is
+# a separately authorized build-lane mutation.
+name: Release mypc production
 
 "on":
   workflow_dispatch:
@@ -31,20 +32,78 @@ name: Build mypc production images
         default: ""
         description: >-
           Comma-separated subset of contract images to build; empty builds all.
+      deploy:
+        type: boolean
+        required: true
+        default: false
+        description: >-
+          Enable the guarded production deploy; also requires
+          vars.MYPC_RELEASE_ENABLED=true.
+      nexus_bootstrap:
+        type: boolean
+        required: true
+        default: false
+        description: >-
+          Allow the explicitly approved build lane to create/configure the
+          production-local Nexus; false requires an already ready registry.
+      hero_e2e:
+        type: boolean
+        required: true
+        default: false
+        description: Run the real-user Hero browser journey after health.
+      oracle:
+        type: boolean
+        required: true
+        default: false
+        description: Run the optional business Oracle after deployment.
+      historical_migration:
+        type: boolean
+        required: true
+        default: false
+        description: >-
+          Run 0029 first, stop/quiesce Fruit writers, rehearse a fresh
+          backup/isolated restore, apply journaled 0030 with bounded lock_timeout,
+          verify a read-only smoke, and restart before deployment.
+      execute_batch:
+        type: boolean
+        required: true
+        default: false
+        description: Execute one already confirmed history batch serially.
+      history_batch_id:
+        type: string
+        required: false
+        default: ""
+        description: Confirmed history batch id; required only for execution.
+      history_confirmation_ref:
+        type: string
+        required: false
+        default: ""
+        description: Redacted confirmation evidence ref; required for execution.
+      oracle_organization:
+        type: string
+        required: false
+        default: ""
+        description: Dedicated production Oracle tenant name.
+      oracle_employee:
+        type: string
+        required: false
+        default: ""
+        description: Dedicated production Oracle employee id.
+      oracle_case_ids:
+        type: string
+        required: false
+        default: "S020,U034,U002"
+        description: Comma-separated fixed business Oracle case ids.
 
 permissions:
   contents: read
 
 concurrency:
-  group: mypc-production-build-v2
+  group: mypc-production-release-v1
   cancel-in-progress: false
 
 jobs:
   build:
-    if: >-
-      github.repository == 'ZenoWangzy/vecta-infra' &&
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main'
     runs-on: [self-hosted, mypc, prod-build]
     environment: production
     timeout-minutes: 240
@@ -75,7 +134,37 @@ jobs:
       PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}
       DOCKER_CACHE_PRUNE_UNTIL: ${{ inputs.docker_cache_prune_until }}
       NEXUS_ADMIN_PASSWORD_SECRET_NAME: MYPC_NEXUS_ADMIN_PASSWORD
+      RELEASE_MANIFEST_PATH: ${{ runner.temp }}/mypc-release-digest-manifest.json
+      MYPC_INVENTORY_FILE: ${{ vars.MYPC_INVENTORY_FILE }}
+      ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/ansible-collections
+      HISTORICAL_MIGRATION: ${{ inputs.historical_migration }}
+      RELEASE_PHASE_FILE: ${{ runner.temp }}/mypc-release-phase
     steps:
+      - name: Fail closed before any release work
+        working-directory: .
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REPOSITORY" != 'ZenoWangzy/vecta-infra' ] \
+            || [ "$GITHUB_EVENT_NAME" != 'workflow_dispatch' ] \
+            || [ "$GITHUB_REF" != 'refs/heads/main' ]; then
+            echo "release runs only from workflow_dispatch on vecta-infra main" >&2
+            exit 1
+          fi
+          : "${MYPC_INVENTORY_FILE:?MYPC_INVENTORY_FILE must name the protected production inventory}"
+          test -s "$MYPC_INVENTORY_FILE" || {
+            echo "protected production inventory is missing or empty" >&2
+            exit 1
+          }
+          if grep -Eiq 'mypc-host\.example\.com|replace .*host|TODO|CHANGE_ME' \
+            "$MYPC_INVENTORY_FILE"; then
+            echo "placeholder production inventory is forbidden" >&2
+            exit 1
+          fi
+          grep -Eq '^\[mypc\]$' "$MYPC_INVENTORY_FILE" || {
+            echo "protected production inventory must define [mypc]" >&2
+            exit 1
+          }
+
       - name: Checkout infra contract
         working-directory: .
         run: |
@@ -124,6 +213,15 @@ jobs:
               exit 1
             }
             # ponytail: exact local object avoids GitHub; fetch only on a cold runner.
+            is_transient_transport_failure() {
+              local log_file="$1"
+              local status="${2:-1}"
+              [ "$status" -eq 124 ] || grep -Eiq \
+                'connection reset|connection timed out|timed out|could not resolve host|early eof|remote end hung up|rpc failed|tls connection|502|503|504' \
+                "$log_file"
+            }
+            fetch_log="$(mktemp)"
+            trap 'rm -f "$askpass" "$fetch_log"' EXIT
             for attempt in 1 2 3; do
               if GIT_HTTP_LOW_SPEED_LIMIT=0 \
                 LC_ALL=C \
@@ -131,8 +229,14 @@ jobs:
                 GIT_ASKPASS_REQUIRE=force \
                 GIT_TERMINAL_PROMPT=0 \
                 timeout 10m git -C "$target" fetch --depth=1 origin \
-                  "+$GITHUB_SHA:refs/remotes/origin/main"; then
+                  "+$GITHUB_SHA:refs/remotes/origin/main" 2>"$fetch_log"; then
                 break
+              else
+                fetch_status=$?
+              fi
+              if ! is_transient_transport_failure "$fetch_log" "$fetch_status"; then
+                echo "infra fetch failed with a deterministic transport/auth/ref/config error; repair owner=release" >&2
+                exit 1
               fi
               if [ "$attempt" -eq 3 ]; then
                 echo "infra fetch failed after 3 attempts" >&2
@@ -162,6 +266,14 @@ jobs:
             exit 1
           fi
 
+      - name: Initialize release phase and continuation reference
+        run: |
+          set -euo pipefail
+          : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
+          RELEASE_CONTINUATION_ID="${GITHUB_RUN_ID}-${SOURCE_SHA}"
+          printf 'RELEASE_CONTINUATION_ID=%s\n' "$RELEASE_CONTINUATION_ID" >> "$GITHUB_ENV"
+          printf '%s\n' initializing > "$RELEASE_PHASE_FILE"
+
       - name: Validate Docker cache retention
         run: |
           set -euo pipefail
@@ -184,7 +296,8 @@ jobs:
           esac
           curl_config="$(mktemp)"
           askpass="$(mktemp)"
-          trap 'rm -f "$curl_config" "$askpass"' EXIT
+          clone_log="$(mktemp)"
+          trap 'rm -f "$curl_config" "$askpass" "$clone_log"' EXIT
           chmod 600 "$curl_config"
           chmod 700 "$askpass"
           cat > "$askpass" <<'ASKPASS'
@@ -198,7 +311,7 @@ jobs:
           {
             printf 'header = "Authorization: Bearer %s"\n' "$VECTA_READ_TOKEN"
             printf 'header = "Accept: application/vnd.github+json"\n'
-            printf 'retry = 5\nretry-delay = 5\nconnect-timeout = 30\n'
+            printf 'retry = 3\nretry-delay = 5\nconnect-timeout = 30\n'
             printf 'speed-limit = 10240\nspeed-time = 60\n'
           } > "$curl_config"
           branch_json="$(curl -fsSL --config "$curl_config" \
@@ -230,6 +343,13 @@ jobs:
           # use a resumable source transport only if all three still fail.
           remote="https://github.com/ZenoWangzy/vecta.git"
           cache="/home/github-runner/.cache/vecta-main.git"
+          is_transient_transport_failure() {
+            local log_file="$1"
+            local status="${2:-1}"
+            [ "$status" -eq 124 ] || grep -Eiq \
+              'connection reset|connection timed out|timed out|could not resolve host|early eof|remote end hung up|rpc failed|tls connection|502|503|504' \
+              "$log_file"
+          }
           clone_source() {
             GIT_HTTP_LOW_SPEED_LIMIT=0 \
               LC_ALL=C \
@@ -237,7 +357,7 @@ jobs:
               GIT_ASKPASS_REQUIRE=force \
               GIT_TERMINAL_PROMPT=0 \
               timeout 30m git clone --depth=1 --branch main --single-branch \
-                "$1" vecta
+                "$1" vecta 2>"$2"
           }
           cloned=false
           if [ -d "$cache" ] \
@@ -246,19 +366,30 @@ jobs:
               = "$SOURCE_SHA" ] \
             && git --git-dir="$cache" fsck --connectivity-only "$SOURCE_SHA" \
               >/dev/null 2>&1; then
-            if clone_source "$cache"; then
+            if clone_source "$cache" "$clone_log"; then
               cloned=true
               echo "Using cached exact VectA source"
             else
+              clone_status=$?
+              if ! is_transient_transport_failure "$clone_log" "$clone_status"; then
+                echo "cached VectA clone failed with a deterministic auth/ref/config/disk error; repair owner=release" >&2
+                exit 1
+              fi
               rm -rf vecta
               echo "Cached VectA source unusable; falling back to GitHub"
             fi
           fi
           if [ "$cloned" = false ]; then
             for attempt in 1 2 3; do
-              if clone_source "$remote"; then
+              if clone_source "$remote" "$clone_log"; then
                 cloned=true
                 break
+              else
+                clone_status=$?
+              fi
+              if ! is_transient_transport_failure "$clone_log" "$clone_status"; then
+                echo "VectA clone failed with a deterministic auth/ref/config/disk error; repair owner=release" >&2
+                exit 1
               fi
               rm -rf vecta
               if [ "$attempt" -eq 3 ]; then
@@ -288,9 +419,34 @@ jobs:
           command -v docker >/dev/null || {
             echo "docker is required" >&2; exit 1;
           }
-          docker compose version >/dev/null || {
-            echo "docker compose is required" >&2; exit 1;
-          }
+          runner_log="$(mktemp)"
+          trap 'rm -f "$runner_log"' EXIT
+          runner_ready=false
+          for attempt in 1 2 3; do
+            : > "$runner_log"
+            if docker info >"$runner_log" 2>&1 \
+              && docker compose version >>"$runner_log" 2>&1; then
+              runner_ready=true
+              break
+            fi
+            if grep -Eiq 'permission denied|operation not permitted|no space left|invalid.*config|unknown command|command not found' "$runner_log"; then
+              echo "Docker runner failed with a deterministic permission/config/disk error; repair owner=release" >&2
+              cat "$runner_log" >&2
+              exit 1
+            fi
+            if ! grep -Eiq 'cannot connect to the docker daemon|connection refused|connection reset|connection timed out|context deadline exceeded|temporarily unavailable|service unavailable|tls handshake timeout|i/o timeout|eof' "$runner_log"; then
+              echo "Docker runner failure is not an approved transient readiness error; repair owner=release" >&2
+              cat "$runner_log" >&2
+              exit 1
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Docker runner did not become ready after 3 attempts" >&2
+              cat "$runner_log" >&2
+              exit 1
+            fi
+            echo "Retrying Docker runner readiness after transient runner failure" >&2
+            sleep 5
+          done
           command -v python3 >/dev/null || {
             echo "python3 is required" >&2; exit 1;
           }
@@ -309,57 +465,126 @@ jobs:
           command -v sha256sum >/dev/null || {
             echo "sha256sum is required" >&2; exit 1;
           }
+          command -v skopeo >/dev/null || {
+            echo "skopeo is required for immutable digest evidence" >&2; exit 1;
+          }
           available_kb="$(df -Pk . | awk 'NR==2 {print $4}')"
           if [ "$available_kb" -lt 62914560 ]; then
             echo "at least 60GiB free disk is required" >&2
             exit 1
           fi
 
-      - name: Require exact-SHA VectA Postsubmit evidence
-        run: >-
-          python3 scripts/verify-vecta-postsubmit.py
-          --repo ZenoWangzy/vecta
-          --sha "$SOURCE_SHA"
-          --branch "$SOURCE_BRANCH"
-        env:
-          VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
+      - name: Validate release workflow contract
+        run: python3 scripts/check-mypc-release-workflow.py
 
-      - name: Validate Fruit V4 isolated Compose contract
-        run: python3 scripts/test_fruit_v4_isolated_compose_contract.py
+      - name: Validate selected VectA history consumer contract (opt-in only)
+        if: inputs.historical_migration == true || inputs.execute_batch == true
+        run: |
+          # This checks only the selected checkout; it does not require an
+          # unpublished future VectA SHA for the default build/release path.
+          python3 scripts/check-vecta-history-consumer.py "$GITHUB_WORKSPACE/infra/vecta"
 
-      - name: Ensure production Nexus is running
+      - name: Require complete history batch mode dependencies
+        if: inputs.execute_batch == true &&
+          (inputs.historical_migration != true || inputs.deploy != true)
+        run: |
+          echo "::error::history batch execution requires deploy=true and historical_migration=true; repair owner=release"
+          exit 1
+
+      - name: Require deploy for opt-in production controls
+        if: >-
+          inputs.deploy != true &&
+          (inputs.historical_migration == true || inputs.execute_batch == true ||
+           inputs.hero_e2e == true || inputs.oracle == true)
+        run: |
+          echo "::error::historical migration, batch execution, Hero, and Oracle require deploy=true; repair owner=release"
+          exit 1
+
+      - name: Preflight Ansible release runner (opt-in only)
+        if: inputs.deploy == true
+        run: |
+          command -v uvx >/dev/null || {
+            echo "uvx is required for the Ansible release interface; repair owner=release" >&2
+            exit 1
+          }
+
+      - name: Require explicit Nexus build-lane mutation authority
+        if: inputs.nexus_bootstrap == true && vars.MYPC_NEXUS_BOOTSTRAP_ENABLED != 'true'
+        run: |
+          echo "::error::nexus_bootstrap=true requires vars.MYPC_NEXUS_BOOTSTRAP_ENABLED=true; repair owner=release" >&2
+          exit 1
+
+      - name: Bootstrap production Nexus build lane (explicit)
+        if: inputs.nexus_bootstrap == true
         run: |
           set -euo pipefail
           [ -n "${NEXUS_ADMIN_PASSWORD:-}" ] || {
             echo "${NEXUS_ADMIN_PASSWORD_SECRET_NAME} secret is required" >&2
             exit 1
           }
-          if ! docker ps -a --format '{{.Names}}' | grep -qx vecta-nexus; then
-            docker volume create vecta-nexus-data
-            docker run -d \
-              --name vecta-nexus \
-              --restart unless-stopped \
-              -p 127.0.0.1:8081:8081 \
-              -p 127.0.0.1:8082:8082 \
-              -p 127.0.0.1:8083:8083 \
-              -v vecta-nexus-data:/nexus-data \
-              sonatype/nexus3:3.79.1
-          else
-            docker start vecta-nexus >/dev/null
-          fi
-          for _ in $(seq 1 120); do
-            if curl -fsS http://127.0.0.1:8081/service/rest/v1/status \
-              >/dev/null; then
+          nexus_ready=false
+          is_transient_curl_status() {
+            case "$1" in
+              6|7|28|52|55|56) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+          for attempt in 1 2 3; do
+            if ! docker ps -a --format '{{.Names}}' | grep -qx vecta-nexus; then
+              docker volume create vecta-nexus-data >/dev/null
+              docker run -d \
+                --name vecta-nexus \
+                --restart unless-stopped \
+                -p 127.0.0.1:8081:8081 \
+                -p 127.0.0.1:8082:8082 \
+                -p 127.0.0.1:8083:8083 \
+                -v vecta-nexus-data:/nexus-data \
+                sonatype/nexus3:3.79.1 || {
+                  echo "Nexus container bootstrap failed; repair owner=release" >&2
+                  exit 1
+                }
+            else
+              if ! docker start vecta-nexus >/dev/null 2>&1; then
+                docker restart vecta-nexus >/dev/null 2>&1 || {
+                  echo "Nexus container start failed; repair owner=release" >&2
+                  exit 1
+                }
+              fi
+            fi
+            for _ in $(seq 1 120); do
+              if nexus_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+                http://127.0.0.1:8081/service/rest/v1/status)"; then
+                case "$nexus_code" in
+                  200) nexus_ready=true; break ;;
+                  408|425|429|502|503|504) ;;
+                  *)
+                    echo "Nexus status returned deterministic HTTP $nexus_code; repair owner=release" >&2
+                    exit 1
+                    ;;
+                esac
+              else
+                curl_status=$?
+                is_transient_curl_status "$curl_status" || {
+                  echo "Nexus status curl failed with non-transient status $curl_status; repair owner=release" >&2
+                  exit 1
+                }
+              fi
+              sleep 5
+            done
+            if [ "$nexus_ready" = true ]; then
               break
             fi
-            sleep 5
-          done
-          if ! curl -fsS http://127.0.0.1:8081/service/rest/v1/status \
-            >/dev/null; then
-            echo "Nexus did not become ready" >&2
             docker logs --tail 100 vecta-nexus >&2 || true
-            exit 1
-          fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Nexus did not become ready after 3 attempts" >&2
+              exit 1
+            fi
+            echo "Retrying Nexus startup after transient registry failure" >&2
+            docker restart vecta-nexus >/dev/null 2>&1 || {
+              echo "Nexus restart failed; repair owner=release" >&2
+              exit 1
+            }
+          done
           if docker exec vecta-nexus test -s /nexus-data/admin.password; then
             initial_password="$(docker exec vecta-nexus \
               cat /nexus-data/admin.password | tr -d '\r\n')"
@@ -398,7 +623,8 @@ jobs:
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
-      - name: Provision production Nexus repositories
+      - name: Provision production Nexus repositories (explicit build lane)
+        if: inputs.nexus_bootstrap == true
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -536,18 +762,162 @@ jobs:
             docker: { v1Enabled: false, forceBasicAuth: true, httpPort: 8083 },
           });
           NODE
+          is_transient_curl_status() {
+            case "$1" in
+              6|7|28|52|55|56) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+          probe_registry_port() {
+            local port="$1"
+            local code curl_status auth_code
+            if code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              "http://127.0.0.1:$port/v2/")"; then
+              case "$code" in
+                200) return 0 ;;
+                401)
+                  if auth_code="$(curl -sS -u "admin:$NEXUS_ADMIN_PASSWORD" \
+                    -o /dev/null -w '%{http_code}' \
+                    "http://127.0.0.1:$port/v2/")"; then
+                    case "$auth_code" in
+                      200) return 0 ;;
+                      408|425|429|502|503|504) return 2 ;;
+                      *)
+                        echo "authenticated Nexus registry port $port returned deterministic HTTP $auth_code; repair owner=release" >&2
+                        return 1
+                        ;;
+                    esac
+                  else
+                    curl_status=$?
+                    is_transient_curl_status "$curl_status" && return 2
+                    echo "authenticated Nexus registry probe failed with status $curl_status; repair owner=release" >&2
+                    return 1
+                  fi
+                  ;;
+                408|425|429|502|503|504) return 2 ;;
+                *)
+                  echo "Nexus registry port $port returned deterministic HTTP $code; repair owner=release" >&2
+                  return 1
+                  ;;
+              esac
+            else
+              curl_status=$?
+              is_transient_curl_status "$curl_status" && return 2
+              echo "Nexus registry probe failed with status $curl_status; repair owner=release" >&2
+              return 1
+            fi
+          }
           for port in 8082 8083; do
-            for _ in $(seq 1 30); do
-              code="$(curl -sS -o /dev/null -w '%{http_code}' \
-                "http://127.0.0.1:${port}/v2/" || true)"
-              if printf '%s' "$code" | grep -Eq '^(200|401)$'; then
+            registry_ready=false
+            for attempt in 1 2 3; do
+              for _ in $(seq 1 30); do
+                if probe_registry_port "$port"; then
+                  registry_ready=true
+                  break
+                else
+                  probe_status=$?
+                  [ "$probe_status" -eq 2 ] || exit 1
+                fi
+                sleep 2
+              done
+              if [ "$registry_ready" = true ]; then
                 break
               fi
-              sleep 2
+              if [ "$attempt" -eq 3 ]; then
+                echo "Nexus registry port $port did not become ready after 3 attempts" >&2
+                exit 1
+              fi
+              echo "Retrying Nexus registry startup for port $port" >&2
+              docker restart vecta-nexus >/dev/null 2>&1 || {
+                echo "Nexus restart failed for registry port $port; repair owner=release" >&2
+                exit 1
+              }
             done
           done
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
+
+      - name: Verify production Nexus build lane readiness
+        run: |
+          set -euo pipefail
+          for port in 8082 8083; do
+            if code="$(curl -sS -u "admin:$NEXUS_ADMIN_PASSWORD" \
+              -o /dev/null -w '%{http_code}' \
+              "http://127.0.0.1:$port/v2/")"; then
+              [ "$code" = 200 ] || {
+                echo "authenticated Nexus registry port $port returned HTTP $code; repair owner=release" >&2
+                exit 1
+              }
+            else
+              curl_status=$?
+              echo "authenticated Nexus registry probe failed with status $curl_status; repair owner=release" >&2
+              exit 1
+            fi
+          done
+        env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
+
+      - name: Install and verify pinned Ansible collections (opt-in only)
+        if: inputs.deploy == true
+        run: |
+          set -euo pipefail
+          mkdir -p "$ANSIBLE_COLLECTIONS_PATH"
+          uvx --from ansible-core==2.21.3 ansible-galaxy collection install \
+            --requirements-file collections/requirements.yml \
+            --collections-path "$ANSIBLE_COLLECTIONS_PATH" \
+            --force
+          installed_version="$(uvx --from ansible-core==2.21.3 ansible-galaxy collection list \
+            --collections-path "$ANSIBLE_COLLECTIONS_PATH" \
+            | awk '$1 == "community.docker" { print $2; exit }')"
+          test "$installed_version" = '3.10.2' || {
+            echo "community.docker 3.10.2 is required; repair owner=release" >&2
+            exit 1
+          }
+
+      - name: Typecheck selected VectA source
+        working-directory: infra/vecta
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          typecheck_packages="$(node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const contract = JSON.parse(fs.readFileSync('scripts/production-image-contract.json', 'utf8'));
+          const requested = (process.env.PRODUCTION_IMAGE_NAMES || '')
+            .split(',').map(value => value.trim()).filter(Boolean);
+          const known = new Map(contract.images.map(image => [image.name, image]));
+          const imageNames = requested.length > 0 ? requested : [...known.keys()];
+          const requiredPackages = imageNames.map(name => {
+            const image = known.get(name);
+            if (!image) throw new Error('unknown release image: ' + name);
+            const dockerfile = image.dockerfile;
+            if (!/^packages\/[^/]+\/Dockerfile$/.test(dockerfile)) {
+              throw new Error('release image has a non-canonical Dockerfile: ' + name);
+            }
+            const file = path.join(path.dirname(dockerfile), 'package.json');
+            if (!fs.existsSync(file)) throw new Error('release package manifest is missing: ' + file);
+            return JSON.parse(fs.readFileSync(file, 'utf8'));
+          });
+          const missing = requiredPackages
+            .filter(pkg => typeof pkg.name !== 'string'
+              || typeof pkg.scripts?.typecheck !== 'string'
+              || pkg.scripts.typecheck.trim() === '')
+            .map(pkg => typeof pkg.name === 'string' ? pkg.name : '<unnamed package>');
+          if (missing.length > 0) {
+            console.error('required release packages missing scripts.typecheck: ' + missing.join(', '));
+            process.exit(1);
+          }
+          const packages = requiredPackages
+            .map(pkg => pkg.name)
+            .sort();
+          if (packages.length === 0) process.exit(1);
+          process.stdout.write(packages.join('\n'));
+          NODE
+          )"
+          while IFS= read -r package_name; do
+            [ -n "$package_name" ] || continue
+            pnpm --filter "$package_name" run typecheck
+          done <<< "$typecheck_packages"
 
       - name: Validate production image contract
         working-directory: infra/vecta
@@ -653,6 +1023,361 @@ jobs:
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
+      - name: Record and validate immutable digest manifest
+        working-directory: infra/vecta
+        run: |
+          set -euo pipefail
+          : "${RELEASE_MANIFEST_PATH:?RELEASE_MANIFEST_PATH is required}"
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+          history_provenance_file="$RUNNER_TEMP/vecta-history-provenance.json"
+          if [ "$HISTORICAL_MIGRATION" = "true" ]; then
+            python3 ../scripts/vecta_history_migration.py --json . >"$history_provenance_file"
+          else
+            rm -f "$history_provenance_file"
+          fi
+          export HISTORY_PROVENANCE_FILE="$history_provenance_file"
+          docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-digest-config.XXXXXX")"
+          trap 'rm -rf "$docker_config"' EXIT
+          export DOCKER_CONFIG="$docker_config"
+          printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
+            docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
+          command -v skopeo >/dev/null || {
+            echo "skopeo is required to record registry digests; repair owner=release" >&2
+            exit 1
+          }
+          node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const fs = require('node:fs');
+          const contract = JSON.parse(fs.readFileSync('scripts/production-image-contract.json', 'utf8'));
+          const requested = (process.env.PRODUCTION_IMAGE_NAMES || '')
+            .split(',').map(value => value.trim()).filter(Boolean);
+          const names = requested.length > 0
+            ? requested
+            : contract.images.map(image => image.name);
+          const known = new Set(contract.images.map(image => image.name));
+          const unknown = names.filter(name => !known.has(name));
+          if (unknown.length > 0) throw new Error(`unknown image_names: ${unknown.join(',')}`);
+          const registry = process.env.NEXUS_DOCKER_REGISTRY;
+          const sourceSha = process.env.SOURCE_SHA;
+          const historyProvenance = process.env.HISTORICAL_MIGRATION === 'true'
+            ? JSON.parse(fs.readFileSync(process.env.HISTORY_PROVENANCE_FILE, 'utf8'))
+            : undefined;
+          const images = names.map(name => {
+            const sourceRef = `${registry}/${name}:${sourceSha}`;
+            const ociRevision = execFileSync(
+              'skopeo',
+              ['inspect', '--tls-verify=false', '--format', '{{index .Labels "org.opencontainers.image.revision"}}', `docker://${sourceRef}`],
+              { encoding: 'utf8' },
+            ).trim();
+            if (ociRevision !== sourceSha) {
+              throw new Error(`registry OCI revision does not match source SHA for ${name}`);
+            }
+            const digest = execFileSync(
+              'skopeo',
+              ['inspect', '--tls-verify=false', '--format', '{{.Digest}}', `docker://${sourceRef}`],
+              { encoding: 'utf8' },
+            ).trim();
+            if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
+              throw new Error(`registry returned an invalid digest for ${name}`);
+            }
+            return {
+              name,
+              source_ref: sourceRef,
+              digest,
+              oci_revision: ociRevision,
+              deploy_ref: `${registry}/${name}@${digest}`,
+            };
+          });
+          const manifest = {
+            schema_version: 'mypc-release-digest-v1',
+            source_sha: sourceSha,
+            source_branch: process.env.SOURCE_BRANCH,
+            generated_at: new Date().toISOString(),
+            registry,
+            images,
+            deploy_image_refs: Object.fromEntries(
+              images.map(image => [image.name, image.deploy_ref]),
+            ),
+          };
+          if (historyProvenance) manifest.history_provenance = historyProvenance;
+          fs.mkdirSync(require('node:path').dirname(process.env.RELEASE_MANIFEST_PATH), { recursive: true });
+          fs.writeFileSync(
+            process.env.RELEASE_MANIFEST_PATH,
+            `${JSON.stringify(manifest, null, 2)}\n`,
+            { encoding: 'utf8', mode: 0o600 },
+          );
+          console.log(`recorded ${images.length} immutable digests for ${sourceSha}`);
+          NODE
+          python3 ../scripts/validate-mypc-digest-manifest.py "$RELEASE_MANIFEST_PATH"
+        env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
+
+      - name: Require complete immutable deploy service set (opt-in only)
+        if: inputs.deploy == true
+        working-directory: infra/vecta
+        run: python3 ../scripts/validate-mypc-digest-manifest.py \
+          --require-full-deploy-set "$RELEASE_MANIFEST_PATH"
+
+      - name: Publish immutable digest manifest evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: mypc-release-digest-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/mypc-release-digest-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Validate exact Fruit migration image contract (opt-in only)
+        if: inputs.historical_migration == true
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          fruit_digest="$(node - "$RELEASE_MANIFEST_PATH" <<'NODE'
+          const fs = require('node:fs');
+          const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const image = manifest.images.find(entry => entry.name === 'fruit-industry-pack');
+          if (!image || !/^sha256:[0-9a-f]{64}$/.test(image.digest)) process.exit(1);
+          process.stdout.write(image.digest.slice('sha256:'.length));
+          NODE
+          )"
+          fruit_migration_path="$(node - "$RELEASE_MANIFEST_PATH" <<'NODE'
+          const fs = require('node:fs');
+          const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          process.stdout.write(manifest.history_provenance?.loss_constraint?.path || '');
+          NODE
+          )"
+          fruit_migration_sha256="$(node - "$RELEASE_MANIFEST_PATH" <<'NODE'
+          const fs = require('node:fs');
+          const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          process.stdout.write(manifest.history_provenance?.loss_constraint?.sha256 || '');
+          NODE
+          )"
+          fruit_ref="$NEXUS_DOCKER_REGISTRY/fruit-industry-pack@sha256:$fruit_digest"
+          if [ -z "$fruit_migration_path" ] || [ -z "$fruit_migration_sha256" ]; then
+            echo "history manifest is missing canonical Fruit migration provenance; repair owner=release" >&2
+            exit 1
+          fi
+          docker_config="$(mktemp -d "$RUNNER_TEMP/vecta-fruit-provenance.XXXXXX")"
+          trap 'rm -rf "$docker_config"' EXIT
+          export DOCKER_CONFIG="$docker_config"
+          printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
+            docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
+          docker pull "$fruit_ref" >/dev/null
+          FRUIT_V4_IMAGE_REGISTRY="$NEXUS_DOCKER_REGISTRY" \
+            FRUIT_V4_IMAGE_DIGEST="$fruit_digest" \
+            FRUIT_V4_SOURCE_SHA="$SOURCE_SHA" \
+            FRUIT_V4_INFRA_REVISION="$GITHUB_SHA" \
+            FRUIT_V4_MIGRATION_PATH="$fruit_migration_path" \
+            FRUIT_V4_MIGRATION_SHA256="$fruit_migration_sha256" \
+            python3 scripts/validate_fruit_v4_image_provenance.py
+        env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
+
+      - name: Require exact history SQL provenance (opt-in only)
+        if: inputs.historical_migration == true
+        working-directory: infra/vecta
+        run: python3 ../scripts/validate-mypc-digest-manifest.py \
+          --require-history-provenance "$RELEASE_MANIFEST_PATH"
+
+      - name: Require explicit production release switch
+        if: inputs.deploy == true && vars.MYPC_RELEASE_ENABLED != 'true'
+        run: |
+          echo "::error::deploy=true requires repository variable MYPC_RELEASE_ENABLED=true; repair owner=release"
+          exit 1
+
+      - name: Run application contention and backup preflight
+        if: inputs.deploy == true
+        run: |
+          set -euo pipefail
+          printf '%s\n' read-only-application-preflight > "$RELEASE_PHASE_FILE"
+          uvx --from ansible-core==2.21.3 ansible-playbook \
+            -i "$MYPC_INVENTORY_FILE" \
+            playbooks/mypc-release-preflight.yml \
+            --limit mypc \
+            -e "mypc_deploy_enabled=true" \
+            -e "release_source_sha=$SOURCE_SHA"
+          printf '%s\n' read-only-application-preflight-complete > "$RELEASE_PHASE_FILE"
+
+      - name: Acquire one continuous target-host release lease
+        if: inputs.deploy == true
+        run: |
+          set -euo pipefail
+          printf '%s\n' lease-acquire > "$RELEASE_PHASE_FILE"
+          RELEASE_LOCK_OWNER="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+          printf 'RELEASE_LOCK_OWNER=%s\n' "$RELEASE_LOCK_OWNER" >> "$GITHUB_ENV"
+          uvx --from ansible-core==2.21.3 ansible-playbook \
+            -i "$MYPC_INVENTORY_FILE" \
+            playbooks/mypc-release-lease.yml \
+            --limit mypc \
+            -e "mypc_deploy_enabled=true" \
+            -e "release_lock_action=acquire" \
+            -e "release_lock_owner=$RELEASE_LOCK_OWNER" \
+            -e "release_source_sha=$SOURCE_SHA" \
+            -e "release_workflow_run_id=$GITHUB_RUN_ID" \
+            -e "release_continuation_id=$RELEASE_CONTINUATION_ID"
+          printf '%s\n' lease-held > "$RELEASE_PHASE_FILE"
+
+      - name: Run history migration consumer preflight
+        if: inputs.deploy == true && inputs.historical_migration == true
+        run: |
+          set -euo pipefail
+          printf '%s\n' history-migration > "$RELEASE_PHASE_FILE"
+          history_provenance_file="$RUNNER_TEMP/vecta-history-provenance.json"
+          trap 'rm -f "$history_provenance_file"' EXIT
+          test -s "$history_provenance_file" || {
+            echo "shared history provenance artifact is missing; repair owner=release" >&2
+            exit 1
+          }
+          migration_0029_hash="$(python3 - "$history_provenance_file" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1], encoding='utf-8'))['prerequisite_0029']['sha256'])
+          PY
+          )"
+          migration_0030_hash="$(python3 - "$history_provenance_file" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1], encoding='utf-8'))['schema_0030']['sha256'])
+          PY
+          )"
+          loss_migration_hash="$(python3 - "$history_provenance_file" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1], encoding='utf-8'))['loss_constraint']['sha256'])
+          PY
+          )"
+          loss_migration_path_rel="$(python3 - "$history_provenance_file" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1], encoding='utf-8'))['loss_constraint']['path'])
+          PY
+          )"
+          loss_migration_tag="$(python3 - "$history_provenance_file" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1], encoding='utf-8'))['loss_constraint']['tag'])
+          PY
+          )"
+          uvx --from ansible-core==2.21.3 ansible-playbook \
+            -i "$MYPC_INVENTORY_FILE" \
+            playbooks/mypc-history-batch-preflight.yml \
+            --limit mypc \
+            -e "mypc_deploy_enabled=true" \
+            -e "history_migration_enabled=true" \
+            -e "release_source_sha=$SOURCE_SHA" \
+            -e "history_0029_hash=$migration_0029_hash" \
+            -e "history_0030_hash=$migration_0030_hash" \
+            -e "history_loss_hash=$loss_migration_hash" \
+            -e "history_loss_tag=$loss_migration_tag" \
+            -e "history_loss_path=$loss_migration_path_rel" \
+            -e "release_lock_owner=$RELEASE_LOCK_OWNER" \
+            -e "@$history_provenance_file" \
+            -e "@$RELEASE_MANIFEST_PATH"
+          printf '%s\n' history-migration-complete > "$RELEASE_PHASE_FILE"
+
+      - name: Deploy exact immutable image digests
+        if: inputs.deploy == true
+        run: |
+          set -euo pipefail
+          printf '%s\n' application-deploy > "$RELEASE_PHASE_FILE"
+          uvx --from ansible-core==2.21.3 ansible-playbook \
+            -i "$MYPC_INVENTORY_FILE" \
+            playbooks/mypc-release.yml \
+            --limit mypc \
+            -e "mypc_deploy_enabled=true" \
+            -e "release_source_sha=$SOURCE_SHA" \
+            -e "vecta_source_dir=$GITHUB_WORKSPACE/infra/vecta" \
+            -e "release_lock_owner=$RELEASE_LOCK_OWNER" \
+            -e "@$RELEASE_MANIFEST_PATH"
+          printf '%s\n' application-deploy-complete > "$RELEASE_PHASE_FILE"
+        env:
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
+
+      - name: Verify deployed health and application contract
+        if: inputs.deploy == true
+        run: |
+          set -euo pipefail
+          printf '%s\n' health > "$RELEASE_PHASE_FILE"
+          uvx --from ansible-core==2.21.3 ansible-playbook \
+            -i "$MYPC_INVENTORY_FILE" \
+            playbooks/mypc-release-health.yml \
+            --limit mypc \
+            -e "mypc_deploy_enabled=true" \
+            -e "release_source_sha=$SOURCE_SHA" \
+            -e "vecta_source_dir=$GITHUB_WORKSPACE/infra/vecta" \
+            -e "release_lock_owner=$RELEASE_LOCK_OWNER"
+          printf '%s\n' health-complete > "$RELEASE_PHASE_FILE"
+
+      - name: Execute one confirmed history batch serially
+        if: inputs.deploy == true && inputs.execute_batch == true
+        run: |
+          set -euo pipefail
+          printf '%s\n' history-batch > "$RELEASE_PHASE_FILE"
+          uvx --from ansible-core==2.21.3 ansible-playbook \
+            -i "$MYPC_INVENTORY_FILE" \
+            playbooks/mypc-history-batch-execute.yml \
+            --limit mypc \
+            -e "mypc_deploy_enabled=true" \
+            -e "history_execution_approved=true" \
+            -e "history_batch_id=$HISTORY_BATCH_ID" \
+            -e "history_confirmation_ref=$HISTORY_CONFIRMATION_REF" \
+            -e "release_source_sha=$SOURCE_SHA" \
+            -e "release_lock_owner=$RELEASE_LOCK_OWNER"
+          printf '%s\n' history-batch-complete > "$RELEASE_PHASE_FILE"
+        env:
+          HISTORY_BATCH_TOKEN: ${{ secrets.HISTORY_BATCH_TOKEN }}
+          HISTORY_BATCH_ID: ${{ inputs.history_batch_id }}
+          HISTORY_CONFIRMATION_REF: ${{ inputs.history_confirmation_ref }}
+
+      - name: Run optional Hero real-user E2E
+        if: inputs.deploy == true && inputs.hero_e2e == true
+        working-directory: infra/vecta
+        run: |
+          set -euo pipefail
+          printf '%s\n' hero-e2e > "$RELEASE_PHASE_FILE"
+          node scripts/e2e/production-web-flow.mjs
+          printf '%s\n' hero-e2e-complete > "$RELEASE_PHASE_FILE"
+        env:
+          VECTA_E2E_CONFIRM_PROD: "1"
+          VECTA_E2E_HEADLESS: "1"
+          VECTA_E2E_EMAIL: ${{ secrets.VECTA_E2E_EMAIL }}
+          VECTA_E2E_PASSWORD: ${{ secrets.VECTA_E2E_PASSWORD }}
+
+      - name: Run optional business Oracle
+        if: inputs.deploy == true && inputs.oracle == true
+        working-directory: infra/vecta
+        run: |
+          set -euo pipefail
+          printf '%s\n' oracle > "$RELEASE_PHASE_FILE"
+          node scripts/fruit-production-query-soak.mjs
+          printf '%s\n' oracle-complete > "$RELEASE_PHASE_FILE"
+        env:
+          FRUIT_SOAK_CANARY_ORGANIZATION: ${{ inputs.oracle_organization }}
+          FRUIT_SOAK_CANARY_EMPLOYEE: ${{ inputs.oracle_employee }}
+          FRUIT_SOAK_CASE_IDS: ${{ inputs.oracle_case_ids }}
+          FRUIT_SOAK_CONCURRENCY: "1"
+          FRUIT_SOAK_OUTPUT_DIR: ${{ runner.temp }}/fruit-production-query-soak
+
+      - name: Publish business Oracle evidence
+        if: inputs.deploy == true && inputs.oracle == true && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mypc-release-oracle-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/fruit-production-query-soak
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Release the target-host lease after terminal success
+        if: success() && inputs.deploy == true
+        run: |
+          set -euo pipefail
+          printf '%s\n' terminal-release > "$RELEASE_PHASE_FILE"
+          uvx --from ansible-core==2.21.3 ansible-playbook \
+            -i "$MYPC_INVENTORY_FILE" \
+            playbooks/mypc-release-lease.yml \
+            --limit mypc \
+            -e "mypc_deploy_enabled=true" \
+            -e "release_lock_action=release" \
+            -e "release_lock_owner=$RELEASE_LOCK_OWNER" \
+            -e "release_source_sha=$SOURCE_SHA" \
+            -e "release_workflow_run_id=$GITHUB_RUN_ID" \
+            -e "release_continuation_id=$RELEASE_CONTINUATION_ID"
+          printf '%s\n' terminal-success > "$RELEASE_PHASE_FILE"
+
       - name: Prune mypc Docker build cache
         if: always() && inputs.docker_cache_prune_until != 'never'
         run: |
@@ -664,3 +1389,40 @@ jobs:
           fi
           docker builder prune --force \
             --filter "until=${DOCKER_CACHE_PRUNE_UNTIL}"
+
+      - name: Emit fail-closed repair and rollback handoff
+        if: failure()
+        run: |
+          set -euo pipefail
+          phase="$(cat "$RELEASE_PHASE_FILE" 2>/dev/null || printf unknown)"
+          continuation="${RELEASE_CONTINUATION_ID:-unknown}"
+          case "$phase" in
+            initializing|read-only-application-preflight|read-only-application-preflight-complete)
+              echo "::error::release failed before target-host lease acquisition at phase=$phase; no lease or writer state is asserted; repair owner=release"
+              ;;
+            lease-acquire)
+              echo "::error::lease acquisition outcome is unknown at phase=$phase; inspect the protected continuation reference=$continuation before any recovery; repair owner=release"
+              ;;
+            lease-held|history-migration|history-migration-complete|application-deploy|application-deploy-complete|health|health-complete|history-batch|history-batch-complete|hero-e2e|hero-e2e-complete|oracle|oracle-complete|terminal-release)
+              echo "::error::release failed after lease acquisition at phase=$phase; inspect the protected continuation reference=$continuation and target writer state; repair owner=release"
+              ;;
+            terminal-success)
+              echo "::error::release lease and target-host stateful work completed before this post-release failure at phase=$phase; the lease is not asserted; repair owner=release and inspect cleanup evidence"
+              ;;
+            *)
+              echo "::error::release failed at unverified phase=$phase; inspect the protected continuation reference=$continuation and target state; do not assume lease or writer status; repair owner=release"
+              ;;
+          esac
+          if [ "$phase" != terminal-success ]; then
+            echo "::error::use playbooks/mypc-release-rollback.yml with the prior full source SHA, validated protected manifest, and -e release_continuation_id=$continuation; do not use standalone SQL"
+            echo "::error::history rollback additionally requires history_rollback_enabled=true and history_rollback_approved=true; the rollback playbook verifies or accepts already-quiesced writers"
+          fi
+          if [ "$HISTORICAL_MIGRATION" = "true" ]; then
+            echo "::error::history migration failure is deterministic unless classified transient; inspect the continuation and do not bypass the rollback playbook"
+          fi
+          if [ "$EXECUTE_BATCH" = "true" ]; then
+            echo "::error::history batch may require a new confirmed compensation batch; never delete or rewrite append-only ledger facts"
+          fi
+        env:
+          EXECUTE_BATCH: ${{ inputs.execute_batch }}
+          HISTORICAL_MIGRATION: ${{ inputs.historical_migration }}

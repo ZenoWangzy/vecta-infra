@@ -1,0 +1,67 @@
+# The only production application deployment play. Every image is an exact
+# digest from the workflow manifest; stateful database adoption is separate.
+- name: Release exact VectA images to mypc
+  hosts: mypc
+  gather_facts: false
+  become: true
+  become_user: root
+  become_method: sudo
+  become_flags: '-n'
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - ../inventories/mypc/group_vars/mypc.yml
+  vars:
+    vecta_app_release_mode: true
+    vecta_app_enabled_services:
+      - a2a-router
+      - directory-service
+      - admin-console
+      - fleet-gateway
+      - rag-service
+      - channel-gateway
+      - wechat-contact-sync
+  pre_tasks:
+    - name: Reject Ansible check mode for application deployment
+      ansible.builtin.fail:
+        msg: >-
+          Stateful application deployment is fail-closed in --check mode. Use
+          only --syntax-check or --list-tasks for static inspection.
+      when: ansible_check_mode
+
+    - name: Require the explicit release boundary
+      ansible.builtin.assert:
+        that:
+          - mypc_deploy_enabled | default(false) | bool
+          - vecta_app_release_mode | bool
+          - release_lock_owner is string
+          - release_lock_owner is match('^[A-Za-z0-9._:-]{8,128}$')
+          - release_source_sha is match('^[0-9a-f]{40}$')
+          - deploy_image_refs is mapping
+        fail_msg: >-
+          Release deployment requires the explicit mypc switch, a full source
+          SHA, and a validated immutable digest manifest.
+
+    - name: Require every managed service to use an exact digest
+      ansible.builtin.assert:
+        that:
+          - item in deploy_image_refs
+          - deploy_image_refs[item] is match('^127\\.0\\.0\\.1:8082/[^@\\s]+@sha256:[0-9a-f]{64}$')
+        fail_msg: "Missing exact digest for managed service {{ item }}."
+      loop: "{{ vecta_app_enabled_services }}"
+
+  tasks:
+    - name: Verify the continuous target-host release lease
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../scripts/mypc-release-lock.sh verify
+          {{ vecta_release_lock_path }}
+          {{ vecta_release_lock_state_path }}
+          {{ release_lock_owner }}
+      changed_when: false
+      no_log: true
+
+    - name: Deploy the exact application manifest under the continuous lease
+      ansible.builtin.include_role:
+        name: vecta-app
+      tags: [vecta-app, release]

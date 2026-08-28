@@ -1,0 +1,48 @@
+# Post-deploy health is an independent evidence step. Reuse VectA's existing
+# production helper; it does not authorize a deployment by itself.
+- name: Verify mypc release health
+  hosts: mypc
+  gather_facts: false
+  become: true
+  become_user: root
+  become_method: sudo
+  become_flags: '-n'
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - ../inventories/mypc/group_vars/mypc.yml
+  pre_tasks:
+    - name: Require the explicit release health boundary
+      ansible.builtin.assert:
+        that:
+          - mypc_deploy_enabled | default(false) | bool
+          - release_lock_owner is string
+          - release_lock_owner is match('^[A-Za-z0-9._:-]{8,128}$')
+          - release_source_sha is match('^[0-9a-f]{40}$')
+          - vecta_source_dir is string
+          - vecta_source_dir | length > 0
+        fail_msg: "Release health requires the exact source and VectA checkout path."
+
+  tasks:
+    - name: Verify the continuous target-host release lease before health
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../scripts/mypc-release-lock.sh verify
+          {{ vecta_release_lock_path }}
+          {{ vecta_release_lock_state_path }}
+          {{ release_lock_owner }}
+      changed_when: false
+      no_log: true
+
+    - name: Run the existing post-deploy health helper under the same lease
+      ansible.builtin.script:
+        cmd: "{{ vecta_source_dir }}/scripts/post-deploy-smoke.sh"
+      environment:
+        FLEET_BASE: http://127.0.0.1:3000
+        RAG_BASE: http://127.0.0.1:8000
+        OPENWEBUI_BASE: http://127.0.0.1:3002
+        INTERNAL_BASE: http://127.0.0.1
+        SMOKE_CHANNEL_REQUIRED: true
+        SMOKE_FRUIT_REQUIRED: false
+      changed_when: false
+      check_mode: false

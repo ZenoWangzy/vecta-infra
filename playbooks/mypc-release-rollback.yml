@@ -1,0 +1,549 @@
+---
+# Operator-gated rollback. The caller must supply a prior exact-digest
+# manifest captured before the failed release; this play never invents a tag.
+- name: Roll back mypc to a prior exact VectA image manifest
+  hosts: mypc
+  gather_facts: false
+  become: true
+  become_user: root
+  become_method: sudo
+  become_flags: '-n'
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - ../inventories/mypc/group_vars/mypc.yml
+  vars:
+    vecta_app_release_mode: true
+    rollback_manifest_root: /data/ocee/backups/release-manifests
+    rollback_manifest_selector_sha: ''
+    rollback_manifest_path: "{{ rollback_manifest_root }}/{{ rollback_manifest_selector_sha }}.json"
+    release_continuation_root: '{{ vecta_release_continuation_root }}'
+    release_continuation_id: ''
+    release_continuation_path: '{{ release_continuation_root }}/{{ release_continuation_id }}.env'
+    rollback_manifest_verified: false
+    rollback_manifest_schema_version: ''
+    rollback_manifest_source_sha: ''
+    rollback_manifest_registry: ''
+    rollback_manifest_fruit_ref: ''
+    rollback_manifest_sql_path: ''
+    rollback_manifest_sql_sha256: ''
+    vecta_app_enabled_services:
+      - a2a-router
+      - directory-service
+      - admin-console
+      - fleet-gateway
+      - rag-service
+      - channel-gateway
+      - wechat-contact-sync
+  pre_tasks:
+    - name: Reject Ansible check mode for stateful rollback
+      ansible.builtin.fail:
+        msg: >-
+          Stateful rollback is fail-closed in --check mode. Use only
+          --syntax-check or --list-tasks for static inspection.
+      when: ansible_check_mode
+
+    - name: Require a canonical continuation reference when supplied
+      ansible.builtin.assert:
+        that:
+          - release_continuation_id is string
+          - release_continuation_id is match('^[0-9]+-[0-9a-f]{40}$')
+          - release_continuation_root == '/data/ocee/backups/release-continuations'
+          - release_continuation_path == release_continuation_root ~ '/' ~ release_continuation_id ~ '.env'
+        fail_msg: >-
+          Rollback continuation must be the protected workflow/source
+          reference emitted by the failed release.
+
+    - name: Load the protected release owner for continuation
+      ansible.builtin.shell: |
+        set -Eeuo pipefail
+        record='{{ release_continuation_path }}'
+        record_id='{{ release_continuation_id }}'
+        state_path='{{ vecta_release_lock_state_path }}'
+        test -f "$record"
+        test -s "$state_path"
+        workflow_run_id="$(awk -F= '$1 == "workflow_run_id" { print $2; exit }' "$record")"
+        source_sha="$(awk -F= '$1 == "source_sha" { print $2; exit }' "$record")"
+        owner_token="$(awk -F= '$1 == "owner_token" { print $2; exit }' "$record")"
+        holder_pid="$(awk -F= '$1 == "holder_pid" { print $2; exit }' "$record")"
+        holder_start="$(awk -F= '$1 == "holder_start" { print $2; exit }' "$record")"
+        state_owner="$(awk -F= '$1 == "owner_token" { print $2; exit }' "$state_path")"
+        state_holder_pid="$(awk -F= '$1 == "holder_pid" { print $2; exit }' "$state_path")"
+        state_holder_start="$(awk -F= '$1 == "holder_start" { print $2; exit }' "$state_path")"
+        [[ "$workflow_run_id" =~ ^[0-9]+$ ]]
+        [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+        [[ "$owner_token" =~ ^[A-Za-z0-9._:-]{8,128}$ ]]
+        [[ "$holder_pid" =~ ^[1-9][0-9]*$ ]]
+        [[ "$holder_start" =~ ^[0-9]+$ ]]
+        [ "$workflow_run_id-$source_sha" = "$record_id" ]
+        [ "$state_owner" = "$owner_token" ]
+        [ "$state_holder_pid" = "$holder_pid" ]
+        [ "$state_holder_start" = "$holder_start" ]
+        printf '%s' "$owner_token"
+      register: continuation_release_lock_owner
+      changed_when: false
+      no_log: true
+      when:
+        - release_continuation_id | default('') | length > 0
+
+    - name: Require any supplied owner to match the protected continuation
+      ansible.builtin.assert:
+        that:
+          - release_lock_owner | default('') | length == 0 or release_lock_owner == continuation_release_lock_owner.stdout | trim
+        fail_msg: >-
+          The supplied owner token does not match the protected continuation
+          record; raw owner tokens cannot bypass its workflow/source binding.
+      no_log: true
+      when: release_continuation_id | default('') | length > 0
+
+    - name: Bind the protected release owner for continuation
+      ansible.builtin.set_fact:
+        release_lock_owner: '{{ continuation_release_lock_owner.stdout | trim }}'
+      no_log: true
+      when:
+        - release_continuation_id | default('') | length > 0
+        - release_lock_owner | default('') | length == 0
+
+    - name: Require the continuous target-host release lease
+      ansible.builtin.assert:
+        that:
+          - release_lock_owner is string
+          - release_lock_owner is match('^[A-Za-z0-9._:-]{8,128}$')
+        fail_msg: >-
+          Rollback must receive the existing target-host release lease owner;
+          do not create a lock gap around the rollback surface.
+      when: not (history_rollback_enabled | default(false) | bool)
+
+    - name: Require an immutable rollback manifest selector
+      ansible.builtin.assert:
+        that:
+          - mypc_deploy_enabled | default(false) | bool
+          - rollback_manifest_selector_sha is match('^[0-9a-f]{40}$')
+          - rollback_manifest_root == '/data/ocee/backups/release-manifests'
+          - rollback_manifest_path == rollback_manifest_root ~ '/' ~ rollback_manifest_selector_sha ~ '.json'
+        fail_msg: >-
+          Application rollback accepts only a full prior source SHA; its
+          manifest path is derived from the protected artifact root.
+      when: not (history_rollback_enabled | default(false) | bool)
+
+    - name: Resolve the protected rollback manifest path
+      ansible.builtin.command:
+        argv:
+          - realpath
+          - -e
+          - '{{ rollback_manifest_path }}'
+      delegate_to: localhost
+      become: false
+      register: rollback_manifest_realpath
+      changed_when: false
+      no_log: true
+      when: not (history_rollback_enabled | default(false) | bool)
+
+    - name: Require rollback manifest realpath containment
+      ansible.builtin.assert:
+        that:
+          - rollback_manifest_realpath.stdout == rollback_manifest_path
+        fail_msg: "Rollback manifest must resolve to its protected SHA-derived path."
+      when: not (history_rollback_enabled | default(false) | bool)
+
+    - name: Validate the prior exact-digest rollback manifest
+      ansible.builtin.command:
+        argv:
+          - python3
+          - '{{ playbook_dir }}/../scripts/validate-mypc-digest-manifest.py'
+          - '{{ rollback_manifest_realpath.stdout }}'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      no_log: true
+      when: not (history_rollback_enabled | default(false) | bool)
+
+    - name: Load the prior exact-digest rollback manifest after validation
+      ansible.builtin.include_vars:
+        file: '{{ rollback_manifest_realpath.stdout }}'
+        name: prior_release_manifest
+      when: not (history_rollback_enabled | default(false) | bool)
+
+    - name: Bind application rollback inputs to the validated manifest
+      ansible.builtin.set_fact:
+        rollback_manifest_verified: true
+        rollback_manifest_schema_version: '{{ prior_release_manifest.schema_version }}'
+        rollback_manifest_source_sha: '{{ prior_release_manifest.source_sha }}'
+        rollback_manifest_registry: '{{ prior_release_manifest.registry }}'
+        rollback_manifest_fruit_ref: "{{ prior_release_manifest.deploy_image_refs.get('fruit-industry-pack', '') }}"
+        rollback_manifest_sql_path: "{{ prior_release_manifest.get('history_provenance', {}).get('loss_rollback', {}).get('path', '') }}"
+        rollback_manifest_sql_sha256: "{{ prior_release_manifest.get('history_provenance', {}).get('loss_rollback', {}).get('sha256', '') }}"
+        rollback_source_sha: '{{ prior_release_manifest.source_sha }}'
+        rollback_image_refs: '{{ prior_release_manifest.deploy_image_refs }}'
+      no_log: true
+      when: not (history_rollback_enabled | default(false) | bool)
+
+    - name: Require the validated application rollback manifest
+      ansible.builtin.assert:
+        that:
+          - mypc_deploy_enabled | default(false) | bool
+          - vecta_app_release_mode | bool
+          - rollback_manifest_verified | default(false) | bool
+          - rollback_manifest_schema_version == 'mypc-release-digest-v1'
+          - rollback_source_sha is match('^[0-9a-f]{40}$')
+          - rollback_manifest_source_sha == rollback_manifest_selector_sha
+          - rollback_manifest_source_sha == rollback_source_sha
+          - rollback_manifest_registry == '127.0.0.1:8082'
+          - rollback_image_refs is mapping
+        fail_msg: >-
+          Rollback requires the previous full source SHA and its exact digest
+          manifest; no mutable tag or implicit fallback is accepted.
+      when: not (history_rollback_enabled | default(false) | bool)
+
+    - name: Rebind the role to the prior exact digest references
+      ansible.builtin.set_fact:
+        release_source_sha: '{{ rollback_source_sha }}'
+        deploy_image_refs: '{{ rollback_image_refs }}'
+      when: not (history_rollback_enabled | default(false) | bool)
+
+    - name: Require every rollback service to use an exact digest
+      ansible.builtin.assert:
+        that:
+          - item in deploy_image_refs
+          - deploy_image_refs[item] is match('^127\\.0\\.0\\.1:8082/[^@\\s]+@sha256:[0-9a-f]{64}$')
+        fail_msg: 'Rollback manifest has no exact digest for {{ item }}.'
+      loop: '{{ vecta_app_enabled_services }}'
+      when: not (history_rollback_enabled | default(false) | bool)
+
+  tasks:
+    - name: Verify the continuous target-host release lease before rollback
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../scripts/mypc-release-lock.sh verify
+          {{ vecta_release_lock_path }}
+          {{ vecta_release_lock_state_path }}
+          {{ release_lock_owner }}
+      changed_when: false
+      no_log: true
+
+    - name: Roll back application images under the continuous lease
+      ansible.builtin.include_role:
+        name: vecta-app
+      tags: [vecta-app, rollback]
+      when: not (history_rollback_enabled | default(false) | bool)
+
+# The same operator rollback entry point can roll back the optional history
+# schema, but only as a separate, writer-quiesced transaction.
+- name: Roll back the controlled history schema
+  hosts: mypc
+  gather_facts: false
+  become: true
+  become_user: root
+  become_method: sudo
+  become_flags: '-n'
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - ../inventories/mypc/group_vars/mypc.yml
+  vars:
+    rollback_manifest_root: /data/ocee/backups/release-manifests
+    rollback_manifest_selector_sha: ''
+    rollback_manifest_path: "{{ rollback_manifest_root }}/{{ rollback_manifest_selector_sha }}.json"
+    history_rollback_sql_path: ''
+    history_rollback_sql_sha256: ''
+    rollback_manifest_verified: false
+    rollback_manifest_schema_version: ''
+    rollback_manifest_source_sha: ''
+    rollback_manifest_registry: ''
+    rollback_manifest_fruit_ref: ''
+    rollback_manifest_sql_path: ''
+    rollback_manifest_sql_sha256: ''
+  pre_tasks:
+    - name: Reject Ansible check mode for history schema rollback
+      ansible.builtin.fail:
+        msg: >-
+          Stateful history rollback is fail-closed in --check mode. Use only
+          --syntax-check or --list-tasks for static inspection.
+      when:
+        - ansible_check_mode
+        - history_rollback_enabled | default(false) | bool
+
+    - name: Require the continuous target-host release lease for history rollback
+      ansible.builtin.assert:
+        that:
+          - release_lock_owner is string
+          - release_lock_owner is match('^[A-Za-z0-9._:-]{8,128}$')
+        fail_msg: >-
+          History rollback must receive the existing target-host release lease;
+          recovery must remain operator-gated and writer-quiesced.
+      when: history_rollback_enabled | default(false) | bool
+
+    - name: Require the canonical history writer set
+      ansible.builtin.assert:
+        that:
+          - history_writer_containers is sequence
+          - history_writer_containers | length > 0
+          - history_writer_containers | select('match', '^[a-z0-9][a-z0-9_.-]+$') | list | length == history_writer_containers | length
+        fail_msg: "The protected history writer set must be a non-empty canonical container list."
+      when: history_rollback_enabled | default(false) | bool
+
+    - name: Require an immutable history rollback manifest selector
+      ansible.builtin.assert:
+        that:
+          - history_rollback_enabled | default(false) | bool
+          - rollback_manifest_selector_sha is match('^[0-9a-f]{40}$')
+          - rollback_manifest_root == '/data/ocee/backups/release-manifests'
+          - rollback_manifest_path == rollback_manifest_root ~ '/' ~ rollback_manifest_selector_sha ~ '.json'
+        fail_msg: >-
+          History rollback accepts only a full prior source SHA; its manifest
+          path is derived from the protected artifact root.
+      when: history_rollback_enabled | default(false) | bool
+
+    - name: Resolve the protected history rollback manifest path
+      ansible.builtin.command:
+        argv:
+          - realpath
+          - -e
+          - '{{ rollback_manifest_path }}'
+      delegate_to: localhost
+      become: false
+      register: rollback_manifest_realpath
+      changed_when: false
+      no_log: true
+      when: history_rollback_enabled | default(false) | bool
+
+    - name: Require history rollback manifest realpath containment
+      ansible.builtin.assert:
+        that:
+          - rollback_manifest_realpath.stdout == rollback_manifest_path
+        fail_msg: "History rollback manifest must resolve to its protected SHA-derived path."
+      when: history_rollback_enabled | default(false) | bool
+
+    - name: Validate the prior history rollback manifest
+      ansible.builtin.command:
+        argv:
+          - python3
+          - '{{ playbook_dir }}/../scripts/validate-mypc-digest-manifest.py'
+          - --require-history-provenance
+          - '{{ rollback_manifest_realpath.stdout }}'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      no_log: true
+      when: history_rollback_enabled | default(false) | bool
+
+    - name: Load the prior history rollback manifest after validation
+      ansible.builtin.include_vars:
+        file: '{{ rollback_manifest_realpath.stdout }}'
+        name: prior_history_manifest
+      when: history_rollback_enabled | default(false) | bool
+
+    - name: Bind history rollback inputs to the validated manifest
+      ansible.builtin.set_fact:
+        rollback_manifest_verified: true
+        rollback_manifest_schema_version: '{{ prior_history_manifest.schema_version }}'
+        rollback_manifest_source_sha: '{{ prior_history_manifest.source_sha }}'
+        rollback_manifest_registry: '{{ prior_history_manifest.registry }}'
+        rollback_manifest_fruit_ref: "{{ prior_history_manifest.deploy_image_refs.get('fruit-industry-pack', '') }}"
+        rollback_manifest_sql_path: '{{ prior_history_manifest.history_provenance.loss_rollback.path }}'
+        rollback_manifest_sql_sha256: '{{ prior_history_manifest.history_provenance.loss_rollback.sha256 }}'
+        rollback_source_sha: '{{ prior_history_manifest.source_sha }}'
+        rollback_image_refs: '{{ prior_history_manifest.deploy_image_refs }}'
+        history_rollback_sql_path: '{{ prior_history_manifest.history_provenance.loss_rollback.path }}'
+        history_rollback_sql_sha256: '{{ prior_history_manifest.history_provenance.loss_rollback.sha256 }}'
+      no_log: true
+      when: history_rollback_enabled | default(false) | bool
+
+    - name: Require an exact, explicit history rollback boundary
+      ansible.builtin.assert:
+        that:
+          - history_rollback_enabled | default(false) | bool
+          - history_rollback_approved | default(false) | bool
+          - mypc_deploy_enabled | default(false) | bool
+          - rollback_source_sha is match('^[0-9a-f]{40}$')
+          - rollback_image_refs is mapping
+          - rollback_image_refs.get('fruit-industry-pack', '') is match('^127\\.0\\.0\\.1:8082/[^@\\s]+@sha256:[0-9a-f]{64}$')
+          - rollback_manifest_verified | default(false) | bool
+          - rollback_manifest_schema_version == 'mypc-release-digest-v1'
+          - rollback_manifest_source_sha == rollback_source_sha
+          - rollback_manifest_source_sha == rollback_manifest_selector_sha
+          - rollback_manifest_registry == '127.0.0.1:8082'
+          - rollback_manifest_fruit_ref == rollback_image_refs.get('fruit-industry-pack')
+          - history_rollback_sql_path == rollback_manifest_sql_path
+          - history_rollback_sql_path is match('^packages/fruit-industry-pack/migrations/rollback/[0-9]{4}_[a-z0-9_]+\\.sql$')
+          - history_rollback_sql_sha256 is match('^[0-9a-f]{64}$')
+          - rollback_manifest_sql_sha256 == history_rollback_sql_sha256
+        fail_msg: >-
+          History rollback requires explicit operator approval, the production
+          switch, the prior full source SHA, its exact Fruit digest, and the
+          canonical rollback SQL path and its manifest SHA-256; no mutable
+          fallback is allowed.
+      no_log: true
+      when: history_rollback_enabled | default(false) | bool
+
+  tasks:
+    - name: Verify the continuous target-host release lease before schema rollback
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../scripts/mypc-release-lock.sh verify
+          {{ vecta_release_lock_path }}
+          {{ vecta_release_lock_state_path }}
+          {{ release_lock_owner }}
+      changed_when: false
+      no_log: true
+      when: history_rollback_enabled | default(false) | bool
+
+    - name: Run the locked writer-quiesced schema rollback
+      ansible.builtin.shell: |
+        set -Eeuo pipefail
+        # The shared lease remains held from deploy through health and rollback.
+        set -a
+        . /data/ocee/.env
+        set +a
+        : "${POSTGRES_USER:?POSTGRES_USER is required}"
+        : "${POSTGRES_DB:?POSTGRES_DB is required}"
+        : "${FRUIT_V4_MIGRATION_DATABASE_URL:?FRUIT_V4_MIGRATION_DATABASE_URL is required}"
+        writers_json='{{ history_writer_containers | to_json }}'
+        mapfile -t writers < <(printf '%s' "$writers_json" | python3 -c "import json,sys; print(*json.load(sys.stdin), sep='\\n')")
+        rollback_succeeded=false
+        quiesce_started=false
+        restart_failed=false
+        stop_writers() {
+          local failed=false state paused
+          for writer in "${writers[@]}"; do
+            state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer" 2>/dev/null || printf unknown)"
+            paused="$(docker inspect --format '{{ "{{.State.Paused}}" }}' "$writer" 2>/dev/null || printf unknown)"
+            if [ "$state" = true ] && [ "$paused" = false ]; then
+              docker stop --time 30 "$writer" >/dev/null || failed=true
+              state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer" 2>/dev/null || printf unknown)"
+              paused="$(docker inspect --format '{{ "{{.State.Paused}}" }}' "$writer" 2>/dev/null || printf unknown)"
+              [ "$state" = false ] && [ "$paused" = false ] || failed=true
+            elif [ "$state" = false ] && [ "$paused" = false ]; then
+              :
+            else
+              failed=true
+            fi
+          done
+          [ "$failed" = false ]
+        }
+        start_writers() {
+          local failed=false state paused
+          for writer in "${writers[@]}"; do
+            docker start "$writer" >/dev/null || failed=true
+            state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer" 2>/dev/null || printf unknown)"
+            paused="$(docker inspect --format '{{ "{{.State.Paused}}" }}' "$writer" 2>/dev/null || printf unknown)"
+            if [ "$state" != true ] || [ "$paused" != false ]; then
+              failed=true
+            fi
+          done
+          [ "$failed" = false ]
+        }
+        rollback_file="$(mktemp /tmp/vecta-history-rollback.XXXXXX.sql)"
+        postgres_rollback_file=/tmp/vecta-history-rollback.sql
+        cleanup() {
+          status=$?
+          set +e
+          if [ "$rollback_succeeded" = true ]; then
+            start_writers || restart_failed=true
+            if [ "$restart_failed" = true ]; then
+              echo "writer restart failed; writers were forced back to stopped state" >&2
+              for writer in "${writers[@]}"; do
+                docker stop --time 30 "$writer" >/dev/null 2>&1 || true
+              done
+              status=1
+            fi
+          else
+            echo "history rollback failed; writers remain stopped for repair" >&2
+            if [ "$quiesce_started" = true ]; then
+              if ! stop_writers; then
+                echo "writer stop could not be proven; manual repair must keep the release blocked" >&2
+                status=1
+              fi
+            fi
+          fi
+          docker exec openclaw-postgres rm -f "$postgres_rollback_file" >/dev/null 2>&1 || true
+          rm -f "$rollback_file"
+          exit "$status"
+        }
+        trap cleanup EXIT
+
+        writer_mode=''
+        for writer in "${writers[@]}"; do
+          state="$(docker inspect --format '{{ "{{.State.Running}}" }}' "$writer")"
+          paused="$(docker inspect --format '{{ "{{.State.Paused}}" }}' "$writer")"
+          if [ "$state" = true ] && [ "$paused" = false ]; then
+            [ -z "$writer_mode" ] || [ "$writer_mode" = running ] || {
+              echo "history writers have mixed running/stopped states; refusing rollback" >&2
+              exit 1
+            }
+            writer_mode=running
+          elif [ "$state" = false ] && [ "$paused" = false ]; then
+            [ -z "$writer_mode" ] || [ "$writer_mode" = stopped ] || {
+              echo "history writers have mixed running/stopped states; refusing rollback" >&2
+              exit 1
+            }
+            writer_mode=stopped
+          else
+            echo "history writer state is unknown or paused; refusing rollback" >&2
+            exit 1
+          fi
+        done
+        quiesce_started=true
+        case "$writer_mode" in
+          running)
+            stop_writers || exit 1
+            ;;
+          stopped)
+            echo "history writers are already quiesced; continuing rollback" >&2
+            ;;
+          *)
+            echo "history writer set is empty or invalid; refusing rollback" >&2
+            exit 1
+            ;;
+        esac
+
+        fruit_image='{{ rollback_image_refs['fruit-industry-pack'] }}'
+        docker pull "$fruit_image" >/dev/null
+        repo_digests="$(docker image inspect --format '{{ "{{range .RepoDigests}}{{println .}}{{end}}" }}' "$fruit_image")"
+        printf '%s\n' "$repo_digests" | grep -Fx "$fruit_image" >/dev/null || {
+          echo "prior Fruit image RepoDigest does not match the verified manifest" >&2
+          exit 1
+        }
+        [ "$(docker image inspect --format '{{ "{{index .Config.Labels \"org.opencontainers.image.source\"}}" }}' "$fruit_image")" = 'https://github.com/ZenoWangzy/vecta' ] || {
+          echo "prior Fruit image OCI source does not match VectA" >&2
+          exit 1
+        }
+        [ "$(docker image inspect --format '{{ "{{index .Config.Labels \"org.opencontainers.image.revision\"}}" }}' "$fruit_image")" = '{{ rollback_source_sha }}' ] || {
+          echo "prior Fruit image OCI revision does not match the manifest source SHA" >&2
+          exit 1
+        }
+
+        docker run --rm --entrypoint cat \
+          "$fruit_image" \
+          '{{ history_rollback_sql_path }}' > "$rollback_file"
+        test -s "$rollback_file"
+        rollback_sql_sha256="$(sha256sum "$rollback_file" | awk '{print $1}')"
+        [ "$rollback_sql_sha256" = '{{ history_rollback_sql_sha256 }}' ] || {
+          echo "rollback SQL does not match the verified prior manifest" >&2
+          exit 1
+        }
+        docker cp "$rollback_file" "openclaw-postgres:$postgres_rollback_file" >/dev/null
+        docker exec openclaw-postgres psql -X -v ON_ERROR_STOP=1 \
+          -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+          -f /tmp/vecta-history-rollback.sql
+
+        rollback_check="$(docker exec openclaw-postgres psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+          -qAt -v ON_ERROR_STOP=1 -c "
+          SELECT position('''loss''' in pg_get_constraintdef(con.oid)) = 0
+             AND to_regclass('fruit.v4_historical_import_batches') IS NULL
+          FROM pg_constraint con
+          JOIN pg_class c ON c.oid = con.conrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'fruit'
+            AND c.relname = 'v4_documents'
+            AND con.conname = 'v4_documents_type_chk';")"
+        [ "$rollback_check" = true ] || {
+          echo "history rollback schema verification failed" >&2
+          exit 1
+        }
+        rollback_succeeded=true
+      args:
+        executable: /bin/bash
+      changed_when: true
+      no_log: true
+      when: history_rollback_enabled | default(false) | bool

@@ -26,10 +26,12 @@ digest-only image reference and contain no `build`, floating tag, host
 
 `FRUIT_V4_SOURCE_SHA` is the full VectA `main` SHA represented by the image.
 `FRUIT_V4_INFRA_REVISION` is the independent full `vecta-infra` deployment
-contract revision. Both registry-only and full provenance validation require it
-to be a 40-character lowercase SHA equal to `git rev-parse HEAD` in the current
-checkout. Validation also fails when any tracked or untracked file belonging to
-this contract is dirty.
+contract revision. Both non-history UAT input validation and full provenance
+validation require it to be a 40-character lowercase SHA equal to `git rev-parse
+HEAD` in the current checkout. Validation also fails when any tracked or
+untracked file belonging to this contract is dirty. `--registry-only` is a
+non-history UAT pre-pull check only; the production history release path must
+use full exact-image and migration-SQL provenance.
 
 Compose service labels beginning with
 `com.vecta.expected.image.source.*` record operator expectations only. They
@@ -167,7 +169,7 @@ workflow engine.
 
 Run every command below from the exact approved `vecta-infra` checkout, with
 `FRUIT_V4_INFRA_REVISION` set to that checkout's `git rev-parse HEAD`. The
-provenance validator checks both registry-only and full modes. It fails closed
+provenance validator checks the non-history UAT input mode and full mode. It fails closed
 if the revision is malformed or differs from HEAD, or if any tracked or
 untracked contract file is dirty. The bounded dirty check covers the Compose
 files, this runbook, the provenance validator, the two contract tests, and the

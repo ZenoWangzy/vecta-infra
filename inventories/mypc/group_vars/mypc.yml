@@ -24,6 +24,16 @@ hermes_runtime_image_version: "{{ nexus_docker_registry }}/vecta-hermes-withopen
 mypc_stateful_services_enabled: false
 mypc_stateful_service_allowlist: []
 
+# One release lock and one canonical writer set are consumed by every stateful
+# release path. The lock helper owns the holder lifecycle and state token.
+vecta_release_lock_path: /data/ocee/backups/.vecta-release.lock
+vecta_release_lock_state_path: /data/ocee/backups/.vecta-release.lock.state
+vecta_release_continuation_root: /data/ocee/backups/release-continuations
+history_writer_containers:
+  - openclaw-fleet-gateway
+  - openclaw-channel-gateway
+  - openclaw-wecom-contact-sync
+
 # Existing production stateful volumes discovered from the live containers.
 # Data-layer adoption must reuse these names exactly; creating replacement
 # volumes would strand production data.
@@ -194,13 +204,22 @@ deploy_image_tags:
   fleet-gateway: cache-a6d8bcce5249
   rag-service: cache-761b14870cf1
   wechat-contact-sync: cache-73d27641f5e9
-fleet_gateway_image: "{{ nexus_docker_registry }}/fleet-gateway:{{ deploy_image_tags['fleet-gateway'] }}"
-channel_gateway_image: "{{ nexus_docker_registry }}/channel-gateway:{{ deploy_image_tags['channel-gateway'] }}"
-a2a_router_image: "{{ nexus_docker_registry }}/a2a-router:{{ deploy_image_tags['a2a-router'] }}"
-rag_service_image: "{{ nexus_docker_registry }}/rag-service:{{ deploy_image_tags['rag-service'] }}"
-directory_service_image: "{{ nexus_docker_registry }}/directory-service:{{ deploy_image_tags['directory-service'] }}"
-admin_console_image: "{{ nexus_docker_registry }}/admin-console:{{ deploy_image_tags['admin-console'] }}"
-wechat_contact_sync_image: "{{ nexus_docker_registry }}/wechat-contact-sync:{{ deploy_image_tags['wechat-contact-sync'] }}"
+deploy_image_refs:
+  a2a-router: "{{ nexus_docker_registry }}/a2a-router:{{ deploy_image_tags['a2a-router'] }}"
+  admin-console: "{{ nexus_docker_registry }}/admin-console:{{ deploy_image_tags['admin-console'] }}"
+  channel-gateway: "{{ nexus_docker_registry }}/channel-gateway:{{ deploy_image_tags['channel-gateway'] }}"
+  directory-service: "{{ nexus_docker_registry }}/directory-service:{{ deploy_image_tags['directory-service'] }}"
+  fleet-gateway: "{{ nexus_docker_registry }}/fleet-gateway:{{ deploy_image_tags['fleet-gateway'] }}"
+  rag-service: "{{ nexus_docker_registry }}/rag-service:{{ deploy_image_tags['rag-service'] }}"
+  wechat-contact-sync: "{{ nexus_docker_registry }}/wechat-contact-sync:{{ deploy_image_tags['wechat-contact-sync'] }}"
+fleet_gateway_image: "{{ deploy_image_refs['fleet-gateway'] }}"
+channel_gateway_image: "{{ deploy_image_refs['channel-gateway'] }}"
+a2a_router_image: "{{ deploy_image_refs['a2a-router'] }}"
+rag_service_image: "{{ deploy_image_refs['rag-service'] }}"
+directory_service_image: "{{ deploy_image_refs['directory-service'] }}"
+admin_console_image: "{{ deploy_image_refs['admin-console'] }}"
+wechat_contact_sync_image: "{{ deploy_image_refs['wechat-contact-sync'] }}"
+vecta_app_release_mode: false
 # WeCom contact sync has no writable mounts, but must retain its legacy
 # production name, aliases, runtime command, limits, log rotation, and live
 # channel credentials during the one-service Nexus adoption.

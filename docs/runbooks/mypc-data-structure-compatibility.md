@@ -185,10 +185,10 @@ actor；that actor remains unknown。
 ```bash
 bash -n scripts/reconcile-open-webui-admin-network.sh
 scripts/reconcile-open-webui-admin-network.sh --self-test
-uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --syntax-check
-uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --list-tasks
-uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --check -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
-uvx --from ansible-core ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
+uvx --from ansible-core==2.21.3 ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --syntax-check
+uvx --from ansible-core==2.21.3 ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --list-tasks
+uvx --from ansible-core==2.21.3 ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini --check -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
+uvx --from ansible-core==2.21.3 ansible-playbook playbooks/mypc-network-reconcile.yml -i inventories/mypc/hosts.ini -e mypc_deploy_enabled=true -e mypc_network_reconcile_approval=true
 ```
 
 唯一支持的恢复路径是由 playbook 调用的受保护事务脚本
@@ -202,3 +202,110 @@ failure 时 fail-closed：停止自动操作，标记 baseline not proven，交�
 处置。只有四个 baseline IDs（Core/WebUI network、Proxy/Admin container）与
 保存的 baseline topology 都通过精确重验，才可声称 restored；任一 ID drift
 都禁止自动恢复 replacement。
+
+## History 0030 migration lock and rollback contract
+
+This is an opt-in contract for a selected VectA source that has passed the
+history consumer checker. It does not authorize production execution by
+itself.
+
+The forward sequence is strict:
+
+1. Confirm every controlled Fruit writer is running, then stop/quiesce the
+   writers with the history preflight.
+2. Capture the fresh PostgreSQL backup and complete the isolated restore
+   rehearsal before applying the selected digest.
+3. Run the exact Fruit digest once with a bounded PostgreSQL `lock_timeout`.
+   The selected source must use the Drizzle PostgreSQL migrator, which owns one
+   transaction for the migration; the `ACCESS EXCLUSIVE` lock taken by the
+   final journal-owned loss CHECK migration (0030 or later) `v4_documents_type_chk` ALTER therefore remains held until that
+    transaction commits. Do not split this into independent client statements.
+4. Verify the 0029 → 0030 journal, five audit tables, forced RLS, and the
+   first-class `loss` document CHECK while writers remain stopped.
+5. Run a read-only schema smoke, then restart the writers only after every
+   migration, journal/schema verification, and smoke step succeeds. Any
+   failure keeps the writers stopped and emits the repair/rollback entry.
+
+The operator rollback path is also writer-quiesced and uses a self-contained
+rollback SQL transaction. It must lock `fruit.v4_documents` first and
+`fruit.v4_historical_import_batches` second, run the non-empty-history guard,
+then DROP/restore `v4_documents_type_chk` in that same transaction. The SQL
+must contain `BEGIN;`, `SET LOCAL lock_timeout = '5s';`, and `COMMIT;`. The
+rollback playbook is the only execution surface: it materializes the exact
+journal-owned rollback file from the validated prior manifest and exact Fruit
+image, verifies its hash, and invokes the protected PostgreSQL client inside
+the playbook's shared-lease, writer-quiesced task. The SQL path is never
+selected by migration number or exposed as a standalone operator command.
+If audit or ledger facts exist, refuse schema rollback and use the append-only
+compensation path instead.
+
+The rollback playbook is operator-gated with
+`mypc_deploy_enabled=true`, `history_rollback_enabled=true`, and
+`history_rollback_approved=true`, plus the prior source SHA, manifest, and the
+existing target-host lease. A failed workflow emits a non-secret
+`RELEASE_CONTINUATION_ID` reference and records the workflow run, source SHA,
+owner capability, and holder PID/start identity only in the protected host
+record `/data/ocee/backups/release-continuations/<run>-<source-sha>.env`.
+Operators must pass that reference to the canonical lease or rollback
+playbook; the playbook reads the owner capability under `no_log` and never
+requires an operator to guess or print the state token. Acquire or
+operator-gated recover of that owner-token lease is a separate controlled
+action; recovery is allowed only after the helper proves the recorded holder
+is dead and the kernel lock is free. A live holder is never killed by
+`recover`; terminal `release` is the only lifecycle action that may terminate
+the verified owner holder. Its history play runs under the same host lease and
+keeps writers stopped until the exact rollback SQL and schema verification
+both succeed.
+
+With the protected inventory, pinned Ansible core, and a previously validated
+manifest already selected, the complete operator invocation is:
+
+```bash
+PRIOR_MANIFEST_PATH="/data/ocee/backups/release-manifests/$PRIOR_SOURCE_SHA.json"
+python3 scripts/validate-mypc-digest-manifest.py \
+  --require-history-provenance "$PRIOR_MANIFEST_PATH"
+ANSIBLE_COLLECTIONS_PATHS="$ANSIBLE_COLLECTIONS_PATH" \
+uvx --from ansible-core==2.21.3 ansible-playbook \
+  -i "$MYPC_INVENTORY_FILE" \
+  playbooks/mypc-release-rollback.yml \
+  --limit mypc \
+  -e mypc_deploy_enabled=true \
+  -e history_rollback_enabled=true \
+  -e history_rollback_approved=true \
+  -e "release_continuation_id=$RELEASE_CONTINUATION_ID" \
+  -e "rollback_manifest_selector_sha=$PRIOR_SOURCE_SHA"
+```
+
+`PRIOR_SOURCE_SHA`, `RELEASE_CONTINUATION_ID`, `MYPC_INVENTORY_FILE`, and
+`ANSIBLE_COLLECTIONS_PATH` are operator-selected non-secret inputs. The
+manifest must already be staged as
+`/data/ocee/backups/release-manifests/$PRIOR_SOURCE_SHA.json`; the playbook
+derives that path, checks realpath containment, validates JSON/provenance, and
+only then loads it. The continuation record is similarly resolved from its
+fixed protected root and checked against its workflow/source reference before
+the lease owner is consumed. Do not put database credentials or API tokens in
+the command or its logs. This playbook is the only history schema rollback
+execution surface; do not copy the SQL into a standalone operator command or
+run a standalone PostgreSQL file command.
+
+Only after the rollback playbook returns success and its schema/health evidence
+is recorded may the same owner release the lease through the canonical lease
+playbook:
+
+```bash
+uvx --from ansible-core==2.21.3 ansible-playbook \
+  -i "$MYPC_INVENTORY_FILE" \
+  playbooks/mypc-release-lease.yml \
+  --limit mypc \
+  -e mypc_deploy_enabled=true \
+  -e release_lock_action=release \
+  -e "release_continuation_id=$RELEASE_CONTINUATION_ID"
+```
+
+If rollback or its evidence fails, do not run this release action: keep the
+lease and writers stopped for the next operator-gated recovery. To verify a
+continuation before rollback, use the same lease playbook with
+`release_lock_action=verify` and `release_continuation_id`; to recover only a
+stale lease, use `release_lock_action=recover`, the same reference, and the
+independent `release_lock_recovery_approved=true` input. Both actions are
+fail-closed when a live holder or held kernel lock is present.

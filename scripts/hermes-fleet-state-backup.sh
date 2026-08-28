@@ -82,7 +82,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -At -F '|' -c \
+docker exec "$DB_CONTAINER" psql -X -U "$DB_USER" -d "$DB_NAME" -At -F '|' -c \
   "SELECT encode(convert_to(employee_id, 'UTF8'), 'base64'),
           status, lifecycle, agent_type, COALESCE(container_id, '')
      FROM fleet_instances

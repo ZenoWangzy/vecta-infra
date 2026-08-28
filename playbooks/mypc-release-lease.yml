@@ -1,0 +1,169 @@
+---
+# One canonical target-host lease for the complete stateful release surface.
+# This playbook is the only acquire/release entry point; all other release
+# plays verify the same owner token and never create a second lock.
+- name: Manage the mypc production release lease
+  hosts: mypc
+  gather_facts: false
+  become: true
+  become_user: root
+  become_method: sudo
+  become_flags: '-n'
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - ../inventories/mypc/group_vars/mypc.yml
+  vars:
+    release_continuation_root: '{{ vecta_release_continuation_root }}'
+    release_continuation_id: ''
+    release_continuation_path: '{{ release_continuation_root }}/{{ release_continuation_id }}.env'
+  pre_tasks:
+    - name: Reject Ansible check mode for lease mutation
+      ansible.builtin.fail:
+        msg: >-
+          Release lease mutation is fail-closed in --check mode. Use only
+          --syntax-check or --list-tasks for static inspection.
+      when: ansible_check_mode
+
+    - name: Require a canonical continuation reference when supplied
+      ansible.builtin.assert:
+        that:
+          - release_continuation_id is string
+          - release_continuation_id is match('^[0-9]+-[0-9a-f]{40}$')
+          - release_continuation_root == '/data/ocee/backups/release-continuations'
+          - release_continuation_path == release_continuation_root ~ '/' ~ release_continuation_id ~ '.env'
+        fail_msg: >-
+          Lease continuation must name the protected workflow/source record;
+          do not operate on a lease by guessing its state token.
+      when: release_continuation_id | default('') | length > 0
+
+    - name: Require a continuation reference for an existing lease action
+      ansible.builtin.assert:
+        that:
+          - release_continuation_id | default('') | length > 0
+        fail_msg: >-
+          Verify, release, and recovery must name the protected
+          workflow/source continuation record; do not use a raw state token.
+      when: release_lock_action | default('') in ['verify', 'release', 'recover']
+
+    - name: Load the protected owner capability for lease continuation
+      ansible.builtin.shell: |
+        set -Eeuo pipefail
+        record='{{ release_continuation_path }}'
+        record_id='{{ release_continuation_id }}'
+        state_path='{{ vecta_release_lock_state_path }}'
+        test -f "$record"
+        test -s "$state_path"
+        workflow_run_id="$(awk -F= '$1 == "workflow_run_id" { print $2; exit }' "$record")"
+        source_sha="$(awk -F= '$1 == "source_sha" { print $2; exit }' "$record")"
+        owner_token="$(awk -F= '$1 == "owner_token" { print $2; exit }' "$record")"
+        holder_pid="$(awk -F= '$1 == "holder_pid" { print $2; exit }' "$record")"
+        holder_start="$(awk -F= '$1 == "holder_start" { print $2; exit }' "$record")"
+        state_owner="$(awk -F= '$1 == "owner_token" { print $2; exit }' "$state_path")"
+        state_holder_pid="$(awk -F= '$1 == "holder_pid" { print $2; exit }' "$state_path")"
+        state_holder_start="$(awk -F= '$1 == "holder_start" { print $2; exit }' "$state_path")"
+        [[ "$workflow_run_id" =~ ^[0-9]+$ ]]
+        [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+        [[ "$owner_token" =~ ^[A-Za-z0-9._:-]{8,128}$ ]]
+        [[ "$holder_pid" =~ ^[1-9][0-9]*$ ]]
+        [[ "$holder_start" =~ ^[0-9]+$ ]]
+        [ "$workflow_run_id-$source_sha" = "$record_id" ]
+        [ "$state_owner" = "$owner_token" ]
+        [ "$state_holder_pid" = "$holder_pid" ]
+        [ "$state_holder_start" = "$holder_start" ]
+        printf '%s' "$owner_token"
+      register: recovered_release_lock_owner
+      changed_when: false
+      no_log: true
+      when:
+        - release_lock_action | default('') in ['verify', 'release', 'recover']
+        - release_continuation_id | default('') | length > 0
+
+    - name: Require any supplied owner to match the protected continuation
+      ansible.builtin.assert:
+        that:
+          - release_lock_owner | default('') | length == 0 or release_lock_owner == recovered_release_lock_owner.stdout | trim
+        fail_msg: >-
+          The supplied owner token does not match the protected continuation
+          record; raw owner tokens cannot bypass its workflow/source binding.
+      no_log: true
+      when: release_lock_action | default('') in ['verify', 'release', 'recover']
+
+    - name: Bind the protected owner capability for recovery
+      ansible.builtin.set_fact:
+        release_lock_owner: '{{ recovered_release_lock_owner.stdout | trim }}'
+      no_log: true
+      when:
+        - release_lock_action | default('') in ['verify', 'release', 'recover']
+        - release_lock_owner | default('') | length == 0
+
+    - name: Require the acquire continuation identity
+      ansible.builtin.assert:
+        that:
+          - release_source_sha | default('') is match('^[0-9a-f]{40}$')
+          - release_workflow_run_id | default('') is match('^[0-9]+$')
+          - release_continuation_id is match('^[0-9]+-[0-9a-f]{40}$')
+          - release_continuation_id == release_workflow_run_id ~ '-' ~ release_source_sha
+          - release_continuation_path == release_continuation_root ~ '/' ~ release_continuation_id ~ '.env'
+        fail_msg: >-
+          Lease acquisition must bind the protected continuation record to the
+          workflow run and exact source SHA.
+      when: release_lock_action | default('') == 'acquire'
+
+    - name: Require an explicit lease action and owner token
+      ansible.builtin.assert:
+        that:
+          - mypc_deploy_enabled | default(false) | bool
+          - release_lock_action | default('') is string
+          - release_lock_action | default('') in ['acquire', 'verify', 'release', 'recover']
+          - release_lock_owner | default('') is string
+          - release_lock_owner | default('') is match('^[A-Za-z0-9._:-]{8,128}$')
+          - release_lock_recovery_approved | default(false) | bool or release_lock_action != 'recover'
+        fail_msg: >-
+          Lease mutation requires explicit production enablement, an action,
+          and the owner token; recovery requires a separate operator approval.
+  tasks:
+    - name: Apply the canonical target-host release lease action
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../scripts/mypc-release-lock.sh
+          {{ release_lock_action }}
+          {{ vecta_release_lock_path }}
+          {{ vecta_release_lock_state_path }}
+          {{ release_lock_owner }}{% if release_lock_action == 'recover' %} --operator-approved-recovery{% endif %}
+      changed_when: false
+      no_log: true
+
+    - name: Record the protected continuation after lease acquisition
+      ansible.builtin.shell: |
+        set -Eeuo pipefail
+        state_path='{{ vecta_release_lock_state_path }}'
+        record_path='{{ release_continuation_path }}'
+        test -s "$state_path"
+        owner_token="$(awk -F= '$1 == "owner_token" { print $2; exit }' "$state_path")"
+        holder_pid="$(awk -F= '$1 == "holder_pid" { print $2; exit }' "$state_path")"
+        holder_start="$(awk -F= '$1 == "holder_start" { print $2; exit }' "$state_path")"
+        [ "$owner_token" = '{{ release_lock_owner }}' ]
+        [[ "$holder_pid" =~ ^[1-9][0-9]*$ ]]
+        [[ "$holder_start" =~ ^[0-9]+$ ]]
+        install -d -o root -g root -m 0700 "$(dirname -- "$record_path")"
+        temp_path="$(mktemp "${record_path}.tmp.XXXXXX")"
+        trap 'rm -f "$temp_path"' EXIT
+        umask 077
+        printf 'workflow_run_id=%s\nsource_sha=%s\nowner_token=%s\nholder_pid=%s\nholder_start=%s\n' \
+          '{{ release_workflow_run_id }}' '{{ release_source_sha }}' \
+          "$owner_token" "$holder_pid" "$holder_start" >"$temp_path"
+        chown root:root "$temp_path"
+        chmod 0600 "$temp_path"
+        mv -f -- "$temp_path" "$record_path"
+      changed_when: true
+      no_log: true
+      when: release_lock_action == 'acquire'
+
+    - name: Remove the consumed continuation after terminal lease action
+      ansible.builtin.file:
+        path: '{{ release_continuation_path }}'
+        state: absent
+      when:
+        - release_lock_action in ['release', 'recover']
+        - release_continuation_id | default('') | length > 0

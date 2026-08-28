@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import os
@@ -15,6 +16,9 @@ from pathlib import Path
 
 EXPECTED_SOURCE = "https://github.com/ZenoWangzy/vecta"
 IMAGE_REPOSITORY = "fruit-industry-pack"
+MIGRATION_PATH_RE = re.compile(
+    r"packages/fruit-industry-pack/migrations/[0-9]{4}_[a-z0-9_]+\.sql"
+)
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATHS = (
     ".github/workflows/build-mypc-images.yml",
@@ -175,12 +179,35 @@ def validate_image_inspection(
         raise ContractError("pulled image RepoDigests does not contain the exact digest")
 
 
+def validate_image_sql(
+    image_ref: str, migration_path: str, expected_sha256: str
+) -> None:
+    if MIGRATION_PATH_RE.fullmatch(migration_path) is None:
+        raise ContractError("FRUIT_V4_MIGRATION_PATH must be a canonical migration path")
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        raise ContractError(
+            "FRUIT_V4_MIGRATION_SHA256 must be a lowercase SHA-256"
+        )
+    result = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "cat", image_ref, migration_path],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ContractError("exact Fruit image migration extraction failed")
+    actual_sha256 = hashlib.sha256(result.stdout).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise ContractError(
+            "exact Fruit image migration does not match the manifest SHA-256"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--registry-only",
         action="store_true",
-        help="validate release inputs before the explicit image pull",
+        help="validate non-history UAT inputs before the explicit image pull",
     )
     arguments = parser.parse_args()
 
@@ -196,10 +223,25 @@ def main() -> int:
             )
         validate_infra_checkout(infra_revision)
         if arguments.registry_only:
-            print("fruit-v4 image release inputs: ok")
+            if (
+                os.environ.get("HISTORICAL_MIGRATION", "").lower() == "true"
+                or os.environ.get("FRUIT_V4_MIGRATION_PATH") is not None
+            ):
+                raise ContractError(
+                    "--registry-only is forbidden for history release provenance"
+                )
+            print("fruit-v4 non-history UAT inputs: ok")
             return 0
         inspection = inspect_image(image_ref)
         validate_image_inspection(image_ref, source_sha, inspection)
+        migration_path = os.environ.get("FRUIT_V4_MIGRATION_PATH")
+        migration_sha256 = os.environ.get("FRUIT_V4_MIGRATION_SHA256")
+        if (migration_path is None) != (migration_sha256 is None):
+            raise ContractError(
+                "FRUIT_V4_MIGRATION_PATH and FRUIT_V4_MIGRATION_SHA256 must be supplied together"
+            )
+        if migration_path is not None and migration_sha256 is not None:
+            validate_image_sql(image_ref, migration_path, migration_sha256)
     except ContractError as error:
         print(f"fruit-v4 image provenance: {error}", file=sys.stderr)
         return 1

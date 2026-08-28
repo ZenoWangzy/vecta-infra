@@ -21,7 +21,7 @@ images, Nexus, or registry configuration.
 Check the isolated tag without applying it:
 
 ```bash
-uvx --from ansible-core ansible-playbook -i inventories/mypc/hosts.ini \
+uvx --from ansible-core==2.21.3 ansible-playbook -i inventories/mypc/hosts.ini \
   playbooks/infra.yml --limit mypc --tags buildx --check \
   -e mypc_deploy_enabled=true
 ```
@@ -29,7 +29,7 @@ uvx --from ansible-core ansible-playbook -i inventories/mypc/hosts.ini \
 After review, apply only that tag:
 
 ```bash
-uvx --from ansible-core ansible-playbook -i inventories/mypc/hosts.ini \
+uvx --from ansible-core==2.21.3 ansible-playbook -i inventories/mypc/hosts.ini \
   playbooks/infra.yml --limit mypc --tags buildx \
   -e mypc_deploy_enabled=true
 ```

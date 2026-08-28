@@ -120,7 +120,7 @@
 
 - name: Ensure Open WebUI channel user mappings
   ansible.builtin.shell: |
-    docker exec -i openclaw-postgres psql \
+    docker exec -i openclaw-postgres psql -X \
       -U {{ postgres_user | default('openclaw_poc') | quote }} \
       -d {{ postgres_db | default('openclaw_poc') | quote }} \
       -v ON_ERROR_STOP=1 \

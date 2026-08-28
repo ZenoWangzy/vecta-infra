@@ -68,6 +68,17 @@ check_http() {
       echo "OK   $name $url -> $code"
       return 0
     fi
+    case "$code" in
+      000|408|425|429|502|503|504) ;;
+      401|403|404)
+        echo "FAIL $name $url -> deterministic HTTP $code; repair owner=release" >&2
+        exit 1
+        ;;
+      *)
+        echo "FAIL $name $url -> unexpected HTTP $code; repair owner=release" >&2
+        exit 1
+        ;;
+    esac
     [ "$attempt" -eq 3 ] || sleep 2
   done
 
@@ -109,11 +120,11 @@ check_postgres() {
   check_container_running "$container"
   docker exec "$container" pg_isready -U "$user" -d "$db" >/dev/null
   echo "OK   postgres pg_isready"
-  docker exec "$container" psql -U "$user" -d "$db" -v ON_ERROR_STOP=1 -tAc \
+  docker exec "$container" psql -X -U "$user" -d "$db" -v ON_ERROR_STOP=1 -tAc \
     "select count(*) >= 1 from information_schema.tables where table_schema = 'public';" \
     | grep -qx t
   echo "OK   postgres public schema has tables"
-  docker exec "$container" psql -U "$user" -d "$db" -v ON_ERROR_STOP=1 -tAc \
+  docker exec "$container" psql -X -U "$user" -d "$db" -v ON_ERROR_STOP=1 -tAc \
     "select count(*) from pg_namespace where nspname not like 'pg_%' and nspname <> 'information_schema';" \
     | awk '{ if ($1 + 0 < 1) exit 1 }'
   echo "OK   postgres user schemas visible"
