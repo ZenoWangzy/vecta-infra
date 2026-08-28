@@ -39,7 +39,7 @@ require_cmd() {
   }
 }
 
-for command in docker sha256sum sed diff cmp; do
+for command in docker sha256sum sed diff cmp python3; do
   require_cmd "$command"
 done
 
@@ -173,11 +173,28 @@ EOF
 # tokens so a non-empty diff remains meaningful schema evidence.
 sed -e '/^\\restrict /d' -e '/^\\unrestrict /d' "$source_schema" > "$evidence_dir/source-schema.normalized.sql"
 sed -e '/^\\restrict /d' -e '/^\\unrestrict /d' "$restore_schema" > "$evidence_dir/restored-schema.normalized.sql"
+diff_status=0
 diff -u "$evidence_dir/source-schema.normalized.sql" \
-  "$evidence_dir/restored-schema.normalized.sql" > "$evidence_dir/schema.diff" || {
-  echo "restore schema differs from source schema; see $evidence_dir/schema.diff" >&2
+  "$evidence_dir/restored-schema.normalized.sql" > "$evidence_dir/schema.diff" || diff_status=$?
+if [ "$diff_status" -gt 1 ]; then
+  echo "schema comparison command failed; see $evidence_dir" >&2
+  exit 1
+fi
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+schema_comparator="$script_dir/compare-postgres-schemas.py"
+schema_report="$evidence_dir/schema-equivalence.txt"
+test -f "$schema_comparator"
+python3 "$schema_comparator" \
+  "$evidence_dir/source-schema.normalized.sql" \
+  "$evidence_dir/restored-schema.normalized.sql" \
+  --report "$schema_report" || {
+  echo "restore schema equivalence rejected; see $schema_report" >&2
   exit 1
 }
+schema_classification="$(awk -F= '$1 == "classification" { print $2; exit }' "$schema_report")"
+test -n "$schema_classification"
+
 cmp -s "$source_inventory" "$restore_inventory" || {
   echo "restore inventory differs from source inventory" >&2
   exit 1
@@ -194,7 +211,8 @@ source_database=$POSTGRES_DB
 restore_container=$restore_container
 restore_image=$postgres_image
 dump_sha256=$(awk '{print $1}' "$evidence_dir/postgres.dump.sha256")
-schema_compare=identical_after_psql_guard_normalization
+schema_compare=$schema_classification
+schema_compare_report=schema-equivalence.txt
 inventory_compare=identical
 row_invariants=identical
 temporary_restore_data=removed_after_success
