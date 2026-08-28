@@ -231,6 +231,72 @@ def _match_any_array(tokens: Sequence[Token], start: int) -> tuple[list[Token], 
         return None
 
     index = start + 2
+
+    if _is_symbol(tokens[index], "("):
+        if tokens[start + 1].leading != "":
+            return None
+        items: list[list[Token]] = []
+        separators: list[Token] = []
+        item_index = 0
+        while True:
+            member_open = tokens[index]
+            if member_open.leading != ("" if item_index == 0 else " "):
+                return None
+            literal = _literal_span(tokens, index + 1)
+            if literal is None:
+                return None
+            literal_start, literal_end = literal
+            if tokens[literal_start].leading != "" or literal_end + 5 >= len(tokens):
+                return None
+            inner_cast, character, varying = tokens[literal_end : literal_end + 3]
+            member_close, outer_cast, text_type = tokens[literal_end + 3 : literal_end + 6]
+            if not (
+                _is_symbol(inner_cast, "::")
+                and _is_exact_word(character, "character")
+                and character.leading == ""
+                and _is_exact_word(varying, "varying")
+                and varying.leading == " "
+                and _is_symbol(member_close, ")")
+                and member_close.leading == ""
+                and _is_symbol(outer_cast, "::")
+                and outer_cast.leading == ""
+                and _is_exact_word(text_type, "text")
+                and text_type.leading == ""
+                and inner_cast.leading == ""
+            ):
+                return None
+            item = list(tokens[literal_start:literal_end])
+            item[0] = item[0]._replace(leading=member_open.leading)
+            item.extend((outer_cast, text_type))
+            items.append(item)
+            index = literal_end + 6
+            if index >= len(tokens):
+                return None
+            if _is_symbol(tokens[index], ","):
+                if tokens[index].leading != "":
+                    return None
+                separators.append(tokens[index])
+                index += 1
+                item_index += 1
+                if index >= len(tokens) or not _is_symbol(tokens[index], "("):
+                    return None
+                continue
+            if not _is_symbol(tokens[index], "]") or tokens[index].leading != "":
+                return None
+            break
+
+        if prefix_parens != 1 or index + 1 >= len(tokens):
+            return None
+        if not _is_symbol(tokens[index + 1], ")") or tokens[index + 1].leading != "":
+            return None
+        replacement = [tokens[start], tokens[start + 1]]
+        for item_index, item in enumerate(items):
+            if item_index:
+                replacement.append(separators[item_index - 1])
+            replacement.extend(item)
+        replacement.append(tokens[index])
+        return replacement, index + 1, False
+
     items: list[list[Token]] = []
     separators: list[Token] = []
     casts: list[tuple[Token, Token]] = []
@@ -527,18 +593,25 @@ def _self_test_fixture() -> tuple[str, str]:
     source_lines: list[str] = []
     restored_lines: list[str] = []
     for index in range(49):
-        array = "ARRAY['open'::character varying, 'closed'::character varying]::text[]"
-        if index % 2:
-            array = "ARRAY['open'::character varying, 'closed'::character varying])::text[]"
-            source_lines.append(
-                f"CREATE VIEW view_{index} AS SELECT status = ANY (({array});"
+        source_arrays = 2 if index < 2 else 1
+        source_expressions: list[str] = []
+        restored_expressions: list[str] = []
+        for occurrence in range(source_arrays):
+            source_array = "ARRAY['open'::character varying, 'closed'::character varying]"
+            if (index + occurrence) % 2:
+                source_expression = f"status = ANY (({source_array})::text[])"
+            else:
+                source_expression = f"status = ANY (({source_array}::text[]))"
+            source_expressions.append(source_expression)
+            restored_expressions.append(
+                "status = ANY (ARRAY[('open'::character varying)::text, "
+                "('closed'::character varying)::text])"
             )
-        else:
-            source_lines.append(
-                f"CREATE VIEW view_{index} AS SELECT status = ANY (({array}));"
-            )
+        source_lines.append(
+            f"CREATE VIEW view_{index} AS SELECT {' OR '.join(source_expressions)};"
+        )
         restored_lines.append(
-            f"CREATE VIEW view_{index} AS SELECT status = ANY (ARRAY['open'::text, 'closed'::text]);"
+            f"CREATE VIEW view_{index} AS SELECT {' OR '.join(restored_expressions)};"
         )
     source_lines.append(
         'ALTER TABLE ONLY public.demo ADD CONSTRAINT demo_four_check CHECK ((("a" IS NOT NULL) AND ("b" IS NOT NULL) AND ("c" IS NOT NULL) AND ("d" IS NOT NULL)));'
@@ -554,8 +627,8 @@ def self_test() -> None:
     result = compare_bytes(source.encode(), restored.encode())
     assert result.equivalent
     assert result.classification == "POSTGRES_DEPARSE_EQUIVALENT"
-    assert result.source_any_array_variants == 49
-    assert result.restored_any_array_variants == 0
+    assert result.source_any_array_variants == 51
+    assert result.restored_any_array_variants == 51
     assert result.source_and4_variants == 1
     assert result.restored_and4_variants == 0
 
@@ -578,19 +651,30 @@ def self_test() -> None:
     rejects_pair(source.replace("character varying", "character\tvarying", 1), restored)
     rejects_pair(source.replace("]::text[]", "] ::text[]", 1), restored)
     rejects_pair(source.replace("CHECK (((", "CHECK ( ((", 1), restored)
-    rejects(restored.replace("'closed'::text", "'changed'::text", 1))
+    rejects(restored.replace("'closed'::character varying)::text", "'changed'::character varying)::text", 1))
     rejects(restored.replace("ANY", "ALL", 1))
-    rejects(restored.replace("'open'::text, 'closed'::text", "'closed'::text, 'open'::text", 1))
-    rejects(restored.replace("'closed'::text", "'closed'::varchar", 1))
-    rejects(restored.replace("'open'::text, 'closed'::text", "'open'::text", 1))
+    rejects(
+        restored.replace(
+            "('open'::character varying)::text, ('closed'::character varying)::text",
+            "('closed'::character varying)::text, ('open'::character varying)::text",
+            1,
+        )
+    )
+    rejects(restored.replace("('closed'::character varying)::text", "('closed'::character varying)::varchar", 1))
+    rejects(restored.replace("('open'::character varying)::text, ('closed'::character varying)::text", "('open'::character varying)::text", 1))
+    rejects(restored.replace("character varying)::text", "character\tvarying)::text", 1))
+    rejects(restored.replace(")::text", ") ::text", 1))
+    rejects(restored.replace("ARRAY[(", "ARRAY[ (", 1))
     double_source = source.replace("'open'::character varying", '"open"::character varying', 1)
-    double_restored = restored.replace("'open'::text", '"open"::text', 1)
+    double_restored = restored.replace("'open'::character varying", '"open"::character varying', 1)
     rejects_pair(double_source, double_restored)
     dollar = "$tag$"
     dollar_source = source.replace(
         "'open'::character varying", f"{dollar}open{dollar}::character varying", 1
     )
-    dollar_restored = restored.replace("'open'::text", f"{dollar}open{dollar}::text", 1)
+    dollar_restored = restored.replace(
+        "'open'::character varying", f"{dollar}open{dollar}::character varying", 1
+    )
     rejects_pair(dollar_source, dollar_restored)
     rejects(restored.replace("view_0", "renamed_view", 1))
     rejects(restored + "DROP VIEW view_0;\n")
@@ -600,7 +684,7 @@ def self_test() -> None:
     for closing in (")", "]", "}"):
         malformed = f"CREATE VIEW malformed AS SELECT 1{closing};"
         rejects_pair(malformed, malformed)
-    print("schema comparator self-check: ok (49 ANY-array + 1 AND variants; mutations rejected)")
+    print("schema comparator self-check: ok (51 source / 51 restored ANY-array + 1 AND variants; mutations rejected)")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
