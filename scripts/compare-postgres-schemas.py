@@ -60,6 +60,10 @@ def _is_word(token: Token, value: str) -> bool:
     return token.kind == "word" and token.text.lower() == value
 
 
+def _is_exact_word(token: Token, value: str) -> bool:
+    return token.kind == "word" and token.text == value
+
+
 def _is_symbol(token: Token, value: str) -> bool:
     return token.kind == "symbol" and token.text == value
 
@@ -223,6 +227,8 @@ def _match_any_array(tokens: Sequence[Token], start: int) -> tuple[list[Token], 
     prefix_parens = _any_prefix_parens(tokens, start)
     if not prefix_parens:
         return None
+    if prefix_parens == 2 and tokens[start - 1].leading != "":
+        return None
 
     index = start + 2
     items: list[list[Token]] = []
@@ -235,9 +241,15 @@ def _match_any_array(tokens: Sequence[Token], start: int) -> tuple[list[Token], 
         literal_start, literal_end = literal
         if literal_end + 2 >= len(tokens):
             return None
-        if not _is_symbol(tokens[literal_end], "::") or not _is_word(tokens[literal_end + 1], "character"):
+        if not _is_symbol(tokens[literal_end], "::") or not _is_exact_word(
+            tokens[literal_end + 1], "character"
+        ):
             return None
-        if not _is_word(tokens[literal_end + 2], "varying"):
+        if tokens[literal_end + 1].leading != "" or not _is_exact_word(
+            tokens[literal_end + 2], "varying"
+        ):
+            return None
+        if tokens[literal_end + 2].leading != " ":
             return None
         items.append(list(tokens[literal_start:literal_end]))
         casts.append((tokens[literal_end], tokens[literal_end + 1]))
@@ -255,7 +267,7 @@ def _match_any_array(tokens: Sequence[Token], start: int) -> tuple[list[Token], 
     cast_start = index + 1
     array_wrapper = _is_symbol(tokens[cast_start], ")") if cast_start < len(tokens) else False
     if array_wrapper:
-        if prefix_parens != 2:
+        if prefix_parens != 2 or tokens[cast_start].leading != "":
             return None
         cast_start += 1
     elif prefix_parens not in (1, 2):
@@ -265,10 +277,12 @@ def _match_any_array(tokens: Sequence[Token], start: int) -> tuple[list[Token], 
         return None
     if not (
         _is_symbol(tokens[cast_start], "::")
-        and _is_word(tokens[cast_start + 1], "text")
+        and _is_exact_word(tokens[cast_start + 1], "text")
         and _is_symbol(tokens[cast_start + 2], "[")
         and _is_symbol(tokens[cast_start + 3], "]")
     ):
+        return None
+    if any(token.leading != "" for token in tokens[cast_start:cast_end]):
         return None
 
     replacement = [tokens[start], tokens[start + 1]]
@@ -293,6 +307,8 @@ def _match_any_array(tokens: Sequence[Token], start: int) -> tuple[list[Token], 
         if cast_end + 1 >= len(tokens) or not (
             _is_symbol(tokens[cast_end], ")") and _is_symbol(tokens[cast_end + 1], ")")
         ):
+            return None
+        if tokens[cast_end].leading != "":
             return None
         return replacement, cast_end + 1, True
     if cast_end >= len(tokens) or not _is_symbol(tokens[cast_end], ")"):
@@ -354,15 +370,19 @@ def _matching(tokens: Sequence[Token], start: int, opening: str = "(", closing: 
     raise ValueError("unbalanced delimiter")
 
 
-def _strip_full_outer_groups(tokens: Sequence[Token]) -> tuple[list[Token], bool]:
+def _strip_full_outer_groups(tokens: Sequence[Token]) -> tuple[list[Token], bool, bool]:
     result = list(tokens)
     stripped = False
+    layout_valid = True
     while len(result) >= 2 and _is_symbol(result[0], "("):
-        if _matching(result, 0) != len(result) - 1:
+        end = _matching(result, 0)
+        if end != len(result) - 1:
             break
+        if result[0].leading != "" or result[end].leading != "":
+            layout_valid = False
         result = result[1:-1]
         stripped = True
-    return result, stripped
+    return result, stripped, layout_valid
 
 
 def _split_top_level_and(tokens: Sequence[Token]) -> list[list[Token]] | None:
@@ -393,10 +413,10 @@ def _split_top_level_and(tokens: Sequence[Token]) -> list[list[Token]] | None:
     return parts
 
 
-def _and4_core(tokens: Sequence[Token]) -> tuple[list[Token], bool] | None:
-    core, stripped = _strip_full_outer_groups(tokens)
+def _and4_core(tokens: Sequence[Token]) -> tuple[list[Token], bool, bool] | None:
+    core, stripped, layout_valid = _strip_full_outer_groups(tokens)
     parts = _split_top_level_and(core)
-    return (core, stripped) if parts is not None else None
+    return (core, stripped, layout_valid) if parts is not None else None
 
 
 def normalize_four_item_and_groups(tokens: Sequence[Token]) -> tuple[list[Token], int]:
@@ -412,10 +432,10 @@ def normalize_four_item_and_groups(tokens: Sequence[Token]) -> tuple[list[Token]
         inner, nested_count = normalize_four_item_and_groups(tokens[index + 1 : end])
         count += nested_count
         result = _and4_core(inner)
-        if result is None or not result[1]:
+        if result is None or not result[1] or not result[2]:
             normalized.extend((tokens[index], *inner, tokens[end]))
         else:
-            core, _ = result
+            core, _, _ = result
             replacement = [tokens[index], *core, Token("symbol", ")", tokens[end].leading)]
             original = [tokens[index], *inner, tokens[end]]
             if replacement != original:
@@ -550,6 +570,14 @@ def self_test() -> None:
         rejects_pair(source, candidate)
 
     rejects(restored.replace("status = ANY", "status  = ANY", 1))
+    for needle, replacement in (
+        ("::character varying", "::CHARACTER varying"),
+        ("::text[]", "::TEXT[]"),
+    ):
+        rejects_pair(source.replace(needle, replacement, 1), restored)
+    rejects_pair(source.replace("character varying", "character\tvarying", 1), restored)
+    rejects_pair(source.replace("]::text[]", "] ::text[]", 1), restored)
+    rejects_pair(source.replace("CHECK (((", "CHECK ( ((", 1), restored)
     rejects(restored.replace("'closed'::text", "'changed'::text", 1))
     rejects(restored.replace("ANY", "ALL", 1))
     rejects(restored.replace("'open'::text, 'closed'::text", "'closed'::text, 'open'::text", 1))
