@@ -327,6 +327,9 @@ jobs:
       - name: Validate Fruit V4 isolated Compose contract
         run: python3 scripts/test_fruit_v4_isolated_compose_contract.py
 
+      - name: Validate Open WebUI CSP contract
+        run: python3 scripts/test_open_webui_csp_contract.py
+
       - name: Ensure production Nexus is running
         run: |
           set -euo pipefail
