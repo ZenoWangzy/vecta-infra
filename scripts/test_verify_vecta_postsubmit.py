@@ -96,5 +96,44 @@ class PostsubmitEvidenceTests(unittest.TestCase):
         )
 
 
+class EvidenceQueryTests(unittest.TestCase):
+    """The runs query must filter server-side by head_sha.
+
+    Fetching the last 100 completed push runs in full is about 1.2 MB, which a
+    slow link truncates (http.client.IncompleteRead), failing the gate for a
+    commit whose Postsubmit is green.
+    """
+
+    def test_runs_query_filters_by_head_sha(self) -> None:
+        recorded: list[tuple[str, dict[str, str]]] = []
+
+        class FakeClient:
+            def __init__(self, *, api_url: str, token: str) -> None:
+                pass
+
+            def get_json(self, path: str, query: dict[str, str]) -> dict[str, object]:
+                recorded.append((path, query))
+                if path.endswith("/jobs"):
+                    return {"jobs": [job()]}
+                return {"workflow_runs": [run()]}
+
+        original = MODULE.GitHubClient
+        MODULE.GitHubClient = FakeClient
+        try:
+            evidence = MODULE.verify(
+                repo="ZenoWangzy/vecta",
+                sha=SHA,
+                branch="main",
+                token="t",
+                api_url="https://api.github.com",
+            )
+        finally:
+            MODULE.GitHubClient = original
+
+        self.assertEqual(evidence, (10, 20))
+        runs_query = next(q for path, q in recorded if path.endswith("/actions/runs"))
+        self.assertEqual(runs_query.get("head_sha"), SHA)
+
+
 if __name__ == "__main__":
     unittest.main()

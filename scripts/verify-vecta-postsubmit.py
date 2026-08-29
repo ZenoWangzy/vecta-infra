@@ -97,12 +97,19 @@ def verify(*, repo: str, sha: str, branch: str, token: str, api_url: str) -> tup
         raise EvidenceError("VECTA_READ_TOKEN is required")
 
     client = GitHubClient(api_url=api_url, token=token)
+    # head_sha filters server-side to the runs for this exact commit. Without
+    # it GitHub returns the last 100 completed push runs in full — about 1.2 MB
+    # — to find the one or two that matter, and on a slow link that response
+    # arrives truncated (http.client.IncompleteRead), failing the gate for a
+    # commit whose Postsubmit is green. find_evidence still re-checks head_sha
+    # and head_branch, so this narrows the candidate set and never widens it.
     runs_payload = client.get_json(
         f"/repos/{repo}/actions/runs",
         {
             "branch": branch,
             "event": "push",
             "status": "completed",
+            "head_sha": sha,
             "per_page": "100",
         },
     )
