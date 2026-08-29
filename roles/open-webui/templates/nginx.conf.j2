@@ -173,7 +173,7 @@ server {
         proxy_read_timeout 3600s;
         proxy_set_header Accept-Encoding "";
         proxy_hide_header Content-Security-Policy;
-        add_header Content-Security-Policy "default-src 'self';script-src 'self' 'unsafe-inline';style-src 'self' 'unsafe-inline';img-src 'self' data:;connect-src 'self';font-src 'self';object-src 'none';frame-ancestors 'none';base-uri 'self';form-action 'self';script-src-attr 'none';upgrade-insecure-requests" always;
+        add_header Content-Security-Policy "default-src 'self';script-src 'self' 'unsafe-inline';style-src 'self' 'unsafe-inline';img-src 'self' data:;connect-src 'self' data:;font-src 'self';object-src 'none';frame-ancestors 'none';base-uri 'self';form-action 'self';script-src-attr 'none';upgrade-insecure-requests" always;
         sub_filter_once off;
         sub_filter_types application/javascript text/javascript;
         sub_filter 'const e="Open WebUI",a="",' 'const e="Open WebUI",a="/chat",';
@@ -251,7 +251,7 @@ server {
         proxy_read_timeout 3600s;
         proxy_set_header Accept-Encoding "";
         proxy_hide_header Content-Security-Policy;
-        add_header Content-Security-Policy "default-src 'self';script-src 'self' 'unsafe-inline';style-src 'self' 'unsafe-inline';img-src 'self' data:;connect-src 'self';font-src 'self';object-src 'none';frame-ancestors 'none';base-uri 'self';form-action 'self';script-src-attr 'none';upgrade-insecure-requests" always;
+        add_header Content-Security-Policy "default-src 'self';script-src 'self' 'unsafe-inline';style-src 'self' 'unsafe-inline';img-src 'self' data:;connect-src 'self' data:;font-src 'self';object-src 'none';frame-ancestors 'none';base-uri 'self';form-action 'self';script-src-attr 'none';upgrade-insecure-requests" always;
         sub_filter_once off;
         sub_filter_types application/javascript text/javascript;
         sub_filter 'const e="Open WebUI",a="",' 'const e="Open WebUI",a="/chat",';
