@@ -8,8 +8,10 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from unittest import mock
 
 
@@ -61,6 +63,19 @@ UAT_ENV = {
     "FRUIT_V4_ALLOWED_EMPLOYEE_IDS": "placeholder",
 }
 
+# The backup gate opens the declared file, so the contract needs a real one. A
+# custom-format dump begins with the literal PGDMP magic; the rest is padding.
+BACKUP_FIXTURE_DIR = tempfile.TemporaryDirectory(prefix="fruit-v4-backup-contract-")
+BACKUP_FIXTURE_PATH = Path(BACKUP_FIXTURE_DIR.name) / "fruit_v4_pre_migration.dump"
+BACKUP_FIXTURE_BYTES = BACKUP_FIXTURE_PATH.write_bytes(b"PGDMP" + b"\x00" * 91)
+
+# The preflight must depend on nothing outside the runtime image, so the contract
+# runs it with an empty PATH. Node is then invoked by absolute path, because the
+# rendered command asks for it by name.
+NODE_BINARY = shutil.which("node") or "node"
+EMPTY_PATH_BIN = Path(BACKUP_FIXTURE_DIR.name) / "empty-bin"
+EMPTY_PATH_BIN.mkdir()
+
 MIGRATION_ENV = {
     "FRUIT_V4_MIGRATION_DATABASE_URL": (
         "postgresql://fruit_v4_migration:placeholder@db.internal.invalid:5432/fruit_v4"
@@ -69,7 +84,8 @@ MIGRATION_ENV = {
     "FRUIT_V4_RUNTIME_DB_PASSWORD": "placeholder",
     "FRUIT_V4_WRITER_ROLE": "fruit_v4_writer",
     "FRUIT_V4_WRITER_PASSWORD": "placeholder",
-    "FRUIT_V4_BACKUP_SHA256": "d" * 64,
+    "FRUIT_V4_BACKUP_PATH": str(BACKUP_FIXTURE_PATH),
+    "FRUIT_V4_BACKUP_BYTES": str(BACKUP_FIXTURE_BYTES),
     "FRUIT_V4_RESTORE_REHEARSAL_ID": "restore-rehearsal-placeholder",
     "FRUIT_V4_OPERATOR_APPROVAL_ID": "operator-approval-placeholder",
     "FRUIT_V4_MIGRATION_GATE": "approved-migration",
@@ -142,14 +158,20 @@ def assert_contract_error(provenance: object, operation: object) -> None:
 def run_setup_preflight(
     setup: dict[str, object],
     environment_updates: dict[str, str],
+    *,
+    path: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.update(
         {name: str(value) for name, value in setup["environment"].items()}
     )
     environment.update(environment_updates)
+    command = list(setup["command"])
+    if path is not None:
+        environment["PATH"] = path
+        command[0] = NODE_BINARY
     return subprocess.run(
-        setup["command"],
+        command,
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -286,7 +308,7 @@ def main() -> None:
     for name in (
         "FRUIT_RUNTIME_DB_ROLE",
         "FRUIT_RUNTIME_DB_PASSWORD",
-        "FRUIT_V4_BACKUP_SHA256",
+        "FRUIT_V4_BACKUP_PATH",
         "FRUIT_V4_OPERATOR_APPROVAL_ID",
     ):
         assert name not in uat["environment"]
@@ -308,8 +330,22 @@ def main() -> None:
     assert setup["restart"] == "no"
     assert setup["container_name"] == "fruit-v4-isolated-setup"
     assert set(setup["networks"]) == {"production"}
-    for forbidden in ("build", "ports", "volumes"):
+    for forbidden in ("build", "ports"):
         assert forbidden not in setup
+    # Setup owns exactly one mount and it exists so the preflight can open the
+    # declared dump. Anything wider, writable, or pointing somewhere else is a
+    # different contract: keep this assertion exact rather than a not-in check.
+    assert len(setup["volumes"]) == 1
+    backup_mount = setup["volumes"][0]
+    assert backup_mount["type"] == "bind"
+    assert backup_mount["source"] == MIGRATION_ENV["FRUIT_V4_BACKUP_PATH"]
+    assert backup_mount["target"] == MIGRATION_ENV["FRUIT_V4_BACKUP_PATH"]
+    assert backup_mount["read_only"] is True
+    # Compose 2.40 omits a false create_host_path from the rendered model (it
+    # only marshals the non-default true), so this one is asserted at the source.
+    # Without it a missing dump is silently materialised as an empty directory
+    # instead of failing the mount.
+    assert "create_host_path: false" in migration_source
     assert "depends_on" not in uat or "fruit-v4-setup" not in uat["depends_on"]
 
     for missing in MIGRATION_ENV:
@@ -426,6 +462,105 @@ def main() -> None:
     )
     assert wrong_gate.returncode != 0
     assert "FRUIT_V4_MIGRATION_GATE is not approved-migration" in wrong_gate.stderr
+
+    # The retired gate demanded a 64-hex FRUIT_V4_BACKUP_SHA256 that nothing ever
+    # compared against a file, so it proved only that somebody typed 64 hex
+    # characters. Its replacement declares path/bytes/table-of-contents entries
+    # and the preflight opens the file. Every branch below is asserted to fail,
+    # and to name the path it failed on: a check that cannot go red is the same
+    # unverified value under a new name.
+    assert "FRUIT_V4_BACKUP_SHA256" not in base_source + migration_source
+    # The runbook may name the retired input, but never as something to supply:
+    # it must not appear in the migration command's required-input block, and the
+    # production update must tell the operator to delete it.
+    assert ': "${FRUIT_V4_BACKUP_SHA256' not in runbook
+    assert "sed -i '/^FRUIT_V4_BACKUP_SHA256=/d'" in runbook
+    # The release directory on the production host is itself this checkout, so
+    # the environment file and the Compose files have to move together.
+    assert "fruit-v4-production.env" in runbook
+    assert "git -C \"$R\" checkout --detach origin/main" in runbook
+    for name in ("FRUIT_V4_BACKUP_PATH", "FRUIT_V4_BACKUP_BYTES"):
+        assert name in runbook, f"runbook must document {name}"
+    # Entry-count verification lives in the restore rehearsal, where a real
+    # pg_restore runs, not in a Compose input the preflight cannot check.
+    assert "FRUIT_V4_BACKUP_TOC_ENTRIES" not in runbook
+    assert "pg_restore -l" in runbook
+    assert "UID 1000" in runbook
+
+    absent_backup_path = str(BACKUP_FIXTURE_PATH) + ".absent"
+    missing_backup = run_setup_preflight(
+        setup,
+        {"FRUIT_V4_BACKUP_PATH": absent_backup_path},
+    )
+    assert missing_backup.returncode != 0
+    assert "backup file is missing at " + absent_backup_path in missing_backup.stderr
+
+    directory_backup = run_setup_preflight(
+        setup,
+        {"FRUIT_V4_BACKUP_PATH": BACKUP_FIXTURE_DIR.name},
+    )
+    assert directory_backup.returncode != 0
+    assert "backup file is not a regular file at " + BACKUP_FIXTURE_DIR.name in (
+        directory_backup.stderr
+    )
+
+    relative_backup = run_setup_preflight(
+        setup,
+        {"FRUIT_V4_BACKUP_PATH": "fruit_v4_pre_migration.dump"},
+    )
+    assert relative_backup.returncode != 0
+    assert "FRUIT_V4_BACKUP_PATH must be an absolute path" in relative_backup.stderr
+
+    shadowing_backup = run_setup_preflight(
+        setup,
+        {"FRUIT_V4_BACKUP_PATH": "/app/packages/fruit-industry-pack/dist/db/setup.js"},
+    )
+    assert shadowing_backup.returncode != 0
+    assert "must not shadow the image contents at /app" in shadowing_backup.stderr
+
+    wrong_size_backup = run_setup_preflight(
+        setup,
+        {"FRUIT_V4_BACKUP_BYTES": str(BACKUP_FIXTURE_BYTES + 1)},
+    )
+    assert wrong_size_backup.returncode != 0
+    assert "not the declared FRUIT_V4_BACKUP_BYTES" in wrong_size_backup.stderr
+    assert str(BACKUP_FIXTURE_PATH) in wrong_size_backup.stderr
+
+    zero_size_backup = run_setup_preflight(setup, {"FRUIT_V4_BACKUP_BYTES": "0"})
+    assert zero_size_backup.returncode != 0
+    assert "FRUIT_V4_BACKUP_BYTES must be a positive integer" in (
+        zero_size_backup.stderr
+    )
+
+    not_a_dump = Path(BACKUP_FIXTURE_DIR.name) / "plain-sql-not-a-dump"
+    not_a_dump_bytes = not_a_dump.write_bytes(b"-- plain SQL, not a custom dump\n")
+    wrong_format_backup = run_setup_preflight(
+        setup,
+        {
+            "FRUIT_V4_BACKUP_PATH": str(not_a_dump),
+            "FRUIT_V4_BACKUP_BYTES": str(not_a_dump_bytes),
+        },
+    )
+    assert wrong_format_backup.returncode != 0
+    assert "is not a PostgreSQL custom-format dump" in wrong_format_backup.stderr
+    assert str(not_a_dump) in wrong_format_backup.stderr
+
+    # Correct inputs pass the gate and say what was verified. Run with an empty
+    # PATH: every check must hold using nothing but the runtime image, or the
+    # gate is declaring something it cannot check. That is why there is no
+    # table-of-contents input -- counting entries needs a pg_restore this image
+    # does not ship, and a declared-but-never-compared integer is the same defect
+    # as the checksum this replaced. The runbook verifies the archive with a real
+    # pg_restore during the restore rehearsal instead.
+    verified_backup = run_setup_preflight(setup, {}, path=str(EMPTY_PATH_BIN))
+    assert "verified backup evidence at " + str(BACKUP_FIXTURE_PATH) in (
+        verified_backup.stdout
+    )
+    assert f"{BACKUP_FIXTURE_BYTES} bytes" in verified_backup.stdout
+    assert "PGDMP custom-format dump" in verified_backup.stdout
+    assert "degraded" not in verified_backup.stdout
+    assert "FRUIT_V4_BACKUP_TOC_ENTRIES" not in base_source + migration_source
+    assert 'execFileSync("pg_restore"' not in migration_source
 
     provenance = load_provenance_module()
     registry_only = subprocess.run(
