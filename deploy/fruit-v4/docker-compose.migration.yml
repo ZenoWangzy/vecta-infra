@@ -129,14 +129,8 @@ services:
             fail("FRUIT_V4_BACKUP_PATH must not shadow the image contents at /app");
           }
           const declaredBytes = required("FRUIT_V4_BACKUP_BYTES");
-          const declaredTocEntries = required("FRUIT_V4_BACKUP_TOC_ENTRIES");
-          for (const [name, value] of [
-            ["FRUIT_V4_BACKUP_BYTES", declaredBytes],
-            ["FRUIT_V4_BACKUP_TOC_ENTRIES", declaredTocEntries],
-          ]) {
-            if (!/^[1-9][0-9]*$/.test(value)) {
-              fail(name + " must be a positive integer");
-            }
+          if (!/^[1-9][0-9]*$/.test(declaredBytes)) {
+            fail("FRUIT_V4_BACKUP_BYTES must be a positive integer");
           }
           let backupStat;
           try {
@@ -171,44 +165,16 @@ services:
                 " is not a PostgreSQL custom-format dump",
             );
           }
-          let tocEntries = null;
-          try {
-            tocEntries = (
-              execFileSync("pg_restore", ["-l", backupPath], {
-                encoding: "utf8",
-                maxBuffer: 64 * 1024 * 1024,
-              }).match(/\n/g) || []
-            ).length;
-          } catch (error) {
-            if (error && error.code === "ENOENT") {
-              writeSync(
-                1,
-                "Fruit V4 setup preflight degraded: this image ships no pg_restore, " +
-                  "so FRUIT_V4_BACKUP_TOC_ENTRIES=" + declaredTocEntries +
-                  " was NOT verified. Existence, regular-file type, readability, " +
-                  "declared byte size and the PGDMP header were verified at " +
-                  backupPath + ".\n",
-              );
-            } else {
-              fail(
-                "pg_restore could not list the table of contents of " + backupPath,
-              );
-            }
-          }
-          if (tocEntries !== null && String(tocEntries) !== declaredTocEntries) {
-            fail(
-              "backup file at " + backupPath + " lists " + tocEntries +
-                " table-of-contents entries, not the declared " +
-                "FRUIT_V4_BACKUP_TOC_ENTRIES " + declaredTocEntries,
-            );
-          }
+          // Every check above runs unconditionally in this image. Nothing here
+          // declares a value it cannot check: an entry count would need a
+          // pg_restore that node:20-slim does not ship, and a declared-but-never
+          // -compared integer is the same defect as the checksum this replaced.
+          // The restore rehearsal in the runbook verifies the archive with a
+          // real pg_restore, which proves more than counting its entries.
           writeSync(
             1,
             "Fruit V4 setup preflight verified backup evidence at " + backupPath +
-              ": " + backupStat.size + " bytes, PGDMP custom-format dump, " +
-              (tocEntries === null
-                ? "table-of-contents entries unverified"
-                : tocEntries + " table-of-contents entries") + "\n",
+              ": " + backupStat.size + " bytes, PGDMP custom-format dump\n",
           );
 
           execFileSync(
@@ -234,7 +200,6 @@ services:
       FRUIT_V4_IMAGE_DIGEST: ${FRUIT_V4_IMAGE_DIGEST:?Set FRUIT_V4_IMAGE_DIGEST}
       FRUIT_V4_BACKUP_PATH: ${FRUIT_V4_BACKUP_PATH:?Set FRUIT_V4_BACKUP_PATH}
       FRUIT_V4_BACKUP_BYTES: ${FRUIT_V4_BACKUP_BYTES:?Set FRUIT_V4_BACKUP_BYTES}
-      FRUIT_V4_BACKUP_TOC_ENTRIES: ${FRUIT_V4_BACKUP_TOC_ENTRIES:?Set FRUIT_V4_BACKUP_TOC_ENTRIES}
       FRUIT_V4_RESTORE_REHEARSAL_ID: ${FRUIT_V4_RESTORE_REHEARSAL_ID:?Set FRUIT_V4_RESTORE_REHEARSAL_ID}
       FRUIT_V4_OPERATOR_APPROVAL_ID: ${FRUIT_V4_OPERATOR_APPROVAL_ID:?Set FRUIT_V4_OPERATOR_APPROVAL_ID}
       FRUIT_V4_MIGRATION_GATE: ${FRUIT_V4_MIGRATION_GATE:?Set FRUIT_V4_MIGRATION_GATE}

@@ -101,12 +101,10 @@ The migration override additionally requires:
   runtime-role provisioning inputs.
 - `FRUIT_V4_WRITER_ROLE` and `FRUIT_V4_WRITER_PASSWORD`: setup-only
   controlled-entry writer-role provisioning inputs.
-- `FRUIT_V4_BACKUP_PATH`, `FRUIT_V4_BACKUP_BYTES`, and
-  `FRUIT_V4_BACKUP_TOC_ENTRIES`: the absolute path of the fresh pre-migration
-  custom-format dump, its byte size, and its `pg_restore -l` entry count. The
-  preflight reads the file at that path and rejects the migration unless all
-  three agree with what is on disk; see "Backup evidence the preflight verifies"
-  below.
+- `FRUIT_V4_BACKUP_PATH` and `FRUIT_V4_BACKUP_BYTES`: the absolute path of the
+  fresh pre-migration custom-format dump and its byte size. The preflight reads
+  the file at that path and rejects the migration unless both agree with what is
+  on disk; see "Backup evidence the preflight verifies" below.
 - `FRUIT_V4_RESTORE_REHEARSAL_ID`: isolated restore and exact-image setup
   rehearsal evidence ID.
 - `FRUIT_V4_OPERATOR_APPROVAL_ID`: fresh approval for this exact migration
@@ -141,13 +139,12 @@ Only after those checks does the image execute
 
 The backup gate answers one question: did somebody actually take a dump before
 this migration. It answers it by opening the file, not by accepting a recorded
-value. The three declared inputs are checked against the mounted dump, last,
+value. Both declared inputs are checked against the mounted dump, last,
 immediately before setup runs:
 
 1. `FRUIT_V4_BACKUP_PATH` must be absolute and must not be `/app` or under it
    (mounting there would shadow the image contents).
-2. `FRUIT_V4_BACKUP_BYTES` and `FRUIT_V4_BACKUP_TOC_ENTRIES` must be positive
-   integers.
+2. `FRUIT_V4_BACKUP_BYTES` must be a positive integer.
 3. The path must exist and be a regular file. A missing path fails the bind
    mount first (`create_host_path: false`), and the preflight fails naming the
    path if anything else is there.
@@ -160,27 +157,28 @@ immediately before setup runs:
    custom-format dump. This separates a real dump from a truncated, empty, or
    wrong file of the same size, and it needs no external tool.
 6. Its declared byte size must equal the size on disk.
-7. `FRUIT_V4_BACKUP_TOC_ENTRIES` must equal `pg_restore -l <file> | wc -l`.
 
-Step 7 is the one layer that can be skipped. The runtime image is `node:20-slim`
-and ships no `pg_restore`, so in production the preflight takes a degraded branch
-and prints, on stdout:
+Every one of those runs unconditionally, using nothing but the runtime image.
+On success the preflight prints, on stdout:
 
 ```
-Fruit V4 setup preflight degraded: this image ships no pg_restore, so
-FRUIT_V4_BACKUP_TOC_ENTRIES=<n> was NOT verified. Existence, regular-file type,
-readability, declared byte size and the PGDMP header were verified at <path>.
+Fruit V4 setup preflight verified backup evidence at <path>: <n> bytes, PGDMP custom-format dump
 ```
 
-Treat that line as required output, not noise: if it is absent, either
-`pg_restore` was present and the entry count was compared for real, or the
-backup block did not run at all. On success the preflight always prints
-`Fruit V4 setup preflight verified backup evidence at <path>: ...`. Capture both
-lines with the rest of the migration evidence.
+Capture that line with the rest of the migration evidence; its absence means the
+backup block did not run.
+
+There is deliberately no archive table-of-contents input here. Counting entries
+needs a `pg_restore` that `node:20-slim` does not ship, and an input the gate
+declares but never compares is exactly the defect this section replaced. The
+archive is verified with a real `pg_restore` in the restore rehearsal below,
+which proves the dump can be restored — a stronger claim than its entry count.
 
 This replaced an earlier `FRUIT_V4_BACKUP_SHA256` input. That input was never
 compared against any file, so it proved only that someone typed 64 hexadecimal
-characters; the checks above are strictly stronger and are exercised by
+characters. Measured on the pre-change override: a 64-hex value naming a backup
+that did not exist produced no preflight refusal at all and went straight on to
+run the migration. The checks above are strictly stronger and are exercised by
 `scripts/test_fruit_v4_isolated_compose_contract.py`.
 
 ## Mandatory external migration evidence gate
@@ -191,19 +189,32 @@ production execution and before setting
 
 1. Quiesce the approved migration window and create a fresh custom-format dump
    using approved backup tooling and a protected destination.
-2. Record its absolute path, its byte size (`stat -c %s <file>`) and its entry
-   count (`pg_restore -l <file> | wc -l`) into `FRUIT_V4_BACKUP_PATH`,
-   `FRUIT_V4_BACKUP_BYTES` and `FRUIT_V4_BACKUP_TOC_ENTRIES`, and make the file
-   readable by UID 1000.
-3. Restore that exact dump into an isolated non-production database.
-4. Against the isolated restore, use the exact approved
+2. Record its absolute path and its byte size (`stat -c %s <file>`) into
+   `FRUIT_V4_BACKUP_PATH` and `FRUIT_V4_BACKUP_BYTES`, and make the file readable
+   by UID 1000 (`chmod a+r <file>`; confirm with
+   `sudo -u '#1000' head -c 5 <file>`, which must print `PGDMP`).
+3. Read the archive with a real `pg_restore` and record what it says. The
+   production host has no `pg_restore`, so borrow one from an image that has it:
+
+   ```bash
+   docker run --rm -v "$DUMP:$DUMP:ro" pgvector/pgvector:pg16 \
+     pg_restore -l "$DUMP" | tee /tmp/fruit-v4-backup-toc.txt | wc -l
+   ```
+
+   A `pg_restore -l` that fails, or a table-of-contents that is missing the
+   `fruit` schema objects this migration touches, stops the window here. This is
+   where the archive is verified: the Compose preflight deliberately declares no
+   entry-count input, because it could not check one in `node:20-slim`.
+4. Restore that exact dump into an isolated non-production database.
+5. Against the isolated restore, use the exact approved
    `fruit-industry-pack@sha256` image and execute its exact setup script.
-5. Verify the isolated restore and setup result, then record
+6. Verify the isolated restore and setup result, then record
    `FRUIT_V4_RESTORE_REHEARSAL_ID`.
-6. Obtain a fresh separate approval covering this execution's exact VectA SHA,
+7. Obtain a fresh separate approval covering this execution's exact VectA SHA,
    image digest,
-   backup path/size/entry count, rehearsal ID, expected database endpoint, and
-   infra revision. Record `FRUIT_V4_OPERATOR_APPROVAL_ID`.
+   backup path/size and recorded table of contents, rehearsal ID, expected
+   database endpoint, and infra revision. Record
+   `FRUIT_V4_OPERATOR_APPROVAL_ID`.
 
 Compose validates input presence, format, DSN relationships, the migration gate
 value, and the declared backup file itself. It still cannot prove that the dump
@@ -233,6 +244,66 @@ untracked contract file is dirty. The bounded dirty check covers the Compose
 files, this runbook, the provenance validator, the two contract tests, and the
 CI workflow that runs them; unrelated repository paths are outside this
 deployment contract's checkout check.
+
+On the production host that checkout is the release directory itself. It is a
+real `vecta-infra` working tree — it has its own `.git`, `deploy/`, `scripts/`
+and `docs/` — and it sits next to the environment file the migration reads:
+
+```
+/data/ocee/releases/fruit-v4-gate-a-<id>/
+├── .git/                        <- this is the approved checkout
+├── deploy/fruit-v4/*.yml
+├── scripts/
+├── fruit-v4-production.env      <- root:root 0600
+└── fruit-v4-production.env.pre-*  <- historical snapshots, never edited
+```
+
+Moving the contract forward therefore means moving **both**, in this order.
+Editing only the environment file leaves the old Compose file in place and the
+migration fails on inputs it no longer has; editing only the checkout leaves the
+environment file missing the inputs the new preflight requires.
+
+```bash
+set -euo pipefail
+R=/data/ocee/releases/fruit-v4-gate-a-<id>
+E="$R/fruit-v4-production.env"
+DUMP=<absolute path of the fresh pre-migration custom-format dump>
+
+# 1. Move the approved checkout to the merged contract revision.
+git -C "$R" fetch origin
+git -C "$R" checkout --detach origin/main
+git -C "$R" status --porcelain --untracked-files=all \
+  -- deploy/fruit-v4 docs/runbooks scripts .github          # must print nothing
+git -C "$R" rev-parse HEAD                                  # FRUIT_V4_INFRA_REVISION
+
+# 2. Capture the environment file's before-state.
+cp -a "$E" "$E.pre-<change>-$(date -u +%Y%m%dT%H%MZ)"
+grep -c '=' "$E"
+grep -n '^FRUIT_V4_BACKUP' "$E" | sed -E 's/=.*/=<redacted>/'
+
+# 3. Apply the input change. Retiring FRUIT_V4_BACKUP_SHA256 looked like this:
+sed -i '/^FRUIT_V4_BACKUP_SHA256=/d' "$E"
+printf 'FRUIT_V4_BACKUP_PATH=%s\nFRUIT_V4_BACKUP_BYTES=%s\n' \
+  "$DUMP" "$(stat -c %s "$DUMP")" >> "$E"
+
+# 4. sed -i rebuilds the file, so restore its contract explicitly.
+chown root:root "$E"
+chmod 600 "$E"
+
+# 5. The dump must be readable by the image's node user.
+chmod a+r "$DUMP"
+sudo -u '#1000' head -c 5 "$DUMP"                           # must print PGDMP
+
+# 6. Capture the after-state, then re-render before running anything.
+grep -c '=' "$E"
+grep -n '^FRUIT_V4_BACKUP' "$E"
+docker compose --profile migration --env-file "$E" \
+  -f "$R/deploy/fruit-v4/docker-compose.yml" \
+  -f "$R/deploy/fruit-v4/docker-compose.migration.yml" config --quiet
+```
+
+Never edit a `fruit-v4-production.env.pre-*` snapshot; they are the rollback
+evidence for earlier windows and still contain retired keys on purpose.
 
 ## UAT-only config and start
 
@@ -296,7 +367,6 @@ migration_contract=deploy/fruit-v4/docker-compose.migration.yml
 : "${FRUIT_V4_WRITER_PASSWORD:?required}"
 : "${FRUIT_V4_BACKUP_PATH:?required}"
 : "${FRUIT_V4_BACKUP_BYTES:?required}"
-: "${FRUIT_V4_BACKUP_TOC_ENTRIES:?required}"
 : "${FRUIT_V4_RESTORE_REHEARSAL_ID:?required}"
 : "${FRUIT_V4_OPERATOR_APPROVAL_ID:?required}"
 : "${FRUIT_V4_MIGRATION_GATE:?required}"

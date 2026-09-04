@@ -69,19 +69,12 @@ BACKUP_FIXTURE_DIR = tempfile.TemporaryDirectory(prefix="fruit-v4-backup-contrac
 BACKUP_FIXTURE_PATH = Path(BACKUP_FIXTURE_DIR.name) / "fruit_v4_pre_migration.dump"
 BACKUP_FIXTURE_BYTES = BACKUP_FIXTURE_PATH.write_bytes(b"PGDMP" + b"\x00" * 91)
 
-# pg_restore presence differs between this host and the runtime image, so the
-# contract pins PATH instead of inheriting it: NO_PG_RESTORE_BIN forces the
-# degraded branch, PG_RESTORE_BIN forces the verified branch. A pinned PATH would
-# also hide the node the rendered command asks for by name, so those runs invoke
-# it by absolute path instead.
+# The preflight must depend on nothing outside the runtime image, so the contract
+# runs it with an empty PATH. Node is then invoked by absolute path, because the
+# rendered command asks for it by name.
 NODE_BINARY = shutil.which("node") or "node"
-NO_PG_RESTORE_BIN = Path(BACKUP_FIXTURE_DIR.name) / "empty-bin"
-NO_PG_RESTORE_BIN.mkdir()
-PG_RESTORE_BIN = Path(BACKUP_FIXTURE_DIR.name) / "pg-restore-bin"
-PG_RESTORE_BIN.mkdir()
-PG_RESTORE_STUB = PG_RESTORE_BIN / "pg_restore"
-PG_RESTORE_STUB.write_text("#!/bin/sh\nprintf ';\\na\\nb\\n'\n")
-PG_RESTORE_STUB.chmod(0o755)
+EMPTY_PATH_BIN = Path(BACKUP_FIXTURE_DIR.name) / "empty-bin"
+EMPTY_PATH_BIN.mkdir()
 
 MIGRATION_ENV = {
     "FRUIT_V4_MIGRATION_DATABASE_URL": (
@@ -93,7 +86,6 @@ MIGRATION_ENV = {
     "FRUIT_V4_WRITER_PASSWORD": "placeholder",
     "FRUIT_V4_BACKUP_PATH": str(BACKUP_FIXTURE_PATH),
     "FRUIT_V4_BACKUP_BYTES": str(BACKUP_FIXTURE_BYTES),
-    "FRUIT_V4_BACKUP_TOC_ENTRIES": "3",
     "FRUIT_V4_RESTORE_REHEARSAL_ID": "restore-rehearsal-placeholder",
     "FRUIT_V4_OPERATOR_APPROVAL_ID": "operator-approval-placeholder",
     "FRUIT_V4_MIGRATION_GATE": "approved-migration",
@@ -478,17 +470,21 @@ def main() -> None:
     # and to name the path it failed on: a check that cannot go red is the same
     # unverified value under a new name.
     assert "FRUIT_V4_BACKUP_SHA256" not in base_source + migration_source
-    # The runbook keeps exactly one mention: the note saying the input is retired.
-    # More than one means it has crept back into an input list.
-    assert runbook.count("FRUIT_V4_BACKUP_SHA256") == 1
-    for name in (
-        "FRUIT_V4_BACKUP_PATH",
-        "FRUIT_V4_BACKUP_BYTES",
-        "FRUIT_V4_BACKUP_TOC_ENTRIES",
-    ):
+    # The runbook may name the retired input, but never as something to supply:
+    # it must not appear in the migration command's required-input block, and the
+    # production update must tell the operator to delete it.
+    assert ': "${FRUIT_V4_BACKUP_SHA256' not in runbook
+    assert "sed -i '/^FRUIT_V4_BACKUP_SHA256=/d'" in runbook
+    # The release directory on the production host is itself this checkout, so
+    # the environment file and the Compose files have to move together.
+    assert "fruit-v4-production.env" in runbook
+    assert "git -C \"$R\" checkout --detach origin/main" in runbook
+    for name in ("FRUIT_V4_BACKUP_PATH", "FRUIT_V4_BACKUP_BYTES"):
         assert name in runbook, f"runbook must document {name}"
+    # Entry-count verification lives in the restore rehearsal, where a real
+    # pg_restore runs, not in a Compose input the preflight cannot check.
+    assert "FRUIT_V4_BACKUP_TOC_ENTRIES" not in runbook
     assert "pg_restore -l" in runbook
-    assert "ships no pg_restore" in runbook
     assert "UID 1000" in runbook
 
     absent_backup_path = str(BACKUP_FIXTURE_PATH) + ".absent"
@@ -549,33 +545,22 @@ def main() -> None:
     assert "is not a PostgreSQL custom-format dump" in wrong_format_backup.stderr
     assert str(not_a_dump) in wrong_format_backup.stderr
 
-    # The runtime image is node:20-slim and ships no pg_restore, so the degraded
-    # branch is the production branch. It has to say out loud which layer it
-    # dropped; a silent downgrade is how an unverified value comes back.
-    degraded_backup = run_setup_preflight(setup, {}, path=str(NO_PG_RESTORE_BIN))
-    assert "setup preflight degraded" in degraded_backup.stdout
-    assert "was NOT verified" in degraded_backup.stdout
-    assert "verified backup evidence at " + str(BACKUP_FIXTURE_PATH) in (
-        degraded_backup.stdout
-    )
-    assert "table-of-contents entries unverified" in degraded_backup.stdout
-
-    # With pg_restore available the declared entry count is compared for real.
-    verified_backup = run_setup_preflight(setup, {}, path=str(PG_RESTORE_BIN))
+    # Correct inputs pass the gate and say what was verified. Run with an empty
+    # PATH: every check must hold using nothing but the runtime image, or the
+    # gate is declaring something it cannot check. That is why there is no
+    # table-of-contents input -- counting entries needs a pg_restore this image
+    # does not ship, and a declared-but-never-compared integer is the same defect
+    # as the checksum this replaced. The runbook verifies the archive with a real
+    # pg_restore during the restore rehearsal instead.
+    verified_backup = run_setup_preflight(setup, {}, path=str(EMPTY_PATH_BIN))
     assert "verified backup evidence at " + str(BACKUP_FIXTURE_PATH) in (
         verified_backup.stdout
     )
-    assert "3 table-of-contents entries" in verified_backup.stdout
+    assert f"{BACKUP_FIXTURE_BYTES} bytes" in verified_backup.stdout
+    assert "PGDMP custom-format dump" in verified_backup.stdout
     assert "degraded" not in verified_backup.stdout
-
-    wrong_toc_backup = run_setup_preflight(
-        setup,
-        {"FRUIT_V4_BACKUP_TOC_ENTRIES": "4"},
-        path=str(PG_RESTORE_BIN),
-    )
-    assert wrong_toc_backup.returncode != 0
-    assert "not the declared FRUIT_V4_BACKUP_TOC_ENTRIES 4" in wrong_toc_backup.stderr
-    assert str(BACKUP_FIXTURE_PATH) in wrong_toc_backup.stderr
+    assert "FRUIT_V4_BACKUP_TOC_ENTRIES" not in base_source + migration_source
+    assert 'execFileSync("pg_restore"' not in migration_source
 
     provenance = load_provenance_module()
     registry_only = subprocess.run(
