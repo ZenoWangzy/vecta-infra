@@ -1,0 +1,49 @@
+name: PR contract checks
+
+# Read-only pre-merge validation. It never builds or pushes a production image;
+# production image builds stay on manual workflow_dispatch in
+# build-mypc-images.yml, on the [self-hosted, mypc, prod-build] runner.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-contract-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Contract tests
+    # Hosted runner on purpose: the mypc runners carry prod-build and are the
+    # production image build resource. A PR check must not queue behind one.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # scripts/test_retired_environment_contract.py reads every file under
+      # scripts/ as UTF-8, so a stray .pyc left by an earlier test crashes it.
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          set -euo pipefail
+          python3 --version
+          node --version
+          git --version
+          docker compose version
+
+      # Globbed, not listed: a new scripts/test_*.py is picked up without
+      # editing this file, so there is no second list to go stale.
+      - name: Run scripts/test_*.py
+        run: |
+          set -euo pipefail
+          shopt -s failglob
+          for contract in scripts/test_*.py; do
+            echo "::group::${contract}"
+            python3 "${contract}"
+            echo "::endgroup::"
+          done
