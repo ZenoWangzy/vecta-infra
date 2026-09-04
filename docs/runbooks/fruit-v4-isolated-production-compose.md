@@ -20,7 +20,12 @@ only the operator-supplied canonical production Docker network.
 The base file contains only UAT. Setup and all setup-only high-authority inputs
 exist only in the explicit migration override. Both services consume the same
 digest-only image reference and contain no `build`, floating tag, host
-`ports`, `env_file`, volume, or second network.
+`ports`, `env_file`, or second network. UAT mounts nothing. Setup carries
+exactly one mount, and only in the migration override: a read-only bind of
+`${FRUIT_V4_BACKUP_PATH}` onto the same absolute path inside the container, with
+`create_host_path: false`. It exists because the setup preflight verifies the
+pre-migration dump by opening it, and a preflight cannot open a file the
+container cannot see.
 
 ## Image and deployment provenance
 
@@ -96,7 +101,12 @@ The migration override additionally requires:
   runtime-role provisioning inputs.
 - `FRUIT_V4_WRITER_ROLE` and `FRUIT_V4_WRITER_PASSWORD`: setup-only
   controlled-entry writer-role provisioning inputs.
-- `FRUIT_V4_BACKUP_SHA256`: checksum of the fresh pre-migration custom dump.
+- `FRUIT_V4_BACKUP_PATH`, `FRUIT_V4_BACKUP_BYTES`, and
+  `FRUIT_V4_BACKUP_TOC_ENTRIES`: the absolute path of the fresh pre-migration
+  custom-format dump, its byte size, and its `pg_restore -l` entry count. The
+  preflight reads the file at that path and rejects the migration unless all
+  three agree with what is on disk; see "Backup evidence the preflight verifies"
+  below.
 - `FRUIT_V4_RESTORE_REHEARSAL_ID`: isolated restore and exact-image setup
   rehearsal evidence ID.
 - `FRUIT_V4_OPERATOR_APPROVAL_ID`: fresh approval for this exact migration
@@ -119,12 +129,59 @@ applies the same DSN rules and fails before setup unless:
   `FRUIT_RUNTIME_DB_PASSWORD`;
 - the decoded writer username and password equal `FRUIT_V4_WRITER_ROLE` and
   `FRUIT_V4_WRITER_PASSWORD`;
-- source SHA, infra revision, image digest, and backup checksum have their exact
-  required lowercase hexadecimal lengths;
-- rehearsal ID, approval ID, and the exact migration gate are present.
+- source SHA, infra revision, and image digest have their exact required
+  lowercase hexadecimal lengths;
+- rehearsal ID, approval ID, and the exact migration gate are present;
+- the declared backup file passes every check in the next section.
 
 Only after those checks does the image execute
 `node packages/fruit-industry-pack/dist/db/setup.js`.
+
+## Backup evidence the preflight verifies
+
+The backup gate answers one question: did somebody actually take a dump before
+this migration. It answers it by opening the file, not by accepting a recorded
+value. The three declared inputs are checked against the mounted dump, last,
+immediately before setup runs:
+
+1. `FRUIT_V4_BACKUP_PATH` must be absolute and must not be `/app` or under it
+   (mounting there would shadow the image contents).
+2. `FRUIT_V4_BACKUP_BYTES` and `FRUIT_V4_BACKUP_TOC_ENTRIES` must be positive
+   integers.
+3. The path must exist and be a regular file. A missing path fails the bind
+   mount first (`create_host_path: false`), and the preflight fails naming the
+   path if anything else is there.
+4. The file must be readable by the image's `node` user (UID 1000). Reading it
+   is what proves the operator put a real dump somewhere the gate can see it.
+   A root-owned `0600` dump will fail here: give it a mode the container can
+   read before the migration window, and do not loosen the directory beyond what
+   that requires.
+5. Its first five bytes must be the literal `PGDMP` magic of a PostgreSQL
+   custom-format dump. This separates a real dump from a truncated, empty, or
+   wrong file of the same size, and it needs no external tool.
+6. Its declared byte size must equal the size on disk.
+7. `FRUIT_V4_BACKUP_TOC_ENTRIES` must equal `pg_restore -l <file> | wc -l`.
+
+Step 7 is the one layer that can be skipped. The runtime image is `node:20-slim`
+and ships no `pg_restore`, so in production the preflight takes a degraded branch
+and prints, on stdout:
+
+```
+Fruit V4 setup preflight degraded: this image ships no pg_restore, so
+FRUIT_V4_BACKUP_TOC_ENTRIES=<n> was NOT verified. Existence, regular-file type,
+readability, declared byte size and the PGDMP header were verified at <path>.
+```
+
+Treat that line as required output, not noise: if it is absent, either
+`pg_restore` was present and the entry count was compared for real, or the
+backup block did not run at all. On success the preflight always prints
+`Fruit V4 setup preflight verified backup evidence at <path>: ...`. Capture both
+lines with the rest of the migration evidence.
+
+This replaced an earlier `FRUIT_V4_BACKUP_SHA256` input. That input was never
+compared against any file, so it proved only that someone typed 64 hexadecimal
+characters; the checks above are strictly stronger and are exercised by
+`scripts/test_fruit_v4_isolated_compose_contract.py`.
 
 ## Mandatory external migration evidence gate
 
@@ -134,8 +191,10 @@ production execution and before setting
 
 1. Quiesce the approved migration window and create a fresh custom-format dump
    using approved backup tooling and a protected destination.
-2. Compute and store its SHA-256 checksum and set
-   `FRUIT_V4_BACKUP_SHA256` to that recorded value.
+2. Record its absolute path, its byte size (`stat -c %s <file>`) and its entry
+   count (`pg_restore -l <file> | wc -l`) into `FRUIT_V4_BACKUP_PATH`,
+   `FRUIT_V4_BACKUP_BYTES` and `FRUIT_V4_BACKUP_TOC_ENTRIES`, and make the file
+   readable by UID 1000.
 3. Restore that exact dump into an isolated non-production database.
 4. Against the isolated restore, use the exact approved
    `fruit-industry-pack@sha256` image and execute its exact setup script.
@@ -143,13 +202,14 @@ production execution and before setting
    `FRUIT_V4_RESTORE_REHEARSAL_ID`.
 6. Obtain a fresh separate approval covering this execution's exact VectA SHA,
    image digest,
-   backup checksum, rehearsal ID, expected database endpoint, and infra
-   revision. Record `FRUIT_V4_OPERATOR_APPROVAL_ID`.
+   backup path/size/entry count, rehearsal ID, expected database endpoint, and
+   infra revision. Record `FRUIT_V4_OPERATOR_APPROVAL_ID`.
 
-Compose can validate only input presence, format, DSN relationships, and the
-migration gate value. It cannot prove backup freshness/authenticity, rehearsal
-completion, or approval validity, and it cannot atomically consume an operator
-approval. Those remain independently accepted external hard-gate evidence.
+Compose validates input presence, format, DSN relationships, the migration gate
+value, and the declared backup file itself. It still cannot prove that the dump
+is *fresh* — the file it opens could be last month's — nor rehearsal completion
+or approval validity, and it cannot atomically consume an operator approval.
+Those remain independently accepted external hard-gate evidence.
 
 The setup script is an idempotent, repeatable migration and provisioning
 command: it applies idempotent migrations and creates or corrects the runtime
@@ -234,7 +294,9 @@ migration_contract=deploy/fruit-v4/docker-compose.migration.yml
 : "${FRUIT_V4_RUNTIME_DB_PASSWORD:?required}"
 : "${FRUIT_V4_WRITER_ROLE:?required}"
 : "${FRUIT_V4_WRITER_PASSWORD:?required}"
-: "${FRUIT_V4_BACKUP_SHA256:?required}"
+: "${FRUIT_V4_BACKUP_PATH:?required}"
+: "${FRUIT_V4_BACKUP_BYTES:?required}"
+: "${FRUIT_V4_BACKUP_TOC_ENTRIES:?required}"
 : "${FRUIT_V4_RESTORE_REHEARSAL_ID:?required}"
 : "${FRUIT_V4_OPERATOR_APPROVAL_ID:?required}"
 : "${FRUIT_V4_MIGRATION_GATE:?required}"

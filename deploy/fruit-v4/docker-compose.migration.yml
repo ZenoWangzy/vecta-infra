@@ -10,6 +10,7 @@ services:
       - -e
       - |-
           import { execFileSync } from "node:child_process";
+          import { closeSync, openSync, readSync, statSync, writeSync } from "node:fs";
 
           const fail = (message) => {
             console.error("Fruit V4 setup preflight failed: " + message);
@@ -55,7 +56,6 @@ services:
           assertHex("FRUIT_V4_SOURCE_SHA", 40);
           assertHex("FRUIT_V4_INFRA_REVISION", 40);
           assertHex("FRUIT_V4_IMAGE_DIGEST", 64);
-          assertHex("FRUIT_V4_BACKUP_SHA256", 64);
           required("FRUIT_V4_RESTORE_REHEARSAL_ID");
           required("FRUIT_V4_OPERATOR_APPROVAL_ID");
 
@@ -118,6 +118,99 @@ services:
             fail("writer DSN password must equal FRUIT_V4_WRITER_PASSWORD");
           }
 
+          // The backup gate has to answer "did somebody actually take a dump",
+          // and the only way to answer that is to open the file. This block runs
+          // last on purpose: it is the final check before the migration itself.
+          const backupPath = required("FRUIT_V4_BACKUP_PATH");
+          if (!backupPath.startsWith("/")) {
+            fail("FRUIT_V4_BACKUP_PATH must be an absolute path");
+          }
+          if (backupPath === "/app" || backupPath.startsWith("/app/")) {
+            fail("FRUIT_V4_BACKUP_PATH must not shadow the image contents at /app");
+          }
+          const declaredBytes = required("FRUIT_V4_BACKUP_BYTES");
+          const declaredTocEntries = required("FRUIT_V4_BACKUP_TOC_ENTRIES");
+          for (const [name, value] of [
+            ["FRUIT_V4_BACKUP_BYTES", declaredBytes],
+            ["FRUIT_V4_BACKUP_TOC_ENTRIES", declaredTocEntries],
+          ]) {
+            if (!/^[1-9][0-9]*$/.test(value)) {
+              fail(name + " must be a positive integer");
+            }
+          }
+          let backupStat;
+          try {
+            backupStat = statSync(backupPath);
+          } catch {
+            fail("backup file is missing at " + backupPath);
+          }
+          if (!backupStat.isFile()) {
+            fail("backup file is not a regular file at " + backupPath);
+          }
+          if (String(backupStat.size) !== declaredBytes) {
+            fail(
+              "backup file at " + backupPath + " is " + backupStat.size +
+                " bytes, not the declared FRUIT_V4_BACKUP_BYTES " + declaredBytes,
+            );
+          }
+          // A custom-format dump starts with the literal PGDMP magic. This is the
+          // strongest check that always runs: it needs no external tool and it
+          // separates a real dump from a truncated or wrong file of equal size.
+          let header;
+          try {
+            const backupFd = openSync(backupPath, "r");
+            header = Buffer.alloc(5);
+            readSync(backupFd, header, 0, 5, 0);
+            closeSync(backupFd);
+          } catch {
+            fail("backup file is not readable at " + backupPath);
+          }
+          if (header.toString("latin1") !== "PGDMP") {
+            fail(
+              "backup file at " + backupPath +
+                " is not a PostgreSQL custom-format dump",
+            );
+          }
+          let tocEntries = null;
+          try {
+            tocEntries = (
+              execFileSync("pg_restore", ["-l", backupPath], {
+                encoding: "utf8",
+                maxBuffer: 64 * 1024 * 1024,
+              }).match(/\n/g) || []
+            ).length;
+          } catch (error) {
+            if (error && error.code === "ENOENT") {
+              writeSync(
+                1,
+                "Fruit V4 setup preflight degraded: this image ships no pg_restore, " +
+                  "so FRUIT_V4_BACKUP_TOC_ENTRIES=" + declaredTocEntries +
+                  " was NOT verified. Existence, regular-file type, readability, " +
+                  "declared byte size and the PGDMP header were verified at " +
+                  backupPath + ".\n",
+              );
+            } else {
+              fail(
+                "pg_restore could not list the table of contents of " + backupPath,
+              );
+            }
+          }
+          if (tocEntries !== null && String(tocEntries) !== declaredTocEntries) {
+            fail(
+              "backup file at " + backupPath + " lists " + tocEntries +
+                " table-of-contents entries, not the declared " +
+                "FRUIT_V4_BACKUP_TOC_ENTRIES " + declaredTocEntries,
+            );
+          }
+          writeSync(
+            1,
+            "Fruit V4 setup preflight verified backup evidence at " + backupPath +
+              ": " + backupStat.size + " bytes, PGDMP custom-format dump, " +
+              (tocEntries === null
+                ? "table-of-contents entries unverified"
+                : tocEntries + " table-of-contents entries") + "\n",
+          );
+
           execFileSync(
             process.execPath,
             ["packages/fruit-industry-pack/dist/db/setup.js"],
@@ -139,10 +232,26 @@ services:
       FRUIT_V4_SOURCE_SHA: ${FRUIT_V4_SOURCE_SHA:?Set FRUIT_V4_SOURCE_SHA}
       FRUIT_V4_INFRA_REVISION: ${FRUIT_V4_INFRA_REVISION:?Set FRUIT_V4_INFRA_REVISION}
       FRUIT_V4_IMAGE_DIGEST: ${FRUIT_V4_IMAGE_DIGEST:?Set FRUIT_V4_IMAGE_DIGEST}
-      FRUIT_V4_BACKUP_SHA256: ${FRUIT_V4_BACKUP_SHA256:?Set FRUIT_V4_BACKUP_SHA256}
+      FRUIT_V4_BACKUP_PATH: ${FRUIT_V4_BACKUP_PATH:?Set FRUIT_V4_BACKUP_PATH}
+      FRUIT_V4_BACKUP_BYTES: ${FRUIT_V4_BACKUP_BYTES:?Set FRUIT_V4_BACKUP_BYTES}
+      FRUIT_V4_BACKUP_TOC_ENTRIES: ${FRUIT_V4_BACKUP_TOC_ENTRIES:?Set FRUIT_V4_BACKUP_TOC_ENTRIES}
       FRUIT_V4_RESTORE_REHEARSAL_ID: ${FRUIT_V4_RESTORE_REHEARSAL_ID:?Set FRUIT_V4_RESTORE_REHEARSAL_ID}
       FRUIT_V4_OPERATOR_APPROVAL_ID: ${FRUIT_V4_OPERATOR_APPROVAL_ID:?Set FRUIT_V4_OPERATOR_APPROVAL_ID}
       FRUIT_V4_MIGRATION_GATE: ${FRUIT_V4_MIGRATION_GATE:?Set FRUIT_V4_MIGRATION_GATE}
+    # The single deliberate exception to this contract's no-volume rule, and the
+    # thing that makes the backup gate real instead of declarative: the preflight
+    # cannot open a file the container cannot see. Read-only, one file, mounted at
+    # the same absolute path the operator declared, so failures name a path the
+    # operator recognises. create_host_path is false so a missing dump fails the
+    # mount instead of Docker silently materialising an empty directory. The dump
+    # must be readable by the image's `node` user (UID 1000).
+    volumes:
+      - type: bind
+        source: ${FRUIT_V4_BACKUP_PATH:?Set FRUIT_V4_BACKUP_PATH}
+        target: ${FRUIT_V4_BACKUP_PATH:?Set FRUIT_V4_BACKUP_PATH}
+        read_only: true
+        bind:
+          create_host_path: false
     labels:
       com.vecta.contract: fruit-v4-isolated-production-compose
       com.vecta.owner: vecta-infra
