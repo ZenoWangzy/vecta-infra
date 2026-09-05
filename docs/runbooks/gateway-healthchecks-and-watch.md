@@ -118,20 +118,40 @@ RestartCount **比上一轮大**才告警。状态没变就一行都不写。插
 因此走的是已有的 delivery worker，不新增告警通道。
 
 手工验一次。**不要拿活网关来做这件事**——`gateway-watch.sh` 看的是 `docker ps` 的**全部**容器，
-不是只看两个网关，所以一个用完即弃的容器就足以驱动两个信号，而 `docker kill openclaw-channel-gateway`
-会真的中断生产上的 WeCom 回调。用一次性容器：
+不是只看两个网关，所以用完即弃的容器就足以驱动两个信号。
+
+**`docker kill` 不会让 `restart: unless-stopped` 的容器重启。** 2026-09-05 在 mypc 上实测：
+被 `docker kill` 的探针停在 `Status=exited ExitCode=137 RestartCount=0`，Docker 把显式 kill 当成人为停止，
+不触发重启策略，因此 **RestartCount 那一路信号根本不会被 `docker kill` 触发**；而且容器停了之后就从
+`docker ps` 里消失，`gateway-watch.sh` 连它掉了都看不见（见第四节「看不见什么」）。
+所以要验 RestartCount，得用一个**自己会崩的**容器，也就是本文要监的那个真实场景——崩溃循环。
+
+两个信号分开验，两个探针都是一次性的，**都不要碰活网关**
+（`docker kill openclaw-channel-gateway` 会把生产网关打成 exited 并且不会自己回来）：
 
 ```bash
+# 信号一：转 unhealthy
 ssh mypc '
 docker run -d --name gateway-watch-probe --restart unless-stopped \
   --health-cmd "exit 1" --health-interval 5s --health-retries 1 --health-start-period 1s \
-  alpine:3 sh -c "while :; do sleep 30; done"
-sleep 20                                   # 等它自己转 unhealthy
-/data/ocee/scripts/ops/gateway-watch.sh    # 第一轮：建基线并报 unhealthy
-docker kill gateway-watch-probe            # unless-stopped 拉回来，RestartCount +1
-sleep 10
-/data/ocee/scripts/ops/gateway-watch.sh    # 第二轮：报 RestartCount 增长
-docker rm -f gateway-watch-probe           # 收尾，别把它留在 ps 里
+  redis:7-alpine sh -c "while :; do sleep 30; done"
+sleep 22
+/data/ocee/scripts/ops/gateway-watch.sh    # → 一条「健康检查转为 unhealthy」告警
+/data/ocee/scripts/ops/gateway-watch.sh    # → 静默（边沿触发的去重）
+docker rm -f gateway-watch-probe
+/data/ocee/scripts/ops/gateway-watch.sh    # 收尾重建基线
+'
+
+# 信号二：RestartCount 增长（真崩溃循环，不是 docker kill）
+ssh mypc '
+docker run -d --name gateway-watch-probe2 --restart unless-stopped \
+  redis:7-alpine sh -c "sleep 8; exit 1"
+sleep 25
+/data/ocee/scripts/ops/gateway-watch.sh    # 第一轮：给 probe2 建基线
+sleep 60
+/data/ocee/scripts/ops/gateway-watch.sh    # → 一条「RestartCount N → M」告警
+docker rm -f gateway-watch-probe2
+/data/ocee/scripts/ops/gateway-watch.sh    # 收尾重建基线
 '
 ssh mypc "docker exec -i openclaw-postgres psql -U openclaw_poc -d openclaw_poc -c \
   \"SELECT created_at, left(prompt, 80) FROM proactive_outbox \
