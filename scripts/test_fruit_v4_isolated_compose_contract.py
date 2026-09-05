@@ -563,6 +563,22 @@ def main() -> None:
     assert 'execFileSync("pg_restore"' not in migration_source
 
     provenance = load_provenance_module()
+    # Ticket 51: the runbook's step-1 dirty check must scan exactly the paths
+    # validate_infra_checkout() enforces, not a wider set that includes the
+    # release directory's own untracked state (deploy/fruit-v4/.env and its
+    # .env.bak-pre-<sha> siblings never get pruned and always show as dirty).
+    # Build the expected pathspec from CONTRACT_PATHS itself so this goes red
+    # the moment either side drifts from the other, in either direction.
+    runbook_dirty_check_pathspec = "\n".join(
+        [f"  -- {provenance.CONTRACT_PATHS[0]} \\"]
+        + [f"     {path} \\" for path in provenance.CONTRACT_PATHS[1:-1]]
+        + [f"     {provenance.CONTRACT_PATHS[-1]}             # must print nothing"]
+    )
+    assert runbook_dirty_check_pathspec in runbook, (
+        "runbook step 1 dirty-check pathspec must match "
+        "provenance.CONTRACT_PATHS exactly"
+    )
+    assert "deploy/fruit-v4 docs/runbooks scripts .github" not in runbook
     registry_only = subprocess.run(
         [sys.executable, str(PROVENANCE_SCRIPT_PATH), "--registry-only"],
         cwd=ROOT,
