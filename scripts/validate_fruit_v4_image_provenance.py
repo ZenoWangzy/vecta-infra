@@ -28,6 +28,11 @@ CONTRACT_PATHS = (
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+# Ticket 52: a real remote URL, not a local filesystem path. Accepts
+# https://, ssh:// and the scp-like git@host: form; rejects everything else,
+# including an absolute/relative path to another checkout on the same host
+# (the exact shape of the stale runner-workspace `origin` this rejects).
+REMOTE_URL_SCHEME = re.compile(r"^(?:https://|ssh://|git@[^:/]+:)")
 
 
 class ContractError(RuntimeError):
@@ -57,6 +62,18 @@ def validate_infra_checkout(infra_revision: str) -> None:
     if HEX_40.fullmatch(infra_revision) is None:
         raise ContractError(
             "FRUIT_V4_INFRA_REVISION must be 40 lowercase hex characters"
+        )
+
+    # Ticket 52: HEAD can equal the approved revision while `origin` still
+    # names an ephemeral local checkout (a CI runner's throwaway workspace,
+    # rewritten by the next workflow run) instead of the real upstream.
+    # That mismatch between what the name promises and what it is must fail
+    # here, independent of whether HEAD happens to be correct today.
+    origin_url = git_output("remote", "get-url", "origin")
+    if REMOTE_URL_SCHEME.match(origin_url) is None:
+        raise ContractError(
+            "origin is not a remote URL, it looks like a local filesystem "
+            f"path: {origin_url!r}"
         )
 
     current_head = git_output("rev-parse", "HEAD")
