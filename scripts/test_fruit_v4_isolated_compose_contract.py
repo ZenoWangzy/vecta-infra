@@ -478,7 +478,14 @@ def main() -> None:
     # The release directory on the production host is itself this checkout, so
     # the environment file and the Compose files have to move together.
     assert "fruit-v4-production.env" in runbook
-    assert "git -C \"$R\" checkout --detach origin/main" in runbook
+    # Ticket 52: step 1 must never tell the operator to fetch the release
+    # checkout's own `origin` — that remote is a leftover pointing at a CI
+    # runner's throwaway workspace, not the real upstream. The contract
+    # actually arrives via a `git bundle` fetched by explicit path.
+    assert 'git -C "$R" fetch origin' not in runbook
+    assert 'git -C "$R" checkout --detach origin/main' not in runbook
+    assert 'git -C "$R" fetch "$BUNDLE"' in runbook
+    assert 'git -C "$R" checkout --detach "$APPROVED_SHA"' in runbook
     for name in ("FRUIT_V4_BACKUP_PATH", "FRUIT_V4_BACKUP_BYTES"):
         assert name in runbook, f"runbook must document {name}"
     # Entry-count verification lives in the restore rehearsal, where a real
@@ -631,6 +638,7 @@ def main() -> None:
         provenance,
         "git_output",
         side_effect=[
+            "https://github.com/ZenoWangzy/vecta-infra.git",
             CURRENT_HEAD,
             " M deploy/fruit-v4/docker-compose.yml",
         ],
@@ -640,6 +648,7 @@ def main() -> None:
             lambda: provenance.validate_infra_checkout(CURRENT_HEAD),
         )
     assert git_output_mock.call_args_list == [
+        mock.call("remote", "get-url", "origin"),
         mock.call("rev-parse", "HEAD"),
         mock.call(
             "status",
@@ -648,6 +657,28 @@ def main() -> None:
             "--",
             *provenance.CONTRACT_PATHS,
         ),
+    ]
+    # Ticket 52: a local-filesystem `origin` (the runner-workspace shape)
+    # must fail here specifically, even though HEAD matches the approved
+    # revision today — proving the check is independent of, and upstream
+    # of, the HEAD comparison. side_effect has exactly one item: if
+    # validate_infra_checkout called git_output a second time before
+    # raising, the mock would raise StopIteration instead of the expected
+    # ContractError, so this also proves the origin check runs first.
+    with mock.patch.object(
+        provenance,
+        "git_output",
+        side_effect=[
+            "/home/github-runner/actions-runner-vecta-infra/_work/"
+            "vecta-infra/vecta-infra/infra",
+        ],
+    ) as local_origin_mock:
+        assert_contract_error(
+            provenance,
+            lambda: provenance.validate_infra_checkout(CURRENT_HEAD),
+        )
+    assert local_origin_mock.call_args_list == [
+        mock.call("remote", "get-url", "origin"),
     ]
     assert_contract_error(
         provenance,

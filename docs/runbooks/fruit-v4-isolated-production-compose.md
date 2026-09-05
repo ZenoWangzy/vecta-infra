@@ -270,8 +270,30 @@ E="$R/fruit-v4-production.env"
 DUMP=<absolute path of the fresh pre-migration custom-format dump>
 
 # 1. Move the approved checkout to the merged contract revision.
-git -C "$R" fetch origin
-git -C "$R" checkout --detach origin/main
+#    Do NOT fetch this checkout's own `origin` remote. It is a
+#    leftover from the `git clone` that first created it: it points at
+#    the GitHub Actions self-hosted runner's own throwaway workspace
+#    (/home/github-runner/actions-runner-vecta-infra/_work/vecta-infra/
+#    vecta-infra/infra), which the next workflow run rewrites from
+#    scratch. Fetching it either fails outright (`dubious ownership`,
+#    different owning user) or, once that's papered over, fetches
+#    nothing at all (that workspace is a detached-HEAD `actions/checkout`
+#    with no `refs/heads/*` to advertise) — and if a runner ever leaves a
+#    real branch there, this would silently deploy whatever that machine
+#    last happened to build, not the merged contract. See ticket 52.
+#
+#    The contract actually reaches this directory as a `git bundle`
+#    built from a trusted `origin/main` checkout (ticket 50: this host's
+#    direct network path to GitHub is unreliable) and fetched here
+#    anonymously — which is why `git branch -r` shows an orphan
+#    `bundle/main` with no matching `remote.bundle.*` in config. Do the
+#    same: build BUNDLE elsewhere from a checkout whose `origin/main` you
+#    trust (`git bundle create BUNDLE main`), copy it to this host, and
+#    fetch it by path, never by a persistent remote named `origin`.
+BUNDLE=<absolute path of the freshly transferred bundle, e.g. /tmp/infra-main.bundle>
+APPROVED_SHA=<the merged main SHA this window's approval names>
+git -C "$R" fetch "$BUNDLE" "main:refs/remotes/bundle/main"
+git -C "$R" checkout --detach "$APPROVED_SHA"                # fails if BUNDLE lacks it
 # The seven paths below are CONTRACT_PATHS, copied verbatim from
 # scripts/validate_fruit_v4_image_provenance.py:19-27 — the list the
 # provenance validator actually enforces. deploy/fruit-v4/.env and its
@@ -287,7 +309,14 @@ git -C "$R" status --porcelain=v1 --untracked-files=all \
      scripts/test_build_mypc_images_contract.py \
      scripts/test_fruit_v4_isolated_compose_contract.py \
      scripts/validate_fruit_v4_image_provenance.py             # must print nothing
-git -C "$R" rev-parse HEAD                                  # FRUIT_V4_INFRA_REVISION
+git -C "$R" rev-parse HEAD                                  # FRUIT_V4_INFRA_REVISION, must equal APPROVED_SHA
+
+#    One-time cleanup: this checkout's `origin` should never point at the
+#    runner workspace. Retarget it at the real upstream (do this outside
+#    a deployment window, with founder sign-off — not as part of the
+#    steps above):
+#      git -C "$R" remote set-url origin https://github.com/ZenoWangzy/vecta-infra.git
+#      git -C "$R" remote get-url origin   # must print the URL above, not a filesystem path
 
 # 2. Capture the environment file's before-state.
 cp -a "$E" "$E.pre-<change>-$(date -u +%Y%m%dT%H%MZ)"
