@@ -1,0 +1,71 @@
+# Ticket 106 — the two gateways run with no healthcheck and unrotated logs, so
+# nothing on this host would notice a crash loop.
+#
+# WHY THIS IS A NEW OVERLAY AND NOT AN EDIT TO AN EXISTING ONE.
+# The `openclaw-enterprise` project is assembled from a growing chain of `-f`
+# files whose only truth is the running container's
+# `com.docker.compose.project.config_files` label (24 entries on 2026-09-05,
+# ending `/data/ocee/releases/main-a1cc5129b45e/compose.images.yml`). Not one of
+# those files is committed anywhere: the base
+# `/data/ocee/migration-compose.config.yml` is a snapshot restored from a live
+# container in 2026-08, and every `releases/*/compose.images.yml` is written in
+# its own deploy window and sets nothing but `image:`. Editing the last release
+# overlay would rewrite the artifact the #854 record documents as deployed, and
+# the healthcheck would still be gone the moment the next window appends a fresh
+# overlay. A separate, permanent member of the chain has neither problem, and
+# rollback stays the chain's own rollback: drop this one `-f`.
+#
+# ORDER DOES NOT MATTER between this file and any release overlay: Compose
+# merges per key, and a release overlay only ever sets `image:`.
+#
+# Install and rollback: docs/runbooks/gateway-healthchecks-and-watch.md.
+# Applying this file requires `up -d --no-deps <service>` (both `healthcheck`
+# and `logging` are container-create options), so it lands in a deploy window
+# the conductor schedules, not from here.
+services:
+  channel-gateway:
+    healthcheck:
+      # Neither image has curl (checked in the live containers); `wget` is GNU
+      # wget and exits non-zero on a 5xx, which is the point: channel-gateway's
+      # /healthz turns 503 `degraded` when the WeCom callback goes stale
+      # (packages/channel-gateway/src/server.ts) and until now nothing read it.
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --tries=1
+        - --timeout=5
+        - -O
+        - /dev/null
+        - http://127.0.0.1:9000/healthz
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: "5"
+  fleet-gateway:
+    healthcheck:
+      # fleet-gateway's /healthz answers 503 when any of postgres / redis /
+      # litellm / fruitV4 is down (packages/fleet-gateway/src/routes/healthz.ts).
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --tries=1
+        - --timeout=5
+        - -O
+        - /dev/null
+        - http://127.0.0.1:3000/healthz
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: "5"
