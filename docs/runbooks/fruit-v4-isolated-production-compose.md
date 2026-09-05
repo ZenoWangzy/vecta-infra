@@ -272,8 +272,21 @@ DUMP=<absolute path of the fresh pre-migration custom-format dump>
 # 1. Move the approved checkout to the merged contract revision.
 git -C "$R" fetch origin
 git -C "$R" checkout --detach origin/main
-git -C "$R" status --porcelain --untracked-files=all \
-  -- deploy/fruit-v4 docs/runbooks scripts .github          # must print nothing
+# The seven paths below are CONTRACT_PATHS, copied verbatim from
+# scripts/validate_fruit_v4_image_provenance.py:19-27 — the list the
+# provenance validator actually enforces. deploy/fruit-v4/.env and its
+# .env.bak-pre-<sha> siblings are deliberately absent: they are this
+# release directory's own state and rollback evidence, not tracked in
+# git, and out of scope for this contract by design (see "Exact infra
+# checkout gate" above) — not an oversight.
+git -C "$R" status --porcelain=v1 --untracked-files=all \
+  -- .github/workflows/build-mypc-images.yml \
+     deploy/fruit-v4/docker-compose.yml \
+     deploy/fruit-v4/docker-compose.migration.yml \
+     docs/runbooks/fruit-v4-isolated-production-compose.md \
+     scripts/test_build_mypc_images_contract.py \
+     scripts/test_fruit_v4_isolated_compose_contract.py \
+     scripts/validate_fruit_v4_image_provenance.py             # must print nothing
 git -C "$R" rev-parse HEAD                                  # FRUIT_V4_INFRA_REVISION
 
 # 2. Capture the environment file's before-state.
