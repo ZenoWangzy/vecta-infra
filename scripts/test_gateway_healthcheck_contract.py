@@ -5,12 +5,24 @@ Ticket 106. Two things are pinned here:
 
 1. `deploy/gateways/compose.healthchecks.yml` gives both gateways a healthcheck
    that probes their own /healthz and a rotating json-file log driver, and both
-   survive a later release overlay that sets nothing but `image:` -- which is
-   how every deploy window extends the `openclaw-enterprise` `-f` chain.
+   survive a later release overlay that sets `image:` -- which is how a deploy
+   window extends the `openclaw-enterprise` `-f` chain.
 2. `scripts/ops/gateway-watch.sh` turns an unhealthy container or a grown
    RestartCount into exactly one admin alert row, in the column shape
    fleet-gateway's enqueueAdminAlertIfNeeded already writes, and writes nothing
    at all when the state has not changed.
+
+WHAT THIS FILE DOES **NOT** COVER (do not read a pass here as coverage of it;
+the same list is in docs/runbooks/gateway-healthchecks-and-watch.md):
+
+- The three failure paths in gateway-watch.sh. `run_watch`'s fake docker always
+  exits 0 and the fake psql is `tee`, which cannot fail, so `docker ps` failing,
+  `docker inspect` failing, and the INSERT failing (the branch whose whole point
+  is that it exits 1 *without advancing the state file*, so the next cycle
+  retries) are all unexercised here.
+- Two signals in one cycle: a container that turns `unhealthy` *and* whose
+  RestartCount grew since the previous run should produce one INSERT carrying
+  both lines. Every fixture below moves exactly one signal at a time.
 """
 
 from __future__ import annotations
@@ -60,9 +72,13 @@ def assert_overlay_merges() -> None:
                 for service in sorted(GATEWAY_PORTS)
             )
         )
-        # Every release overlay in the live chain sets `image:` and nothing else.
-        # Appending one after the healthcheck overlay is exactly what the next
-        # deploy window does, and it must not take the healthcheck away.
+        # A release overlay that sets `image:` is the common case (19 of the 28
+        # files under /data/ocee/releases on 2026-09-05); 9 of them also set
+        # `environment:`, and 4 of those `extra_hosts:` + `mem_limit:` as well.
+        # None of the 28 sets `healthcheck:` or `logging:`, which is why order
+        # does not matter for THIS file's keys. Appending an `image:`-only
+        # overlay after the healthcheck overlay is what the next deploy window
+        # does, and it must not take the healthcheck away.
         later_release = workdir / "compose.images.yml"
         later_release.write_text(
             "services:\n"

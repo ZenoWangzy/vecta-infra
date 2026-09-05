@@ -8,15 +8,33 @@
 # ending `/data/ocee/releases/main-a1cc5129b45e/compose.images.yml`). Not one of
 # those files is committed anywhere: the base
 # `/data/ocee/migration-compose.config.yml` is a snapshot restored from a live
-# container in 2026-08, and every `releases/*/compose.images.yml` is written in
-# its own deploy window and sets nothing but `image:`. Editing the last release
-# overlay would rewrite the artifact the #854 record documents as deployed, and
-# the healthcheck would still be gone the moment the next window appends a fresh
-# overlay. A separate, permanent member of the chain has neither problem, and
-# rollback stays the chain's own rollback: drop this one `-f`.
+# container in 2026-08, and every `releases/*` overlay is written in its own
+# deploy window. Editing the last release overlay would rewrite the artifact the
+# #854 record documents as deployed, and the healthcheck would still be gone the
+# moment the next window appends a fresh overlay. A separate, permanent member of
+# the chain has neither problem, and rollback stays the chain's own rollback:
+# drop this one `-f`.
 #
-# ORDER DOES NOT MATTER between this file and any release overlay: Compose
-# merges per key, and a release overlay only ever sets `image:`.
+# ORDER DOES NOT MATTER between this file and any release overlay, but NOT
+# because release overlays only set `image:` -- they do not. Enumerated
+# 2026-09-05 over all 28 compose files in the 29 `/data/ocee/releases/*`
+# directories:
+#   19  set `image:` only
+#    2  set `image:` + `environment:` (HERMES_RUNTIME_IMAGE_VERSION on
+#       fleet-gateway) -- ca150-5e56973941cf..., main-631554ab6022-20260829T103832Z,
+#       and BOTH are in the live 24-file chain
+#    3  set `environment:` only (the `compose.hermes-runtime.yml` files under
+#       main-050566c21bac / main-940b61aa262d / main-5fa7a5cd5dcf, all three in
+#       the live chain)
+#    4  set `image:` + `environment:` + `extra_hosts:` + `mem_limit:`
+#       (the `compose.override.yml` files; promote-6a1e9973... is in the live chain)
+# The load-bearing fact is narrower and checked directly:
+# `grep -rlE '^\s*(healthcheck|logging):' --include='compose.*.yml'
+# /data/ocee/releases` matched NOTHING on 2026-09-05, so no overlay present today
+# writes either key this file sets, and Compose merges per key. A future window
+# that adds `healthcheck:` or `logging:` to a release overlay WOULD override this
+# file if it sorts later on the `-f` line -- re-run that grep before assuming
+# otherwise.
 #
 # Install and rollback: docs/runbooks/gateway-healthchecks-and-watch.md.
 # Applying this file requires `up -d --no-deps <service>` (both `healthcheck`
