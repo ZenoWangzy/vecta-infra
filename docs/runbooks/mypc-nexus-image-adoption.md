@@ -501,9 +501,18 @@ persist approval in the default inventory.
   of refusing to start (lesson V23). `latest` in particular still resolves to
   the 2026-07-16 cutover mirror; nothing in this repo's Ansible or Compose
   config reads it, and it must stay that way.
-  `roles/vecta-app/tasks/fleet_gateway_mypc.yml` refuses any
-  `fleet_gateway_image` that is not pinned to a full 40-character source SHA
-  tag, which blocks `latest`/`cache-*` before the pull/recreate tasks run, but
-  it cannot distinguish an old well-formed SHA tag from a new one -- do not
-  rely on it for that. Deleting the confirmed pre-guard Nexus tags is a
-  conductor-level decision (irreversible); see the audit doc for the proposal.
+  `roles/vecta-app/tasks/fleet_gateway_mypc.yml` enforces this directly, before
+  the pull/recreate tasks run: it runs
+  `git merge-base --is-ancestor fleet_gateway_guard_commit <selected tag>`
+  against `/data/ocee` (the vecta clone already on mypc), fetching both
+  commits first. `fleet_gateway_guard_commit` (`94faaa8c...`, pinned in
+  `inventories/mypc/group_vars/mypc.yml`) is the exact commit whose parent has
+  zero `IndustryPackIncompatibleError` hits and which itself has two -- the
+  root cause, not a whitelist of known-good SHAs, so it never goes stale as
+  new tags are built after it. This also refuses `latest`/`cache-*`, which
+  simply fail to resolve as vecta commits. Deleting the confirmed pre-guard
+  Nexus tags was proposed and **rejected by conductor on 2026-09-06** (see the
+  audit doc's §5): the ancestor guard already closes the ansible deploy path,
+  and destroying 44 historical build artifacts for a manual-`docker-compose`
+  risk that a `latest` retag (done, see the audit doc) already defangs was
+  judged not worth the loss of bisect history.
