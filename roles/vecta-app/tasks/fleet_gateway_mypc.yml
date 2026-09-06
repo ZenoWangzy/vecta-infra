@@ -2,6 +2,29 @@
 # Fleet owns the manager contract for existing per-user runtimes. It is safe to
 # replace only the gateway container when its mounts, networks, user, and live
 # environment are retained, and no runtime container is recreated.
+#
+# Ticket 101: Nexus vecta-docker-local still carries 40+ fleet-gateway tags
+# built before the fail-closed industry-pack guard (ticket 00 /
+# IndustryPackIncompatibleError in packages/fleet-gateway/src/hermes/config-generator.ts).
+# Those images degrade to zero industry packs instead of refusing to start
+# (lesson V23). `latest` and every `cache-<image-id>` compatibility tag are
+# pre-provenance mirrors from the 2026-07 Nexus adoption cutover and are
+# confirmed fail-open; a full audit is in vecta's
+# docs/ops/2026-09-06-ticket-101-fleet-gateway-tag-audit.md. Refuse them here,
+# before the pull/recreate tasks below ever run.
+- name: Refuse floating or pre-provenance Fleet gateway image tags
+  ansible.builtin.assert:
+    that:
+      - "fleet_gateway_image is regex('/fleet-gateway:[0-9a-f]{40}$')"
+    fail_msg: >-
+      fleet_gateway_image={{ fleet_gateway_image }} is not pinned to a full
+      40-character source SHA tag. `latest` and `cache-<image-id>` tags in
+      Nexus predate the ticket 00 fail-closed industry-pack guard and must
+      never be deployed (see docs/ops/2026-09-06-ticket-101-fleet-gateway-tag-audit.md
+      in vecta). Pass -e deploy_image_tags='{"fleet-gateway":"<40-char sha>"}'
+      with a tag built after the guard landed (9498cb86 or later).
+  tags: [always]
+
 - name: Capture mypc Fleet gateway contract
   ansible.builtin.command:
     argv: [docker, inspect, "{{ fleet_gateway_container_name }}"]

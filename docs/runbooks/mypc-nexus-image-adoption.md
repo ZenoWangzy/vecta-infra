@@ -486,3 +486,24 @@ persist approval in the default inventory.
   reviewed production release decision.
 - Do not flatten/import `alpine/openclaw:2026.5.18` just to force it into Nexus;
   that would create a behaviorally different runtime image.
+- **Fleet Gateway images built before the ticket 00 fail-closed industry-pack
+  guard must never be deployed** (ticket 101). The judgment call is not "older
+  than a given tag" -- it is whether
+  `packages/fleet-gateway/src/hermes/config-generator.ts` throws
+  `IndustryPackIncompatibleError` instead of degrading to zero packs:
+  `git show <sha>:packages/fleet-gateway/src/hermes/config-generator.ts | grep -c IndustryPackIncompatibleError`
+  must be non-zero. As of the 2026-09-06 audit
+  (`docs/ops/2026-09-06-ticket-101-fleet-gateway-tag-audit.md` in vecta), that
+  is true only for tags built on or after `9498cb86` (2026-09-03); every
+  earlier fleet-gateway tag in Nexus -- 48 of them at audit time, including
+  `latest` and every `cache-<image-id>` compatibility tag from the 2026-07
+  adoption cutover -- degrades to zero industry packs on load failure instead
+  of refusing to start (lesson V23). `latest` in particular still resolves to
+  the 2026-07-16 cutover mirror; nothing in this repo's Ansible or Compose
+  config reads it, and it must stay that way.
+  `roles/vecta-app/tasks/fleet_gateway_mypc.yml` refuses any
+  `fleet_gateway_image` that is not pinned to a full 40-character source SHA
+  tag, which blocks `latest`/`cache-*` before the pull/recreate tasks run, but
+  it cannot distinguish an old well-formed SHA tag from a new one -- do not
+  rely on it for that. Deleting the confirmed pre-guard Nexus tags is a
+  conductor-level decision (irreversible); see the audit doc for the proposal.
