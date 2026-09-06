@@ -36,6 +36,28 @@ to be a 40-character lowercase SHA equal to `git rev-parse HEAD` in the current
 checkout. Validation also fails when any tracked or untracked file belonging to
 this contract is dirty.
 
+**Why `FRUIT_V4_IMAGE_DIGEST` stays required here even though `fleet-gateway`/
+`channel-gateway` identify their images by SHA-tag plus
+`org.opencontainers.image.revision` alone** (ticket 138 raised removing it for
+parity and a build reviewed the question and declined): this contract has two
+independent Compose invocations — `deploy/fruit-v4/docker-compose.yml` for the
+runtime and `deploy/fruit-v4/docker-compose.migration.yml` for setup — that
+must resolve to byte-identical image content, not merely to images built from
+the same source commit. A
+revision label proves *which commit* built an image; it does not prove two
+image references are the *same bytes*, since the same commit can be rebuilt
+into a different image (dependency drift, base-image movement, a re-dispatched
+build). The digest is what lets both files pull the identical content from one
+`.env` value and lets "Running image and readiness evidence" below assert
+setup and UAT share one `image_id`. `fleet-gateway`/`channel-gateway` have no
+second consumer that needs this same-bytes guarantee, so their tag+label
+scheme answers a different, easier question and is not a substitute here.
+Reading `FRUIT_V4_IMAGE_DIGEST` for this purpose is identity, not verification
+evidence, and is not covered by the project hash ban — see
+`docs/runbooks/openclaw-enterprise-gateway-image-promotion.md` §1c for the
+founder-confirmed general rule ("which build is this" vs. "did I deliver
+correctly"). Cite that section instead of re-litigating the boundary.
+
 Compose service labels beginning with
 `com.vecta.expected.image.source.*` record operator expectations only. They
 are not image provenance and must never be accepted as proof. After the exact
