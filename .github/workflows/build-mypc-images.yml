@@ -123,9 +123,35 @@ jobs:
               echo "timeout is required" >&2
               exit 1
             }
+            # This job sets GIT_CONFIG_GLOBAL=/dev/null for isolation, so
+            # `git config --global http.proxy` (the shape ci.yml's "Configure git
+            # proxy" step uses) would be silently ignored here. Same credentials,
+            # same probe/fallback logic, same thresholds as that step -- only the
+            # plumbing differs (http_proxy/https_proxy env vars scoped to this one
+            # fetch, not global git config), because this job's isolation is
+            # stricter. Never printed: only "enabled"/"unreachable" is logged.
+            PU="$(printf '%s' "${PROXY_USERNAME}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+            PP="$(printf '%s' "${PROXY_PASSWORD}" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')"
+            CANDIDATE_PROXY="http://${PU}:${PP}@geraldsynnas.ddns.net:8888"
+            PROXY=""
+            PROXY_BULK_STATUS=1
+            PROXY_SPEED=0
+            if curl --fail -sm 8 -x "$CANDIDATE_PROXY" -o /dev/null https://api.github.com/zen; then
+              PROXY_BULK_STATUS=0
+              PROXY_SPEED="$(curl --fail -sS -m 15 -x "$CANDIDATE_PROXY" -o /dev/null -w '%{speed_download}' https://codeload.github.com/torvalds/linux/tar.gz/v6.1)" || PROXY_BULK_STATUS=$?
+            fi
+            if { [ "$PROXY_BULK_STATUS" -eq 0 ] || [ "$PROXY_BULK_STATUS" -eq 28 ]; } &&
+              awk -v speed="$PROXY_SPEED" 'BEGIN { exit !(speed >= 20480) }'; then
+              PROXY="$CANDIDATE_PROXY"
+              echo "git proxy enabled"
+            else
+              echo "proxy unreachable; using direct GitHub access"
+            fi
             # ponytail: exact local object avoids GitHub; fetch only on a cold runner.
             for attempt in 1 2 3; do
-              if GIT_HTTP_LOW_SPEED_LIMIT=0 \
+              if https_proxy="$PROXY" http_proxy="$PROXY" \
+                GIT_HTTP_LOW_SPEED_LIMIT=1024 \
+                GIT_HTTP_LOW_SPEED_TIME=30 \
                 LC_ALL=C \
                 GIT_ASKPASS="$askpass" \
                 GIT_ASKPASS_REQUIRE=force \
@@ -154,6 +180,8 @@ jobs:
           fi
         env:
           INFRA_READ_TOKEN: ${{ github.token }}
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
 
       - name: Validate selected SHA
         run: |
