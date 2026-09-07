@@ -47,6 +47,18 @@ for this yet; re-run the dump above after any such change. (Worth a small
 follow-up: have `fruit-account-onboard.sh` refresh this file as part of its
 own blue-green swap, instead of leaving it to whoever remembers.)
 
+## Status: live since 2026-09-07 (ticket 147)
+
+`openclaw-fruit-feishu-gateway` is no longer the manually-`docker run` container
+ticket 132 found -- ticket 147 (rotating `A2A_ROUTER_TOKEN`, which required a
+recreate anyway since Docker can't hot-swap env on a running container) used
+this exact path to do the real cutover: stop + `docker rm` the old manual
+container, update the token in the real env file, `docker compose -p
+fruit-feishu-gateway -f docker-compose.yml up -d`. `docker inspect` now shows
+`com.docker.compose.project=fruit-feishu-gateway` on it. The steps below are
+still the right reference for a from-nothing rebuild; they're no longer
+hypothetical.
+
 ## Recreating the container from nothing
 
 1. **Take the production deploy lock first** (same mechanism as the gateway
@@ -106,11 +118,24 @@ would have been unrecoverable. Advancing the pinned tag to match
 the live Feishu channel runs against, with confirmed non-test usage) and
 belongs in its own follow-up now that this path exists to fall back to.
 That follow-up should also update `production-deploy-lock.md` to require
-the lock for that specific promotion, and confirm the newer image is
-compatible with this container's current 50-key env before switching (the
-parallel-instance mechanism above is the way to check that without touching
-production).
+the lock for that specific promotion.
 
-Ticket 147 (rotating `A2A_ROUTER_TOKEN`, three holders) is blocked on this
-recovery path existing, not on the tag advance -- it can proceed once this
-file lands.
+Diligence done 2026-09-07 (still not a substitute for actually doing the
+promotion carefully): `git log 5d9a930b98..f4195d3e9c` is **1200 commits**
+across the whole repo, **66 files** under `packages/channel-gateway` alone --
+this is not a small delta. Scoped to `packages/channel-gateway/src` (not
+tests), exactly one new `process.env.*` read was added in that range,
+`CHANNEL_WS_CHAT_TIMEOUT_MS` (`packages/channel-gateway/src/config.ts:459`),
+and it has a safe default (`180_000`) when unset -- this container's current
+50-key env does not have it and does not need it to boot. That rules out the
+cheapest failure mode (a newly-required env var causing a crash loop) but
+says nothing about behavioral changes in that 19-day range -- the diff
+touches `im-relay`, provider isolation, personal-channel routing, and
+internal-iface auth tests grew significantly. Before promoting, actually
+read that diff for anything Feishu-path-relevant, don't just check envs.
+
+Ticket 147 (rotating `A2A_ROUTER_TOKEN`, three holders) is done as of
+2026-09-07 -- see the vecta repo ticket file for the full record. It used
+this same file for the real production cutover (see "Status" above), one
+variable at a time, on purpose: the tag advance is a separate, still-open
+follow-up, not bundled into that rotation.
