@@ -1,3 +1,19 @@
+# Ticket 133: this task had no guard at all against directory_service_image
+# being a floating/cache-<image-id> tag -- unlike the migration-style task
+# files (fleet_gateway_mypc.yml etc.), it pulls and recreates directly off the
+# default with nothing else checking the result first.
+- name: Refuse floating or pre-provenance directory-service image tags
+  ansible.builtin.assert:
+    that:
+      - "directory_service_image is regex('/directory-service:[0-9a-f]{40}$')"
+    fail_msg: >-
+      directory_service_image={{ directory_service_image }} is not pinned to
+      a full 40-character source SHA tag. cache-<image-id> and other floating
+      tags are pre-provenance mirrors and must not be deployed (ticket 133).
+      Pass -e deploy_image_tags='{"directory-service":"<40-char sha>"}' with
+      a tag built from a reviewed commit.
+  tags: [always]
+
 - name: Deploy directory-service
   community.docker.docker_container:
     name: openclaw-directory-service

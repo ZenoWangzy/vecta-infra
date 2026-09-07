@@ -185,12 +185,39 @@ deploy_audit_enabled: false
 deploy_smoke_enabled: false
 nexus_manifest_check_enabled: false
 nexus_docker_login_enabled: false
+# Ticket 133: six of these were still the 2026-07-18 cache-<image-id> cutover
+# mirrors -- pre-provenance mirrors of whatever the local image cache held on
+# the adoption date, not tied to any reviewed build. Nothing in this repo
+# currently reads deploy_image_tags (the vecta-app role that consumes it isn't
+# referenced by playbooks/infra.yml, playbooks/mypc-adopt.yml, or
+# playbooks/mypc-network-reconcile.yml -- zero hits grepping playbooks/*.yml
+# for "vecta-app" at HEAD), so today a stale value here can't be applied by
+# accident. That's a fragile safety property, not a durable one: this exact
+# role was wired up and run for real on 2026-07-18 (see
+# docs/runbooks/mypc-data-structure-compatibility.md's execution record), so
+# it can become live again. Re-pinned to the newest tag each repo actually has
+# in Nexus as of the 2026-09-07 audit, and each consuming task file under
+# roles/vecta-app/tasks/ now asserts its image is a full 40-character source
+# SHA tag before any pull/recreate runs -- that assert, not this literal
+# value, is the durable guard; it will need re-pinning again as production
+# moves. fleet-gateway was out of scope for this pass (ticket 101's own
+# concern) and got its own, stricter fix in #69 below (a git-ancestor check,
+# not just a tag-shape assert -- ticket 101's audit found 44 of 48 fail-open
+# Nexus tags were still well-formed 40-char SHAs, so shape alone wasn't
+# enough for the one service with a known "silently degrades to zero
+# industry packs" failure mode). The other six here don't have that specific
+# failure mode, so the shape assert is the right-sized guard for them.
+# baidu-search-service had no consuming task under roles/vecta-app/tasks for
+# the mypc inventory at all: its deploy_image_tags entry and the derived
+# baidu_search_image var were defined and never read here (a same-named var
+# in inventories/mycp is the one actually used there). Both deleted rather
+# than re-pinned, per the F78 lesson: a dead declaration with a fresh-looking
+# value is worse than no declaration.
 deploy_image_tags:
-  a2a-router: cache-3134bcb4484a
-  admin-console: cache-19ca33c7e758
-  baidu-search-service: cache-fdfbc005133b
-  channel-gateway: cache-94a5357394f9
-  directory-service: cache-d38d9f4d3636
+  a2a-router: 5d9a930b981cc47fcbfa2ed58a8a1e83afdfefe4
+  admin-console: a27d88298529935c6d6f9815c22bf2eb76bf8ce7
+  channel-gateway: f4195d3e9cd5129413638452ef1667b8c8c6c55e
+  directory-service: b1689bd4908b31bb4120e98a34eebb96e6044925
   # Ticket 101: the 2026-07-18 cache-<image-id> default (cache-a6d8bcce5249)
   # pre-dates the fail-closed industry-pack guard added by ticket 00
   # (packages/fleet-gateway/src/hermes/config-generator.ts, first shipped in
@@ -205,8 +232,8 @@ deploy_image_tags:
   # fleet_gateway_mypc.yml, not this literal value. See
   # docs/ops/2026-09-06-ticket-101-fleet-gateway-tag-audit.md in vecta.
   fleet-gateway: b375e34309b2f4b73effbf71c2e8395c04456b67
-  rag-service: cache-761b14870cf1
-  wechat-contact-sync: cache-73d27641f5e9
+  rag-service: 89da897ec9f7a1b0e1fb59d1ad0238ec46680ecb
+  wechat-contact-sync: b1689bd4908b31bb4120e98a34eebb96e6044925
 # Ticket 101: ancestor judgment used by fleet_gateway_mypc.yml's pre-deploy
 # guard. fleet_gateway_guard_commit is the vecta commit that introduced the
 # ticket 00 fail-closed industry-pack guard (first commit where
@@ -241,7 +268,6 @@ wechat_contact_sync_log_options:
   max-file: "5"
 wechat_contact_sync_memory: 128m
 wechat_contact_sync_cpus: "0.25"
-baidu_search_image: "{{ nexus_docker_registry }}/baidu-search-service:{{ deploy_image_tags['baidu-search-service'] }}"
 # First app-only recreation stage estimated from live mypc risk. These services
 # have no production data mounts and can be tested before Fleet/RAG/Channel/WeCom.
 # Keep mypc_deploy_enabled=false until an explicit cutover run.

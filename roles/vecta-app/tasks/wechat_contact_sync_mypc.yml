@@ -2,6 +2,25 @@
 # mypc runs the legacy container name and has production-only channel
 # credentials that must be retained from the live container rather than
 # reconstructed from controller env.
+#
+# Ticket 133: wechat_contact_sync_image defaulted to a 2026-07-18
+# cache-<image-id> cutover mirror. The live-image-ID assert below already
+# catches that indirectly, but it fails late, mid-"docker image inspect",
+# with a message that doesn't say why. Refuse the tag shape first, before
+# that.
+- name: Refuse floating or pre-provenance WeCom contact-sync image tags
+  ansible.builtin.assert:
+    that:
+      - "wechat_contact_sync_image is regex('/wechat-contact-sync:[0-9a-f]{40}$')"
+    fail_msg: >-
+      wechat_contact_sync_image={{ wechat_contact_sync_image }} is not
+      pinned to a full 40-character source SHA tag. cache-<image-id> and
+      other floating tags are pre-provenance mirrors and must not be
+      deployed (ticket 133). Pass
+      -e deploy_image_tags='{"wechat-contact-sync":"<40-char sha>"}' with a
+      tag built from a reviewed commit.
+  tags: [always]
+
 - name: Capture mypc WeCom contact-sync container contract
   ansible.builtin.command:
     argv:
