@@ -1,0 +1,50 @@
+# wecom-contact-sync — declarative recovery definition (ticket 145, third
+# service in the F78/F79 series: openclaw-fruit-feishu-gateway (132) ->
+# openclaw-rag-service (145) -> this one). No compose project, no systemd
+# unit, no crontab; RestartPolicy=unless-stopped so a `docker rm` or host
+# reprovision loses it for good.
+#
+# Correction to the F78 finding as reported: this container name is not only
+# in a stale group_var in an old release checkout — `roles/vecta-app/tasks/
+# wechat_contact_sync_mypc.yml` exists on current vecta-infra main and is
+# imported by roles/vecta-app/tasks/main.yml. But `grep -rn "role: vecta-app"
+# playbooks/*.yml` is empty: like roles/open-webui, this role has no playbook
+# wiring it up at all. And even if it did, the task is self-referential by
+# design (docker inspect's the currently-running container to source
+# command/entrypoint/env for a Nexus image swap) — it cannot recover from
+# the state this ticket is about, same flaw already flagged for
+# rag_service_mypc.yml. Left untouched (not deleted): unlike the open-webui
+# role's tasks, this one isn't factually wrong, just narrower-purpose
+# (migration/image-swap, not disaster recovery) — same follow-up as
+# rag-service's equivalent gap, not a conflicting declaration to remove.
+services:
+  openclaw-wecom-contact-sync:
+    container_name: openclaw-wecom-contact-sync
+    image: 127.0.0.1:8082/wechat-contact-sync:cache-73d27641f5e9
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        while true; do
+          node packages/channel-gateway/dist/wecom-contact-sync.js
+          sleep "$${WECOM_CONTACT_SYNC_INTERVAL_SECONDS:-86400}"
+        done
+    working_dir: /app
+    user: appuser
+    restart: unless-stopped
+    env_file:
+      - ./wecom-contact-sync.env
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      openclaw-enterprise_openclaw-net:
+        aliases:
+          - openclaw-wecom-contact-sync
+          - wecom-contact-sync
+
+networks:
+  openclaw-enterprise_openclaw-net:
+    external: true
