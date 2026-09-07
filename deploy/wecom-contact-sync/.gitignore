@@ -1,0 +1,3 @@
+# Real secrets live only on the host (/data/ocee/deploy/wecom-contact-sync/,
+# root:root 600), never in this repo. Only the .example template is tracked.
+wecom-contact-sync.env
