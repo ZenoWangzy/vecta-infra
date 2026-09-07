@@ -3,6 +3,24 @@
 # configuration that do not match a transient environment. Capture the live
 # contract and recreate only from the same image, unless a caller explicitly
 # approves an immutable full-SHA repair image.
+#
+# Ticket 133: rag_service_image defaulted to a 2026-07-18 cache-<image-id>
+# cutover mirror. "Require identical RAG image or an approved immutable
+# repair image" below already accepts only a same-image match or a
+# rag_service_allow_image_upgrade=true full-SHA tag, but it does that after a
+# real pull. Refuse the tag shape first, before spending that pull.
+- name: Refuse floating or pre-provenance RAG service image tags
+  ansible.builtin.assert:
+    that:
+      - "rag_service_image is regex('/rag-service:[0-9a-f]{40}$')"
+    fail_msg: >-
+      rag_service_image={{ rag_service_image }} is not pinned to a full
+      40-character source SHA tag. cache-<image-id> and other floating tags
+      are pre-provenance mirrors and must not be deployed (ticket 133). Pass
+      -e deploy_image_tags='{"rag-service":"<40-char sha>"}' with a tag built
+      from a reviewed commit.
+  tags: [always]
+
 - name: Capture mypc RAG container contract
   ansible.builtin.command:
     argv:

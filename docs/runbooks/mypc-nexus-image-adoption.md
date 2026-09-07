@@ -486,3 +486,15 @@ persist approval in the default inventory.
   reviewed production release decision.
 - Do not flatten/import `alpine/openclaw:2026.5.18` just to force it into Nexus;
   that would create a behaviorally different runtime image.
+- **Every `deploy_image_tags` entry must be a full 40-character source SHA
+  tag, never a `cache-<image-id>` or other floating tag** (ticket 133). The
+  2026-07-18 adoption cutover deliberately used `cache-<image-id>` mirrors of
+  whatever the local image cache held that day; six of those eight entries
+  were still on that value as of 2026-09-07 with nothing else checking the
+  result before `roles/vecta-app/tasks/a2a_router.yml`,
+  `admin_console.yml`, and `directory_service.yml` pull-and-recreate off it
+  directly. Each service task now asserts the tag shape before any
+  pull/recreate task runs, but that assert is the durable guard, not the
+  literal pinned value -- re-pin `deploy_image_tags` again whenever
+  production moves. `fleet-gateway` needs the same treatment; see ticket 101
+  and ticket 133's reports for why it is not included in this pass.

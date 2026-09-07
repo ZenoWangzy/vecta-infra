@@ -1,6 +1,24 @@
 ---
 # Channel Gateway is the active mypc channel owner. Preserve its live channel
 # credentials/control flags, non-root user, data bind, and aliases exactly.
+#
+# Ticket 133: channel_gateway_image defaulted to a 2026-07-18
+# cache-<image-id> cutover mirror. The live-image-ID assert below already
+# catches that indirectly (production has since moved on, so the IDs won't
+# match), but it fails late, mid-"docker image inspect", with a message that
+# doesn't say why. Refuse the tag shape first, before that.
+- name: Refuse floating or pre-provenance Channel Gateway image tags
+  ansible.builtin.assert:
+    that:
+      - "channel_gateway_image is regex('/channel-gateway:[0-9a-f]{40}$')"
+    fail_msg: >-
+      channel_gateway_image={{ channel_gateway_image }} is not pinned to a
+      full 40-character source SHA tag. cache-<image-id> and other floating
+      tags are pre-provenance mirrors and must not be deployed (ticket 133).
+      Pass -e deploy_image_tags='{"channel-gateway":"<40-char sha>"}' with a
+      tag built from a reviewed commit.
+  tags: [always]
+
 - name: Capture mypc Channel Gateway contract
   ansible.builtin.command:
     argv: [docker, inspect, "{{ channel_gateway_container_name }}"]
