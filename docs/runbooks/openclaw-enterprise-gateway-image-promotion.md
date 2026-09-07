@@ -80,6 +80,21 @@ The actual rule:
    **even if** the run's overall conclusion is `failure` for reasons outside the
    diff you just checked.
 
+**Note on `build-mypc-images.yml`'s own postsubmit-evidence gate**
+(`scripts/verify-vecta-postsubmit.py`): as of `vecta-infra#73`, this is now
+ancestor-aware server-side — it walks tip's ancestry for the newest commit
+with real postsubmit evidence and accepts the exact tip SHA only if the diff
+from that ancestor to tip touches none of the same production-image paths
+(re-derived from `production-image-contract.json` + the Dockerfiles each
+build, same principle as step 2 above, not hand-maintained). This closes the
+literal `[skip ci]`-tip deadlock this window hit before that PR merged
+(`source_sha` must still equal the exact current tip — that requirement is
+unchanged — but the tip no longer needs its *own* postsubmit run if a
+content-identical ancestor has one). This does not replace the checks in this
+section: the workflow's gate only answers "is it safe to build the image
+contents," not "does the pack-identity or migration-gap situation for *this*
+deploy require the four-step ceremony" (§1e) — keep doing all of it.
+
 **Why job-level, not run-level.** `NUL bytes & lone negative assertions`
 (ticket 122's false-green-guards job) is a *test-quality* gate: it fails when a
 test in the diff is written so loosely it would pass whether the underlying
@@ -331,6 +346,50 @@ whether it succeeds** — if the restart just triggers the same doomed
 download and gets stuck again, this is a recurring blocking point, not a
 one-off, and that's a stop-and-report/new-ticket situation, not something to
 route around by restarting in a loop.
+
+## 1e. `SKILL.md` changing does not automatically mean the four-step ceremony
+
+§1c's gate (`git diff ... -- '*runtime-manifest-v4-workbench.json' '*SKILL.md'` non-empty) tells you the pack-identity *risk exists* — it does not by itself tell you the ceremony is *required*. Before ticket 134, it did: `assertCompatibleSkill` re-hashed the rendered Skill content and compared it to a pinned digest, so any wording change at all tripped it. **After ticket 134 removed that recheck, the actual judgment criterion is narrower**: read
+`packages/fleet-gateway/src/industry-packs/runtime-manifest.ts`'s `assertCompatibleSkill` at the SHA you're about to build, and check only the fields it still compares — currently `values.packId !== manifest.packId || values.modelVersion !== expectedVersion`, nothing else. Then:
+
+1. Confirm those exact fields (`packId`, `modelVersion`) are unchanged in `runtime-manifest-v4-workbench.json` between the currently-running production SHA and the target (`git diff`, not eyeballing — a real diff, empty or not).
+2. Confirm `modelVersion`'s value isn't itself derived from the content that changed — check `render-skill.ts`: it's sourced from `loadFruitModel()` (the domain model YAML), not from `SKILL.md` prose, so a Skill wording/tool-list edit alone can't move it.
+3. Read what's actually installed in production (`skills.config->'industryPack'`, read-only SQL) and confirm it already matches `packId`/`modelVersion`.
+
+All three clean → `assertCompatibleSkill` will pass unchanged before and after the deploy, even though `SKILL.md` itself changed. No new pack version, no `installed_version_id` flip, no per-runtime-refresh ceremony — normal deploy path. This is exactly what ticket 134 bought: a Skill-content edit (adding tools, rewording) no longer requires coordinating a DB pointer flip across every V4 tenant. **Re-run all three checks against the actual target SHA every time it changes** (this window it changed four times chasing a moving `main`) — don't assume a conclusion reached against an earlier candidate SHA still holds; re-verify, it's cheap.
+
+If any of the three isn't clean — `modelVersion` did change, or `assertCompatibleSkill` now compares something else, or the installed metadata doesn't already match — that's when `docs/agents/handoffs/2026-09-01-hash-ban-wave2-halted.md` §2.3's four-step ceremony applies, and as of this window there is **no existing tool to execute step 4 (publish) for `fruit-v4-workbench` specifically** — `pnpm platform:sync-skill` (`sync-platform-skill.ts`) is hardcoded to the separate, older `fruit-industry-pack`/`fruit-data-query` pack (hardcoded `BASE_SKILL_SLUG`, throws if the Skill content's frontmatter name isn't `fruit-data-query` — `fruit-v4-workbench`'s own frontmatter declares `fruit-v4-workbench`, so pointing the tool at V4 files via its env overrides fails immediately on that check). Extending it, or writing a V4-specific equivalent, is its own small reviewable change — not something to improvise mid-deployment-window by hand-writing the publish payload.
+
+## 1f. When a target container is already ahead: confirm superset, don't downgrade
+
+Hit this window: dispatched a build for a container already running a newer
+revision than the agreed target (another agent/session had deployed to it
+concurrently, independently). The instinct is to "fix" it back to the agreed
+SHA — **don't.** Moving a running container backward reverts whatever the
+other change was; that's a strictly worse failure mode than temporarily
+carrying one extra, unplanned commit, because it destroys someone else's
+already-shipped work instead of just being slightly imprecise about scope.
+
+The check, in order:
+1. `git merge-base --is-ancestor <your target> <what's actually running>` —
+   if true, what's running is a **superset** of your target (contains
+   everything you need, plus more). If this is false (genuine divergence, not
+   just "further ahead"), that's a real conflict — stop and report, don't
+   guess which side wins.
+2. If it's a clean superset, **retarget your own work to what's actually
+   running**, not the other way around — re-run every gate (pack-identity,
+   `assertCompatibleSkill`, migration gap) against the new, larger target, the
+   same as if it had been the plan from the start.
+3. Say so explicitly in the deployment record: which container carries the
+   extra commit, what that commit is, and why it's there. Three containers
+   ending up on **different revision labels that are provably ancestor/
+   descendant of each other with a known, harmless diff** (this window:
+   `fleet-gateway` one `[skip ci]` docs-only commit behind the other two) is
+   not an inconsistency — it looks like one to the next person unless the
+   report says so plainly. Confirm the ancestor relationship and the diff
+   content yourself (`git log --oneline <old>..<new>`, `git show --stat` on
+   the delta commits) before asserting it's harmless; don't take another
+   session's description of what changed as the check.
 
 ## 2. Prerequisite: the image must actually exist in Nexus
 
