@@ -2,6 +2,61 @@
 # Fleet owns the manager contract for existing per-user runtimes. It is safe to
 # replace only the gateway container when its mounts, networks, user, and live
 # environment are retained, and no runtime container is recreated.
+#
+# Ticket 101: Nexus vecta-docker-local still carries 48 fleet-gateway tags
+# built before the fail-closed industry-pack guard (ticket 00 /
+# IndustryPackIncompatibleError in packages/fleet-gateway/src/hermes/config-generator.ts).
+# Those images degrade to zero industry packs instead of refusing to start
+# (lesson V23). The judgment is ancestry, not tag shape or age: a tag is safe
+# iff fleet_gateway_guard_commit is a git ancestor of it. That commit is the
+# root cause fix, not a whitelist of known-good SHAs -- it never goes stale as
+# new tags are built after it, unlike a fixed list of "known safe" tags would.
+# `/data/ocee` on mypc is a full clone of the vecta repo (origin =
+# github.com:ZenoWangzy/vecta) already used for release checkouts, so the
+# ancestry check runs against it directly -- no extra clone, no GitHub API
+# token. A tag that isn't a real vecta commit (`latest`, `cache-<image-id>`)
+# fails to resolve at all, which is refused for the same reason. Full audit,
+# including the real-run proof of this check against a fail-open and a
+# fail-closed tag, is in vecta's
+# docs/ops/2026-09-06-ticket-101-fleet-gateway-tag-audit.md. Refuse before the
+# pull/recreate tasks below ever run.
+- name: Extract the selected Fleet gateway image's source SHA
+  ansible.builtin.set_fact:
+    mypc_fleet_gateway_selected_sha: "{{ fleet_gateway_image | regex_replace('^.*:', '') }}"
+
+- name: Fetch the guard commit and the selected tag into the mypc vecta checkout
+  ansible.builtin.command:
+    argv: [git, -C, "{{ fleet_gateway_source_checkout }}", fetch, origin,
+           "{{ fleet_gateway_guard_commit }}", "{{ mypc_fleet_gateway_selected_sha }}"]
+  register: mypc_fleet_gateway_guard_fetch
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Judge whether the selected Fleet image descends from the ticket 00 guard commit
+  ansible.builtin.command:
+    argv: [git, -C, "{{ fleet_gateway_source_checkout }}", merge-base, --is-ancestor,
+           "{{ fleet_gateway_guard_commit }}", "{{ mypc_fleet_gateway_selected_sha }}"]
+  register: mypc_fleet_gateway_guard_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Refuse a Fleet gateway image that does not descend from the ticket 00 fail-closed guard
+  ansible.builtin.assert:
+    that:
+      - mypc_fleet_gateway_guard_check.rc == 0
+    fail_msg: >-
+      fleet_gateway_image={{ fleet_gateway_image }} (sha
+      {{ mypc_fleet_gateway_selected_sha }}) does not descend from guard commit
+      {{ fleet_gateway_guard_commit }} (the ticket 00 fail-closed industry-pack
+      guard). git merge-base --is-ancestor exited
+      {{ mypc_fleet_gateway_guard_check.rc }}
+      ({{ 'not an ancestor: this is a pre-guard, fail-open image' if mypc_fleet_gateway_guard_check.rc == 1
+          else 'could not be resolved in ' + fleet_gateway_source_checkout + ' -- not a real vecta commit (e.g. latest/cache-* tag), or the fetch above failed: ' + (mypc_fleet_gateway_guard_check.stderr | default('')) }}).
+      See docs/ops/2026-09-06-ticket-101-fleet-gateway-tag-audit.md in vecta.
+  tags: [always]
+
 - name: Capture mypc Fleet gateway contract
   ansible.builtin.command:
     argv: [docker, inspect, "{{ fleet_gateway_container_name }}"]

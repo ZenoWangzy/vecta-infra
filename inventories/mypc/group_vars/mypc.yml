@@ -191,9 +191,35 @@ deploy_image_tags:
   baidu-search-service: cache-fdfbc005133b
   channel-gateway: cache-94a5357394f9
   directory-service: cache-d38d9f4d3636
-  fleet-gateway: cache-a6d8bcce5249
+  # Ticket 101: the 2026-07-18 cache-<image-id> default (cache-a6d8bcce5249)
+  # pre-dates the fail-closed industry-pack guard added by ticket 00
+  # (packages/fleet-gateway/src/hermes/config-generator.ts, first shipped in
+  # 9498cb86). It was only ever caught by the "selected image ID == live
+  # image ID" assert in fleet_gateway_mypc.yml, not by this default being
+  # correct. Pinned here to the production revision live at audit time
+  # (2026-09-06) so a run without an explicit -e override lands on a
+  # fail-closed image instead of relying solely on that assert. Production
+  # moves independently of this file (a separate compose-chain release
+  # process, not this role) and WILL outrun this pin again -- the durable
+  # guards are the tag-shape assert and the live-image-ID assert added to
+  # fleet_gateway_mypc.yml, not this literal value. See
+  # docs/ops/2026-09-06-ticket-101-fleet-gateway-tag-audit.md in vecta.
+  fleet-gateway: b375e34309b2f4b73effbf71c2e8395c04456b67
   rag-service: cache-761b14870cf1
   wechat-contact-sync: cache-73d27641f5e9
+# Ticket 101: ancestor judgment used by fleet_gateway_mypc.yml's pre-deploy
+# guard. fleet_gateway_guard_commit is the vecta commit that introduced the
+# ticket 00 fail-closed industry-pack guard (first commit where
+# packages/fleet-gateway/src/hermes/config-generator.ts throws
+# IndustryPackIncompatibleError instead of degrading to zero packs -- its
+# parent does not). Verified against all 53 fleet-gateway tags in Nexus at
+# 2026-09-06 audit time with zero mismatches against a direct source grep; see
+# docs/ops/2026-09-06-ticket-101-fleet-gateway-tag-audit.md in vecta.
+# fleet_gateway_source_checkout is a full vecta clone already present on mypc
+# (used for release checkouts) that the guard task fetches into and diffs
+# against -- no separate clone or GitHub token needed.
+fleet_gateway_guard_commit: 94faaa8cef2e20d2f723c37f23f29cbd855618e1
+fleet_gateway_source_checkout: /data/ocee
 fleet_gateway_image: "{{ nexus_docker_registry }}/fleet-gateway:{{ deploy_image_tags['fleet-gateway'] }}"
 channel_gateway_image: "{{ nexus_docker_registry }}/channel-gateway:{{ deploy_image_tags['channel-gateway'] }}"
 a2a_router_image: "{{ nexus_docker_registry }}/a2a-router:{{ deploy_image_tags['a2a-router'] }}"
