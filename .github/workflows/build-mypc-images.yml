@@ -253,6 +253,19 @@ jobs:
               rm -rf vecta
               echo "Cached VectA source unusable; falling back to GitHub"
             fi
+          else
+            # Ticket 143: this is the cache-not-ready-for-this-SHA path, not
+            # a network failure yet -- say so explicitly, with the cache's
+            # actual state, so a slow build here reads as "cache stale" and
+            # not "network having a bad day" (they used to look identical).
+            # scripts/warm-vecta-source-cache.sh + its systemd timer on mypc
+            # exist to keep this branch cold; hitting it at all means that
+            # timer missed a beat, not that the network is untrustworthy.
+            cache_tip="not present"
+            if [ -d "$cache" ]; then
+              cache_tip="$(git --git-dir="$cache" rev-parse refs/heads/main 2>/dev/null || echo "unresolvable")"
+            fi
+            echo "Cache at $cache is not warm for $SOURCE_SHA (cache main = $cache_tip) -- falling back to a direct clone, which this link throttles hard for bulk transfers. See ticket 143."
           fi
           if [ "$cloned" = false ]; then
             for attempt in 1 2 3; do

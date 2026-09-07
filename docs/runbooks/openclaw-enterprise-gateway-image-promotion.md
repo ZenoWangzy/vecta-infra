@@ -80,6 +80,21 @@ The actual rule:
    **even if** the run's overall conclusion is `failure` for reasons outside the
    diff you just checked.
 
+**Note on `build-mypc-images.yml`'s own postsubmit-evidence gate**
+(`scripts/verify-vecta-postsubmit.py`): as of `vecta-infra#73`, this is now
+ancestor-aware server-side — it walks tip's ancestry for the newest commit
+with real postsubmit evidence and accepts the exact tip SHA only if the diff
+from that ancestor to tip touches none of the same production-image paths
+(re-derived from `production-image-contract.json` + the Dockerfiles each
+build, same principle as step 2 above, not hand-maintained). This closes the
+literal `[skip ci]`-tip deadlock this window hit before that PR merged
+(`source_sha` must still equal the exact current tip — that requirement is
+unchanged — but the tip no longer needs its *own* postsubmit run if a
+content-identical ancestor has one). This does not replace the checks in this
+section: the workflow's gate only answers "is it safe to build the image
+contents," not "does the pack-identity or migration-gap situation for *this*
+deploy require the four-step ceremony" (§1e) — keep doing all of it.
+
 **Why job-level, not run-level.** `NUL bytes & lone negative assertions`
 (ticket 122's false-green-guards job) is a *test-quality* gate: it fails when a
 test in the diff is written so loosely it would pass whether the underlying
@@ -332,6 +347,50 @@ download and gets stuck again, this is a recurring blocking point, not a
 one-off, and that's a stop-and-report/new-ticket situation, not something to
 route around by restarting in a loop.
 
+## 1e. `SKILL.md` changing does not automatically mean the four-step ceremony
+
+§1c's gate (`git diff ... -- '*runtime-manifest-v4-workbench.json' '*SKILL.md'` non-empty) tells you the pack-identity *risk exists* — it does not by itself tell you the ceremony is *required*. Before ticket 134, it did: `assertCompatibleSkill` re-hashed the rendered Skill content and compared it to a pinned digest, so any wording change at all tripped it. **After ticket 134 removed that recheck, the actual judgment criterion is narrower**: read
+`packages/fleet-gateway/src/industry-packs/runtime-manifest.ts`'s `assertCompatibleSkill` at the SHA you're about to build, and check only the fields it still compares — currently `values.packId !== manifest.packId || values.modelVersion !== expectedVersion`, nothing else. Then:
+
+1. Confirm those exact fields (`packId`, `modelVersion`) are unchanged in `runtime-manifest-v4-workbench.json` between the currently-running production SHA and the target (`git diff`, not eyeballing — a real diff, empty or not).
+2. Confirm `modelVersion`'s value isn't itself derived from the content that changed — check `render-skill.ts`: it's sourced from `loadFruitModel()` (the domain model YAML), not from `SKILL.md` prose, so a Skill wording/tool-list edit alone can't move it.
+3. Read what's actually installed in production (`skills.config->'industryPack'`, read-only SQL) and confirm it already matches `packId`/`modelVersion`.
+
+All three clean → `assertCompatibleSkill` will pass unchanged before and after the deploy, even though `SKILL.md` itself changed. No new pack version, no `installed_version_id` flip, no per-runtime-refresh ceremony — normal deploy path. This is exactly what ticket 134 bought: a Skill-content edit (adding tools, rewording) no longer requires coordinating a DB pointer flip across every V4 tenant. **Re-run all three checks against the actual target SHA every time it changes** (this window it changed four times chasing a moving `main`) — don't assume a conclusion reached against an earlier candidate SHA still holds; re-verify, it's cheap.
+
+If any of the three isn't clean — `modelVersion` did change, or `assertCompatibleSkill` now compares something else, or the installed metadata doesn't already match — that's when `docs/agents/handoffs/2026-09-01-hash-ban-wave2-halted.md` §2.3's four-step ceremony applies, and as of this window there is **no existing tool to execute step 4 (publish) for `fruit-v4-workbench` specifically** — `pnpm platform:sync-skill` (`sync-platform-skill.ts`) is hardcoded to the separate, older `fruit-industry-pack`/`fruit-data-query` pack (hardcoded `BASE_SKILL_SLUG`, throws if the Skill content's frontmatter name isn't `fruit-data-query` — `fruit-v4-workbench`'s own frontmatter declares `fruit-v4-workbench`, so pointing the tool at V4 files via its env overrides fails immediately on that check). Extending it, or writing a V4-specific equivalent, is its own small reviewable change — not something to improvise mid-deployment-window by hand-writing the publish payload.
+
+## 1f. When a target container is already ahead: confirm superset, don't downgrade
+
+Hit this window: dispatched a build for a container already running a newer
+revision than the agreed target (another agent/session had deployed to it
+concurrently, independently). The instinct is to "fix" it back to the agreed
+SHA — **don't.** Moving a running container backward reverts whatever the
+other change was; that's a strictly worse failure mode than temporarily
+carrying one extra, unplanned commit, because it destroys someone else's
+already-shipped work instead of just being slightly imprecise about scope.
+
+The check, in order:
+1. `git merge-base --is-ancestor <your target> <what's actually running>` —
+   if true, what's running is a **superset** of your target (contains
+   everything you need, plus more). If this is false (genuine divergence, not
+   just "further ahead"), that's a real conflict — stop and report, don't
+   guess which side wins.
+2. If it's a clean superset, **retarget your own work to what's actually
+   running**, not the other way around — re-run every gate (pack-identity,
+   `assertCompatibleSkill`, migration gap) against the new, larger target, the
+   same as if it had been the plan from the start.
+3. Say so explicitly in the deployment record: which container carries the
+   extra commit, what that commit is, and why it's there. Three containers
+   ending up on **different revision labels that are provably ancestor/
+   descendant of each other with a known, harmless diff** (this window:
+   `fleet-gateway` one `[skip ci]` docs-only commit behind the other two) is
+   not an inconsistency — it looks like one to the next person unless the
+   report says so plainly. Confirm the ancestor relationship and the diff
+   content yourself (`git log --oneline <old>..<new>`, `git show --stat` on
+   the delta commits) before asserting it's harmless; don't take another
+   session's description of what changed as the check.
+
 ## 2. Prerequisite: the image must actually exist in Nexus
 
 Before anything below, confirm the target SHA's images exist in the local
@@ -350,6 +409,12 @@ If empty, build first via `vecta-infra`'s `.github/workflows/build-mypc-images.y
 - `image_names`: empty (builds all contract images).
 
 Dispatch: `gh workflow run build-mypc-images.yml -R ZenoWangzy/vecta-infra -f source_sha=<sha> -f source_branch=main`.
+Poll with `gh run list -R ZenoWangzy/vecta-infra --workflow build-mypc-images.yml --limit 1`
++ `gh run watch <id> -R ZenoWangzy/vecta-infra`. Success criterion: run
+conclusion `success` **and** the target SHA now appears in
+`docker image ls` on `mypc` for each service the window touches — the workflow
+run going green is necessary but the actual proof is the image being there,
+same "exit 0 isn't a criterion" rule as everywhere else in this doc.
 
 The same real-red-vs-network-blip judgment call from §1 applies here too, on a
 different workflow. Hit it this window: the dispatched build's own
@@ -422,14 +487,99 @@ file's contents ahead of time: `grep -c`/`grep -o` for key names only, or read
 a single field into a shell variable and echo just a pass/fail or the one
 value you actually need — never `cat`/`head`/`sed -n` a whole file that
 isn't something you wrote yourself in this session.
-Poll with `gh run list -R ZenoWangzy/vecta-infra --workflow build-mypc-images.yml --limit 1`
-+ `gh run watch <id> -R ZenoWangzy/vecta-infra`. Success criterion: run
-conclusion `success` **and** the target SHA now appears in
-`docker image ls` on `mypc` for each service the window touches — the workflow
-run going green is necessary but the actual proof is the image being there,
-same "exit 0 isn't a criterion" rule as everywhere else in this doc.
 
-*(Not yet executed this window — blocked on §1.)*
+## 2a. The cold-clone trap, and why it's fixed now (ticket 143)
+
+`Download selected VectA source` (the step right after the one discussed
+above — a different clone, of `vecta` itself, not `vecta-infra`) tries a
+warm local cache first and only falls back to a direct clone if that cache
+doesn't qualify for the exact `source_sha`. That fallback clone is a full,
+cold, `--depth=1` clone of the whole `vecta` monorepo over the same throttled
+link — three attempts, up to ~18 minutes each, so a cold cache costs up to
+**38 minutes** and can still fail. Hit this for real this window: run
+`34084544530` burned 38 minutes across three genuine multi-minute stalls
+(`Connection timed out`, then `GnuTLS recv error (-110)` twice) before giving
+up entirely.
+
+**Root cause, found by reading the code, not guessing**: the cache
+(`/home/github-runner/.cache/vecta-main.git`, a bare shallow repo) qualifies
+only if all four hold — directory exists; `git cat-file -e
+$SOURCE_SHA^{commit}` resolves; `git rev-parse refs/heads/main` **equals**
+`$SOURCE_SHA` exactly (not just "reachable" — the local `main` ref itself
+must point there); `git fsck --connectivity-only $SOURCE_SHA` passes. Its
+`origin` remote was `file:///home/gerald/project/vecta` — **a path that only
+exists on a developer's WSL2 workstation, not on `mypc`.** Nobody could ever
+fetch through it. This is the exact same shape as ticket 52's release-checkout
+drift: a remote pointing somewhere unreachable, silent until the one moment
+it's needed, and it's needed on every single build. The cache wasn't
+"coincidentally cold" — it was configured to be permanently unable to warm
+itself.
+
+**Fix, in three pieces, all in this repo now**:
+
+1. **The remote**: repointed to `file:///data/ocee/.git` — `/data/ocee` is
+   this host's own production `vecta` checkout, full history, already has
+   working SSH auth to the real GitHub remote (`git@github.com:...`, root's
+   keys). Considered pointing the cache straight at GitHub instead (SSH or
+   HTTPS); rejected because `github-runner` has **no SSH key at all**
+   (`~/.ssh` doesn't exist for that user) and HTTPS needs the same
+   `VECTA_READ_TOKEN` the build job only has as a job secret, not something
+   to hand this user permanently. Reusing `/data/ocee`'s already-working,
+   already-audited credential is smaller and safer than provisioning a new
+   one.
+2. **`scripts/warm-vecta-source-cache.sh`** — the two-hop relay, proven
+   manually before being turned into this script: `git -C /data/ocee fetch
+   origin main` (small, incremental, real SSH auth — 8.4s/529KiB cold, ~5s
+   when already close), then `sudo -u github-runner git --git-dir=$CACHE
+   fetch --depth=1 --force file:///data/ocee/.git
+   refs/remotes/origin/main:refs/heads/main` (local, no auth, sub-second).
+   Two things that will bite anyone reimplementing this: the shallow ref
+   update is a **non-fast-forward** as far as git can tell (shallow history
+   has no common ancestor to compare), so `--force` is required, not
+   optional; and the cross-user local fetch trips git's dubious-ownership
+   guard the first time, needing one idempotent, config-only
+   `git config --global --add safe.directory /data/ocee/.git` as
+   `github-runner` (never touches objects or a working tree).
+3. **`scripts/warm-vecta-source-cache.{service,timer}`** — a systemd oneshot
+   + timer, installed by hand on `mypc` (`/usr/local/sbin/`,
+   `/etc/systemd/system/`, `daemon-reload`, `systemctl enable --now
+   warm-vecta-source-cache.timer`), firing every 10 minutes. No existing
+   Ansible role manages the runner hosts themselves (they were hand-installed
+   the same way the timer now is) — formalizing this into Ansible is a
+   reasonable follow-up, not required for the fix to work.
+
+**Also changed**: the direct-clone fallback branch now logs *why* it's
+falling back (cache present-but-stale vs. missing entirely, with the cache's
+actual current tip) before attempting the network clone — previously a
+cold-cache fallback and a genuine mid-clone network failure produced
+indistinguishable log output. The literal string
+`"Cached VectA source unusable; falling back to GitHub"` (a different,
+narrower branch — the cache qualified but the local clone from it itself
+failed) is unchanged and still covered by
+`scripts/test_build_mypc_images_contract.py`.
+
+**Measured effect** — the number that matters, not exit codes:
+
+| | clone step | whole build |
+|---|---|---|
+| Cold (the 38-minute run) | 18-38 min, failed | failed |
+| Warm, this session, manual two-hop | 4s | 3m40s |
+| Warm, **fully automatic** (timer-fired cache, next build dispatched with zero manual cache touch in between) | 4s | 1m30s |
+
+The automatic case is the one that matters: the timer fired on its own
+schedule (`OnBootSec=2min` after enable, then `OnUnitActiveSec=10min`), and
+a build dispatched afterward with no manual intervention on the cache used
+it (`"Using cached exact VectA source"` in the run log) and finished the
+clone step in 4 seconds.
+
+**Judgment criteria for "is this actually working," not exit codes**:
+`systemctl list-timers warm-vecta-source-cache.timer` shows a real `LAST`
+and `NEXT`, not just "enabled"; `journalctl -u warm-vecta-source-cache.service`
+shows successive `cache warm: refs/heads/main = <sha>` lines advancing as
+`main` advances, un-prompted; and a real `build-mypc-images.yml` run's
+`Download selected VectA source` step logs `"Using cached exact VectA
+source"` and completes in single-digit seconds without you having touched
+the cache that session.
 
 ## 3. Reading the live `-f` chain (before you touch anything)
 
