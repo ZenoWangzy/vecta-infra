@@ -1,0 +1,257 @@
+# Production deploy lock on `mypc`
+
+Ticket 140. `openclaw-fleet-gateway` was pushed to `a22e12f13` by one workflow
+at `2026-09-07T03:13:57Z` while a second, unrelated window was mid-deploy on
+the same container, and neither side knew the other existed until the second
+window reached its own promotion step. It stopped instead of degrading — the
+right call — but that was luck, not a mechanism. The conductor tried to reach
+the other session directly, twice, and failed both times. **Coordination
+between two deploy sessions cannot depend on one being able to message the
+other.** This lock is the mechanism that replaces that assumption: it lives
+on `mypc` (the one machine that is always in the loop, since it's the one
+being deployed to), needs no service, no daemon, and no dependency beyond
+`flock(1)` and `bash`, which are already on every host in this project.
+
+Script: `scripts/deploy-lock.sh`. Contract test: `scripts/test_deploy_lock_contract.py`
+(runs against a throwaway temp directory, no `mypc` or Docker access needed —
+part of the normal `scripts/test_*.py` glob in `pr-contract-checks.yml`).
+
+## Scope
+
+One lock, not one per container. This is collision avoidance between people,
+not a scheduler — "don't turn the same valve at the same time" doesn't need
+a lock per valve when there are only ever one or two hands near the panel at
+once. A single global lock also means a holder's declared `--containers`
+list is purely informational (for the next operator to read), never itself
+part of the safety property.
+
+Covers, at minimum, any deploy/promotion/rollback touching:
+
+- `openclaw-fleet-gateway`
+- `openclaw-channel-gateway`
+- `fruit-v4-isolated-uat` (and its `fruit-v4-isolated-setup` migration sibling)
+
+**Deliberately excludes `openclaw-fruit-feishu-gateway`.** Per ticket 132,
+that container has no Compose project, systemd unit, or crontab — nothing
+recreates it, and nobody currently has a runbook-level procedure that
+touches it. There is no operation to serialize against yet; wiring it into
+this lock would be scaffolding for a procedure that doesn't exist. Add it
+here the day a real runbook step starts touching that container.
+
+**Deliberately excludes Hermes per-instance config refresh
+(`POST /api/instances/:id/refresh-config`).** See "Judgment call: should
+refresh-config take this lock?" below — short answer: no, but the specific
+collision that motivates the question is already handled elsewhere.
+
+## The mechanism: a live process is the lock, not a timestamp
+
+`deploy-lock.sh acquire` opens `$DEPLOY_LOCK_DIR/production-deploy.lock` on
+fd 200, takes a non-blocking `flock`, and — only once it actually holds the
+lock — writes who/what/when into a sibling `.meta` file, then `exec`s into
+`sleep "$ttl"` **without closing fd 200**. From that point on, the `sleep`
+process *is* the lock: `flock(2)` is released by the kernel the instant that
+process exits, for any reason at all — explicit `release`, the ttl elapsing,
+the holding SSH session dropping, or `mypc` rebooting. Nothing about this
+depends on wall-clock comparison.
+
+This is the answer to the ticket's hardest constraint: telling a stale lock
+from a live one apart **without relying on timestamps**, because "an 18
+minute build" and "a session that died 18 minutes ago" produce an identical
+timestamp. They do not produce an identical process. `acquire`'s non-blocking
+`flock` asks the kernel directly, "is a process still holding this
+descriptor open" — that question has one correct, immediate answer,
+regardless of how long the previous holder had been running when it died.
+Demonstrated both directions below.
+
+`status` performs the same non-blocking probe (and immediately releases it
+again if it succeeds — it's a read, not a claim) so anyone can check without
+disturbing a real holder.
+
+### Why `exec sleep`, not a heartbeat file
+
+A heartbeat requires the checker to decide "how stale is too stale," which
+is exactly the timestamp judgment call this ticket rules out (an 18-minute
+build's heartbeat can go quiet for a while just from I/O contention). A held
+`flock` requires no such judgment: it is binary, kernel-enforced, and answers
+"is the holder's process still alive" directly instead of "when did it last
+tell me it was alive."
+
+### The ttl is a backstop for rule 3 (forgotten release), not the staleness rule
+
+Default `--ttl-seconds 7200` (2h — generous next to any single runbook
+window; the gateway promotion runbook's own worked example finished well
+under an hour end to end). If a holder finishes and forgets to call
+`release`, the `sleep` exits on its own once the ttl elapses and the lock
+frees itself — no one has to notice, judge, or intervene. This is separate
+from, and does not weaken, the crash-detection property above: a crash frees
+the lock within moments regardless of how much ttl was left (demonstrated
+below with a crash at t+11s against a 30s ttl, and again at t+23s against a
+60s ttl — both reclaimed immediately, nowhere near expiry).
+
+## Usage
+
+Always stream the script from the exact checkout you're deploying from — it
+is never installed as a standing copy on `mypc`, so there is nothing there
+that can drift out of sync with this file:
+
+```bash
+# Step 0 — before touching anything.
+ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 mypc \
+  'bash -s -- acquire --holder "<your name/session>" \
+     --session "<session URL or id — how to reach you>" \
+     --containers "openclaw-fleet-gateway,openclaw-channel-gateway"' \
+  < scripts/deploy-lock.sh
+# ACQUIRED ... → proceed.
+# DENIED ...   → read the printed holder/session/containers/acquired_at,
+#                go find that session, do not proceed.
+```
+
+`-o ServerAliveInterval=15 -o ServerAliveCountMax=3` are client-side options
+(no `mypc`-side config change): they make your own `ssh` notice a dead
+connection within ~45s instead of waiting on a bare TCP timeout, so a
+network partition — not just a clean process exit — frees the lock promptly
+too.
+
+```bash
+# Anywhere mid-window — check without disturbing a real holder.
+ssh mypc 'bash -s -- status' < scripts/deploy-lock.sh
+
+# Last step — after the runbook's own verification passes.
+ssh mypc 'bash -s -- release' < scripts/deploy-lock.sh
+```
+
+`release` reads the pid out of the `.meta` file and kills it; it does not
+require the original SSH connection that acquired the lock to still be the
+one calling it, which matters if your own tooling lost track of that
+backgrounded connection.
+
+## Evidence (ticket 140 acceptance criteria)
+
+All four run against `DEPLOY_LOCK_DIR=/data/ocee/locks/_demo-ticket-140` on
+`mypc` — a throwaway path, cleaned up after, never the real
+`/data/ocee/locks/production-deploy.lock`. **The currently-running fruit v4.1
+production window was never locked by this exercise** — that lock's first
+real use starts with the next deploy round that adopts this runbook edit.
+
+**1. Two concurrent holders — B is denied and sees who A is:**
+
+```
+$ ssh mypc '... acquire --holder "agent-A (fruit-v41 window, demo)" \
+    --session "https://claude.ai/code/session_DEMO_AAA" \
+    --containers "openclaw-fleet-gateway,openclaw-channel-gateway" \
+    --ttl-seconds 60' < scripts/deploy-lock.sh
+ACQUIRED holder=agent-A (fruit-v41 window, demo) pid=1607181 acquired_at=2026-09-07T04:19:53Z ttl_seconds=60
+
+$ ssh mypc '... acquire --holder "agent-B (peer, demo)" \
+    --session "https://claude.ai/code/session_DEMO_BBB" \
+    --containers "openclaw-fleet-gateway"' < scripts/deploy-lock.sh
+DENIED: production deploy lock is already held.
+--- current holder (docs/runbooks/production-deploy-lock.md explains how to judge staleness) ---
+holder=agent-A (fruit-v41 window, demo)
+session=https://claude.ai/code/session_DEMO_AAA
+containers=openclaw-fleet-gateway,openclaw-channel-gateway
+acquired_at=2026-09-07T04:19:53Z
+ttl_seconds=60
+pid=1607181
+host=mypc
+B exit=1
+```
+
+**2a. Stale — holder killed at t+23s against a 60s ttl (not waited out, not
+even close to expiry) — second acquirer succeeds immediately:**
+
+```
+$ ssh mypc 'ps -o pid,etimes,cmd -p 1607181'
+    PID ELAPSED CMD
+1607181      23 sleep 60
+$ ssh mypc 'kill -9 1607181; sleep 0.3; ps -o pid,cmd -p 1607181 2>&1 || echo "confirmed: pid 1607181 gone on mypc"'
+confirmed: pid 1607181 gone on mypc
+$ ssh mypc '... acquire --holder "agent-B (peer, demo)" --session "..." \
+    --containers "openclaw-fleet-gateway"' < scripts/deploy-lock.sh
+ACQUIRED holder=agent-B (peer, demo) pid=1619388 acquired_at=2026-09-07T04:20:20Z ttl_seconds=7200
+```
+
+**2b. Alive — reverse direction, so the mechanism isn't just "anything old
+looks stale": a holder well inside its ttl is correctly refused, not
+reclaimed:**
+
+```
+$ ssh mypc '... acquire --holder "agent-D (alive, demo)" --session "..." \
+    --containers "fruit-v4-isolated-uat" --ttl-seconds 20' < scripts/deploy-lock.sh
+ACQUIRED holder=agent-D (alive, demo) pid=1626978 acquired_at=2026-09-07T04:20:38Z ttl_seconds=20
+$ ssh mypc '... acquire --holder "agent-E (peer, demo)" --session "..." \
+    --containers "fruit-v4-isolated-uat"' < scripts/deploy-lock.sh
+DENIED: production deploy lock is already held.
+holder=agent-D (alive, demo)
+...
+E exit=1  (must be 1/DENIED — D is genuinely still alive, not stale)
+```
+
+**3. Forgotten release doesn't block forever — same holder (agent-D above),
+nobody ever calls `release`, ttl (20s) elapses on its own:**
+
+```
+$ sleep 20   # nobody releases
+$ ssh mypc '... status' < scripts/deploy-lock.sh
+FREE (kernel confirms no live holder; a prior holder's metadata, if any, is stale)
+holder=agent-D (alive, demo)
+...
+```
+
+Full transcript, plus the local (non-`mypc`) equivalent for all five cases
+including explicit `release`, is exercised unattended by
+`scripts/test_deploy_lock_contract.py` on every PR.
+
+## How someone could still bypass this, and why that residual risk is accepted
+
+Anyone with `ssh mypc` access and Docker access can run `docker compose`
+directly without ever calling `acquire`. This lock is advisory, like every
+`flock`-based lock, and like the migration profile's own approval gate in
+`fruit-v4-isolated-production-compose.md` ("Compose cannot prevent an
+operator who already has Docker access ... from invoking the image or setup
+script outside this procedure"). Closing that gap would mean wrapping every
+Docker/Compose invocation on the host in an enforcing proxy — a new service,
+running with enough privilege to gate all container operations, which is
+exactly the "distributed consensus" weight this ticket says not to build for
+a two-operator collision problem. The cost of bypass is also the same as the
+incident that opened this ticket: doing it without checking `status` first
+is indistinguishable from the accident already on record, so the fix for
+"someone skips step 0" is the same as for any skipped runbook step —
+make the runbook impossible to follow partially in practice (step 0 and the
+release step below are now literally that: the runbook's first and last
+commands), not add a second enforcement layer to catch people who skip
+reading it.
+
+## Judgment call: should refresh-config take this lock?
+
+`POST /api/instances/:id/refresh-config` regenerates one employee's Hermes
+runtime container from whatever is currently installed. It genuinely can
+collide with a gateway/pack promotion — refreshing mid-image-swap can leave
+an employee with the old pack removed and the new one not yet reachable.
+**It should not take this lock anyway.** Three reasons:
+
+1. **Granularity mismatch.** This lock serializes a rare (a few times a
+   week), high-stakes, always-supervised operation against itself.
+   `refresh-config` fires per employee instance, routinely, including from
+   an automated self-heal path (`getOrCreateInstance`) with no human in the
+   loop. Routing a frequent, automatic, per-tenant operation through a lock
+   designed for "don't let two people turn the same production valve at
+   once" turns a cheap mechanism into contention on a hot path, for a
+   collision that only matters during a narrow sub-case of one specific
+   ceremony.
+2. **The actual dangerous window already has its own, narrower exclusion
+   rule.** `openclaw-enterprise-gateway-image-promotion.md` §1c already
+   says, for exactly the pack-version-flip ceremony where this collision is
+   real: "During this whole window, no admin anywhere may approve a skill."
+   That's the correct scope for this hazard — it's about not racing the
+   specific manual refresh sequence in that ceremony, not about gating every
+   refresh against every gateway deploy everywhere.
+3. **A normal (non-ceremony) gateway/channel-gateway promotion doesn't
+   trigger this hazard at all.** §1c's own gate is "empty diff → normal
+   path, no refresh ceremony owed." The corruption case needs the pack
+   manifest/`SKILL.md` to actually change; most promotions covered by this
+   lock never touch that.
+
+If this collision recurs in practice, the right fix is a second, narrower
+flag scoped to "a §1c ceremony is in progress" — not folding a
+high-frequency, per-tenant endpoint into this lock's blast radius.

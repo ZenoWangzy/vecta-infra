@@ -4,6 +4,31 @@ This contract owns one isolated Fruit V4 UAT instance. It does not modify,
 restart, route, or remove any V3 service. It publishes no host port and joins
 only the operator-supplied canonical production Docker network.
 
+## 0. Take the production deploy lock first
+
+Before "UAT-only config and start" or "Explicit migration execution" below,
+acquire the cross-session lock shared with the gateway promotion runbook
+(ticket 140; full contract in `docs/runbooks/production-deploy-lock.md`) —
+"Mandatory external migration evidence gate" below still correctly says
+this contract "deliberately adds no local approval database, lock file, or
+workflow engine," but that line is about migration-*approval* reuse (an
+operator invoking the image/setup script outside this procedure), a
+different problem than two operators colliding on the same container. It
+predates this lock and does not argue against it:
+
+```bash
+ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 mypc \
+  'bash -s -- acquire --holder "<your name/session>" \
+     --session "<session URL or id>" \
+     --containers "fruit-v4-isolated-uat"' \
+  < scripts/deploy-lock.sh
+```
+
+`DENIED` prints the current holder, what they're touching, and when they
+took it — go find them before touching either Compose file below. Release it
+(last section of this file) only after this window's own verification
+passes.
+
 ## Files and owned resources
 
 | Resource | Contract value |
@@ -516,3 +541,15 @@ and evidence, and use a separately approved forward corrective migration.
 
 Image digest, network, DSNs, secrets, allowlists, backup, rehearsal, and
 approval values are live inputs and remain outside Git.
+
+## Release the production deploy lock
+
+Last step, once this window's own verification (health, provenance, or
+rollback confirmation, whichever this window ran) has passed:
+
+```bash
+ssh mypc 'bash -s -- release' < scripts/deploy-lock.sh
+```
+
+Full contract, including what happens if this is skipped, in
+`docs/runbooks/production-deploy-lock.md`.
