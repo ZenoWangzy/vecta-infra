@@ -30,13 +30,16 @@ Covers, at minimum, any deploy/promotion/rollback touching:
 - `openclaw-fleet-gateway`
 - `openclaw-channel-gateway`
 - `fruit-v4-isolated-uat` (and its `fruit-v4-isolated-setup` migration sibling)
+- `openclaw-fruit-feishu-gateway` (added by ticket 132, see below)
 
-**Deliberately excludes `openclaw-fruit-feishu-gateway`.** Per ticket 132,
-that container has no Compose project, systemd unit, or crontab — nothing
-recreates it, and nobody currently has a runbook-level procedure that
-touches it. There is no operation to serialize against yet; wiring it into
-this lock would be scaffolding for a procedure that doesn't exist. Add it
-here the day a real runbook step starts touching that container.
+**`openclaw-fruit-feishu-gateway` is covered as of ticket 132.** It used to
+be deliberately excluded here on the grounds that nothing recreated it, so
+there was no operation to serialize against. Ticket 132 changed that: it
+added `deploy/fruit-feishu-gateway/docker-compose.yml` and
+`docs/runbooks/fruit-feishu-gateway-recovery.md`, a real recreate path. Any
+`docker compose -p fruit-feishu-gateway ...` against it, or any
+`recreate_container()` run in `scripts/ops/fruit-account-onboard.sh` (vecta
+repo) that touches it, takes this lock first.
 
 **Deliberately excludes Hermes per-instance config refresh
 (`POST /api/instances/:id/refresh-config`).** See "Judgment call: should

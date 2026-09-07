@@ -1,0 +1,76 @@
+# Ticket 132 -- until this file existed, `openclaw-fruit-feishu-gateway` had
+# no Compose project, systemd unit, or crontab entry. `unless-stopped` only
+# survives a Docker daemon restart for containers the daemon already knows
+# about; if this one is ever `docker rm`'d, or the host is reprovisioned,
+# nothing brings it back. The onboarding script's own
+# `recreate_container()` (scripts/ops/fruit-account-onboard.sh) looks like a
+# recovery path but is not one: it bootstraps by `docker inspect`-ing THIS
+# running container, so it fails exactly when you'd need it -- once the
+# container is gone. This file is that missing declarative definition. It
+# was produced by reading the running container's own inspected state, not
+# by designing a new target state, and every field below is meant to match
+# what is live today. See the ticket for the full inventory this was
+# transcribed from:
+# .scratch/fruit-v41-daily-reconciliation/issues/132-nothing-would-bring-the-feishu-gateway-back-after-a-reboot.md
+# (vecta repo) and docs/runbooks/fruit-feishu-gateway-recovery.md (this repo)
+# for how to actually use it.
+#
+# WHY A SEPARATE PROJECT, NOT ANOTHER LINK IN THE `openclaw-enterprise` `-f`
+# CHAIN.
+# The container needs the `openclaw-enterprise_openclaw-net` network (it
+# resolves postgres/redis/fleet-gateway/rag-service by container name over
+# it), but network reachability is not project membership -- `external:
+# true` below gets the same reachability without joining the chain. The
+# chain itself is a standing operational cost (31 `-f` files as of
+# 2026-09-07, still growing every release window; see
+# deploy/gateways/compose.healthchecks.yml for the same fact from a different
+# angle) and this container's release cadence has nothing to do with
+# openclaw-enterprise's: joining would mean every unrelated enterprise
+# release could, in theory, disturb this container's reconcile state for no
+# reason connected to it.
+#
+# WHY THE PINNED TAG LOOKS STALE.
+# `5d9a930b981cc47fcbfa2ed58a8a1e83afdfefe4` is genuinely what is running
+# today (2026-09-07) -- `openclaw-channel-gateway`, built from the identical
+# `channel-gateway` image, is already ahead at
+# `f4195d3e9cd5129413638452ef1667b8c8c6c55e`. This file intentionally freezes
+# the *current* state first: advancing the tag is a production change (it
+# swaps what real Feishu traffic runs against) and belongs in a follow-up
+# once this declarative path itself has been proven to work, not bundled
+# into the file that proves it. See the runbook's "Known gap" section.
+#
+# WHY `env_file` POINTS AT A FILE THAT ISN'T IN THIS REPO.
+# The 50 environment variables include live secrets (API keys, DB/Redis
+# DSNs, service-to-service tokens). `fruit-feishu-gateway.env` sits next to
+# this file only on the host (`/data/ocee/deploy/fruit-feishu-gateway/`,
+# root:root 600) and is never committed -- see `fruit-feishu-gateway.env.example`
+# in this same directory for the key names with placeholder values.
+
+name: fruit-feishu-gateway
+
+services:
+  fruit-feishu-gateway:
+    image: 127.0.0.1:8082/channel-gateway:5d9a930b981cc47fcbfa2ed58a8a1e83afdfefe4
+    container_name: openclaw-fruit-feishu-gateway
+    restart: unless-stopped
+    user: appuser
+    working_dir: /app
+    entrypoint: ["docker-entrypoint.sh"]
+    command: ["node", "packages/channel-gateway/dist/server.js"]
+    env_file:
+      - ./fruit-feishu-gateway.env
+    ports:
+      - "127.0.0.1:18003:9000"
+    networks:
+      openclaw-enterprise_openclaw-net: {}
+    # No volumes: the live container has Mounts=[] -- it's stateless, all
+    # state lives behind DATABASE_URL/REDIS_URL.
+    # No healthcheck: the live container's Config.Healthcheck is null. The
+    # app does serve /healthz (packages/channel-gateway/src/server.ts:960)
+    # and adding a compose-level healthcheck here would be a real
+    # improvement, but it's a state change, not a reproduction of current
+    # state -- do it as its own follow-up (see the runbook).
+
+networks:
+  openclaw-enterprise_openclaw-net:
+    external: true
