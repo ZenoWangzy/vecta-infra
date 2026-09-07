@@ -29,15 +29,19 @@
 # release could, in theory, disturb this container's reconcile state for no
 # reason connected to it.
 #
-# WHY THE PINNED TAG LOOKS STALE.
-# `5d9a930b981cc47fcbfa2ed58a8a1e83afdfefe4` is genuinely what is running
-# today (2026-09-07) -- `openclaw-channel-gateway`, built from the identical
-# `channel-gateway` image, is already ahead at
-# `f4195d3e9cd5129413638452ef1667b8c8c6c55e`. This file intentionally freezes
-# the *current* state first: advancing the tag is a production change (it
-# swaps what real Feishu traffic runs against) and belongs in a follow-up
-# once this declarative path itself has been proven to work, not bundled
-# into the file that proves it. See the runbook's "Known gap" section.
+# WHY THE TAG ADVANCED FROM 5d9a930b9 TO f4195d3e9c.
+# Ticket 152 (2026-09-07). The declarative recreate path this file provides
+# (ticket 132) was proven for real by ticket 147's cutover, which unblocked
+# advancing the pin to match what `openclaw-channel-gateway` (same
+# `channel-gateway` image) had already been running: `f4195d3e9c` was 1200
+# commits / 66 files under `packages/channel-gateway` ahead of the old pin.
+# The behavioural read of that range (im-relay, provider isolation,
+# personal-channel routing) is recorded in the vecta repo ticket file; no
+# change in range touches a code path this container's own config actually
+# exercises (personal-channel/ilink is confirmed dead here --
+# `[PersonalChannel] supervisor disabled` at boot -- and this container's
+# `feishuMultiProvider` is disabled, single CEO client only). Rollback is
+# back to `5d9a930b981cc47fcbfa2ed58a8a1e83afdfefe4`, same mechanism.
 #
 # WHY `env_file` POINTS AT A FILE THAT ISN'T IN THIS REPO.
 # The 50 environment variables include live secrets (API keys, DB/Redis
@@ -50,7 +54,7 @@ name: fruit-feishu-gateway
 
 services:
   fruit-feishu-gateway:
-    image: 127.0.0.1:8082/channel-gateway:5d9a930b981cc47fcbfa2ed58a8a1e83afdfefe4
+    image: 127.0.0.1:8082/channel-gateway:f4195d3e9cd5129413638452ef1667b8c8c6c55e
     container_name: openclaw-fruit-feishu-gateway
     restart: unless-stopped
     user: appuser
