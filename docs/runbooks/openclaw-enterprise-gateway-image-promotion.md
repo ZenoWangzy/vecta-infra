@@ -436,10 +436,11 @@ removal is locked by `scripts/test_build_mypc_images_contract.py`**
 `"PROXY_PASSWORD" not in workflow`, `"HTTPS_PROXY"`/`"https_proxy" not in
 download_script`, `"GIT_HTTP_LOW_SPEED_TIME" not in workflow`). This looks
 like an oversight the first time you read it — `ci-git-transport-and-proxy.md`
-still says "proxy and lowSpeed settings are injected per job by
-`build-mypc-images.yml`", which is stale prose left over from before
-`18b5a46` and is simply false today (`grep -c "8888\|geraldsynnas"
-.github/workflows/build-mypc-images.yml` is `0`). It is not an oversight.
+used to say "proxy and lowSpeed settings are injected per job by
+`build-mypc-images.yml`", which was stale prose left over from before
+`18b5a46` and was simply false at the time (`grep -c "8888\|geraldsynnas"
+.github/workflows/build-mypc-images.yml` is `0`; fixed by ticket 136). It is
+not an oversight.
 Measured properly this window, as the actual `github-runner` user, 3 samples
 each:
 ```
@@ -454,27 +455,32 @@ the proxy would make it *less* reliable, not more. `18b5a46` was right;
 treat any future urge to "fix" this by re-adding the proxy as a signal to
 re-measure before touching code, not to act on the urge.
 
-**A related trap that will bite silently: `/home/github-runner` is shared by
-three runner services** (`mypc-vecta-infra-prod-build`, `-2`, and `mypc-ci`).
-`ci.yml`'s own `Configure git proxy` step writes `git config --global
-http.proxy` into that shared `~/.gitconfig` when it runs on `mypc-ci`, and
-unsets it again in its own fallback branch. **Whether this workflow's bare
-`git` calls end up going through the proxy therefore depends on which branch
-`ci.yml` last happened to take on a completely unrelated runner** — nobody
-decided this, and it appears in no workflow file (tracked as ticket 136).
-`build-mypc-images.yml` itself is unaffected only because `Checkout infra
-contract` and `Download selected VectA source` both set
+**A related trap that used to bite silently, fixed now (ticket 136):**
+`/home/github-runner` is shared by three runner services
+(`mypc-vecta-infra-prod-build`, `-2`, and `mypc-ci`). `ci.yml`'s own
+`Configure git proxy` step used to write `git config --global http.proxy`
+into that shared `~/.gitconfig` when it ran on `mypc-ci`, and unset it again
+in its own fallback branch. Whether this workflow's bare `git` calls ended up
+going through the proxy therefore used to depend on which branch `ci.yml`
+last happened to take on a completely unrelated runner — nobody had decided
+this, and it appeared in no workflow file. `build-mypc-images.yml` itself was
+never affected in practice, only because `Checkout infra contract` and
+`Download selected VectA source` both set
 `GIT_CONFIG_GLOBAL=/dev/null`/`GIT_CONFIG_SYSTEM=/dev/null`, blinding
-themselves to that file on purpose — if you ever remove that isolation for
-some other reason, you will inherit whatever `ci.yml` last left behind,
-silently. **Before every dispatch, check the shared file's current state
-without printing its content** (see the file-reading rule two paragraphs
-down) — `sudo -u github-runner git config --global --get http.proxy`, read
-into a shell variable, echo only whether it's set. If set, `git config
---global --unset-all http.proxy`/`https.proxy` before dispatching (harmless:
-`ci.yml` reconstructs this file from scratch, from a fresh probe, every time
-it runs, so clearing it never breaks a concurrent or future `ci.yml` run) and
-record in the execution log that you did, and what the prior state was.
+themselves to that file on purpose — **if you ever remove that isolation for
+some other reason, you inherit whatever the shared home last held, silently;
+that isolation is the actual safety property here, not the state of
+`~/.gitconfig`.** As of ticket 136, `ci.yml`'s proxy step no longer writes
+into `$HOME/.gitconfig` at all — it redirects its own `git config --global`
+calls to a job-scoped file via `GIT_CONFIG_GLOBAL`, propagated to later
+steps in the same job through `$GITHUB_ENV` — so there is nothing left for
+this shared file to accumulate from that path, and **the "check and clear
+the shared file before every dispatch" workaround this paragraph used to
+prescribe is no longer necessary** — there is no manual pre-dispatch step
+here any more. `~/.gitconfig` can still carry unrelated, harmless residue (for
+example duplicate `safe.directory` entries added every ten minutes by
+`warm-vecta-source-cache.sh`, ticket 143) — that is not a proxy config and
+does not change this workflow's transport.
 
 **Never print the full content of a file on `mypc` that you did not create,
 regardless of what kind of file it looks like.** This bit twice this window —

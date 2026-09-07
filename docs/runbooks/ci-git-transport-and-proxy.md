@@ -41,7 +41,7 @@ paths:
 
 | Path | Used by | Safeguards that apply |
 |---|---|---|
-| HTTPS via squid proxy (`geraldsynnas.ddns.net:8888`) | checkout/fetch on the mypc production-build runner | token auth, proxy probe + dead-proxy fallback, `http.lowSpeedLimit/lowSpeedTime` |
+| HTTPS via squid proxy (`geraldsynnas.ddns.net:8888`) | `vecta`'s `ci.yml` PR-gate and postsubmit checkout on the `mypc-ci` runner. **Not** the production image build — `build-mypc-images.yml` is isolated from this path entirely, see the per-host contract below | token auth, proxy probe + dead-proxy fallback, `http.lowSpeedLimit/lowSpeedTime` |
 | ssh direct (`github.com:22`) | operator pushes; prod `/data/ocee` fetches | none of the above; ssh keepalives do not detect a throttled-but-alive stream |
 
 GFW intermittently throttles bulk data on long-lived port-22 connections while
@@ -53,9 +53,31 @@ only one with working stall protection, so **CI fetches must never leave it**.
 
 ### mypc prod-build runner (`github-runner` user)
 
-- Has **no** `~/.gitconfig` — keep it that way. Proxy and lowSpeed settings are
-  injected per job by `build-mypc-images.yml`; nothing persists host-side that
-  could rewrite URLs.
+- `~/.gitconfig` is **not** build-mypc-images.yml's to configure, and reading
+  it is not a safe way to learn this runner's proxy state: the OS user
+  `github-runner` is shared by three runner services registered on this host
+  (`mypc-vecta-infra-prod-build`, its `-2` twin, and `mypc-ci`), so whichever
+  of them last wrote to `$HOME/.gitconfig` decides what the file says, not
+  which workflow you're reading. It was `vecta`'s `ci.yml` — its
+  `pr-touched-packages`/`postsubmit` jobs run on `mypc-ci` and used to
+  `git config --global` a proxy probe result and `http.lowSpeedLimit`/`Time`
+  straight into that shared file (ticket 136). As of ticket 136, that step
+  redirects its own `git config --global` writes to a job-scoped file via
+  `GIT_CONFIG_GLOBAL` (propagated to later steps in the same job through
+  `$GITHUB_ENV`), so `$HOME/.gitconfig` no longer changes at all from that
+  path — verified: writing a poisoned `http.proxy` into a stand-in `$HOME`,
+  running the updated step, and diffing that file before/after showed it
+  byte-identical.
+- `build-mypc-images.yml` itself has never configured a proxy since `18b5a46`
+  hardened it, and does not read `$HOME/.gitconfig` either way: its job sets
+  `GIT_CONFIG_GLOBAL: /dev/null` and `GIT_CONFIG_SYSTEM: /dev/null` (added in
+  `af9b347`, before `18b5a46`, and locked by
+  `scripts/test_build_mypc_images_contract.py`'s negative assertions), so
+  every `git` invocation in that job goes straight to GitHub regardless of
+  what any other job on this host has written to the shared home. That is a
+  deliberate choice, not an oversight: mypc's direct GitHub reachability
+  tested 3/3 versus 1/3 through the squid proxy (ticket 131), so this
+  workflow is better off never touching it.
 
 ### mypc prod checkout (`/data/ocee`, root)
 
