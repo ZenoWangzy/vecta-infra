@@ -33,6 +33,7 @@ Covers, at minimum, any deploy/promotion/rollback touching:
 - `openclaw-fruit-feishu-gateway` (added by ticket 132, see below)
 - `openclaw-rag-service` (added by ticket 145, see below)
 - `openclaw-wecom-contact-sync` (added by ticket 145, see below)
+- `vecta-fruit-industry-pack-canary` (added by ticket 150, see below)
 
 **`openclaw-fruit-feishu-gateway` is covered as of ticket 132.** It used to
 be deliberately excluded here on the grounds that nothing recreated it, so
@@ -55,6 +56,18 @@ before this ticket added `deploy/wecom-contact-sync/docker-compose.yml` and
 `docs/runbooks/wecom-contact-sync-recovery.md`. Any
 `docker compose -p wecom-contact-sync ...` against it takes this lock
 first.
+
+**`vecta-fruit-industry-pack-canary` is covered as of ticket 150, for the
+same reason, and despite its name is the highest-real-traffic container in
+this group (~330 req/h of live MCP-over-SSE sessions).** No recreate path of
+any kind existed before this ticket added
+`deploy/fruit-industry-pack/docker-compose.yml` and
+`docs/runbooks/fruit-industry-pack-canary-recovery.md` -- read that runbook's
+"The name is the trap" section before treating this container as disposable
+just because its name contains "canary". Any `docker compose -p
+fruit-industry-pack ...` against it, or any `recreate_container()` run in
+`scripts/ops/fruit-account-onboard.sh` (vecta repo) that touches it, takes
+this lock first.
 
 **Deliberately excludes Hermes per-instance config refresh
 (`POST /api/instances/:id/refresh-config`).** See "Judgment call: should
