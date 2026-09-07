@@ -31,57 +31,18 @@
     mode: "0644"
   register: open_webui_nginx_config
 
-- name: Start Open WebUI
-  community.docker.docker_container:
-    name: openclaw-open-webui
-    image: "{{ open_webui_image }}"
-    state: started
-    pull: true
-    image_name_mismatch: recreate
-    restart_policy: unless-stopped
-    volumes:
-      - openclaw-open-webui-data:/app/backend/data
-    env:
-      OPENAI_API_BASE_URL: "http://openclaw-fleet-gateway:3000/v1"
-      OPENAI_API_KEY: "{{ lookup('env', 'OPENWEBUI_SERVICE_KEY') | default(lookup('env', 'SERVICE_KEY'), true) }}"
-      OPENAI_API_CONFIGS: "{{ {'0': {'enable': true, 'model_ids': [open_webui_model_id]}} | to_json }}"
-      DEFAULT_MODELS: "{{ open_webui_model_id }}"
-      DEFAULT_PINNED_MODELS: "{{ open_webui_model_id }}"
-      TASK_MODEL_EXTERNAL: "{{ open_webui_model_id }}"
-      ENABLE_OLLAMA_API: "false"
-      OLLAMA_BASE_URL: ""
-      WEBUI_SECRET_KEY: "{{ lookup('env', 'WEBUI_SECRET_KEY') }}"
-      WEBUI_URL: "{{ base_url }}/chat"
-      WEBUI_AUTH_TRUSTED_EMAIL_HEADER: X-Auth-Email
-      WEBUI_AUTH_TRUSTED_NAME_HEADER: X-Auth-Name
-      WEBUI_AUTH_TRUSTED_ROLE_HEADER: X-Auth-Role
-      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
-      FORWARD_USER_INFO_HEADER_USER_EMAIL: X-Auth-Email
-      FORWARD_USER_INFO_HEADER_USER_NAME: X-Auth-Name
-      FORWARD_USER_INFO_HEADER_USER_ROLE: X-Auth-Role
-    networks:
-      - name: "{{ docker_network }}"
-      - name: "{{ open_webui_network }}"
-    memory: "{{ open_webui_memory }}"
-    memory_swap: "{{ open_webui_memory_swap }}"
-  register: open_webui_container
-
-- name: Start Open WebUI proxy (nginx)
-  community.docker.docker_container:
-    name: openclaw-webui-proxy
-    image: "{{ open_webui_nginx_image }}"
-    state: started
-    pull: true
-    image_name_mismatch: recreate
-    restart_policy: unless-stopped
-    ports:
-      - "3002:80"
-    volumes:
-      - "{{ open_webui_nginx_config_path }}:/etc/nginx/conf.d/default.conf:ro"
-    networks:
-      - name: "{{ docker_network }}"
-      - name: "{{ open_webui_network }}"
-    restart: "{{ (open_webui_nginx_config.changed | default(false)) or (open_webui_container.changed | default(false)) }}"
+# openclaw-open-webui and openclaw-webui-proxy container lifecycle moved to
+# mypc:/data/ocee/deploy/open-webui/docker-compose.yml (ticket 145/150, 2026-09-07).
+# This role never had a playbook invoking it (no playbooks/*.yml referenced
+# `role: open-webui` — confirmed by grepping every playbook in this repo), so
+# these two docker_container tasks had never actually run against mypc: the
+# image vars below (open_webui_image, open_webui_nginx_image) still disagreed
+# with the live containers' actual tags at the time of removal. Reintroducing
+# container creation here would fight the compose project for ownership of
+# the same container names — do not add it back without also retiring the
+# compose project. The nginx CSP templating and DB channel-mapping upsert
+# below are still real, still-unwired logic and are unaffected by this
+# removal; the compose project bind-mounts the same rendered nginx.conf path.
 
 - name: Probe Open WebUI proxy health
   ansible.builtin.uri:
@@ -214,30 +175,19 @@
     - host_nginx_enabled | bool
     - (host_nginx_site is defined and host_nginx_site.changed | default(false)) or (host_nginx_site_link is defined and host_nginx_site_link.changed | default(false))
 
-- name: Start KK File View
-  community.docker.docker_container:
-    name: kkfileview
-    image: "{{ kk_file_view_image }}"
-    state: started
-    pull: true
-    image_name_mismatch: recreate
-    restart_policy: unless-stopped
-    networks:
-      - name: "{{ docker_network }}"
-      - name: "{{ open_webui_network }}"
-    memory: "512m"
-
-- name: Start OnlyOffice Document Server
-  community.docker.docker_container:
-    name: onlyoffice
-    image: "{{ onlyoffice_image }}"
-    state: started
-    pull: true
-    image_name_mismatch: recreate
-    restart_policy: unless-stopped
-    volumes:
-      - onlyoffice_logs:/var/log/onlyoffice
-      - onlyoffice_data:/var/www/onlyoffice/Data
-    networks:
-      - name: "{{ docker_network }}"
-      - name: "{{ open_webui_network }}"
+# kkfileview container lifecycle also moved to the compose project above
+# (ticket 145/150). Removed for the same reason as openclaw-open-webui/
+# openclaw-webui-proxy: never wired to a playbook, and its declared networks
+# ([docker_network, open_webui_network]) actually disagreed with the live
+# container, which was only ever attached to docker_network — running this
+# task would have silently changed the container's network membership, not
+# just its image tag.
+#
+# onlyoffice's docker_container task is removed outright, not moved to
+# compose: the live container carries 5 additional anonymous volumes this
+# task never declared (embedded postgres/redis/rabbitmq/fonts/app-data —
+# OnlyOffice Document Server bundles its own data services). Recreating it
+# from this task's two named volumes alone would silently orphan those 5 and
+# start the container with empty internal state. See ticket 145's report for
+# the volume-preserving draft and the backup-first verification path before
+# anyone attempts a live recreate of this specific container.
