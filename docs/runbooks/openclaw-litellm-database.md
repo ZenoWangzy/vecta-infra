@@ -45,7 +45,13 @@ token is **absent** -- i.e. `/key/delete` did not just flip a status flag in
 our own bookkeeping, the token was actually removed from LiteLLM's own state.
 
 **Conclusion: key generation and revocation has worked, but only ever for
-the separate Fruit-tenant LiteLLM instance.** For the regular employee path
+the separate Fruit-tenant LiteLLM instance, and never (until this ticket) for
+`openclaw-litellm` itself.** Proven live on 2026-09-07 after this ticket's fix:
+a synthetic key generated against `openclaw-litellm` (`/key/generate`, 200,
+real token recorded in its `LiteLLM_VerificationToken`), a real
+`/chat/completions` call against it succeeded, and `/key/delete` removed it
+(200, and independently confirmed absent from `LiteLLM_VerificationToken`
+afterward rather than trusting the response). For the regular employee path
 -- `openclaw-litellm` / `litellm-proxy`, the one this ticket is about, the one
 `resolveInstanceLlmApiKey` and all 64 fleet instances actually use -- there is
 zero evidence any virtual key has ever existed: 0 of 3 rows point there, and
@@ -125,13 +131,22 @@ volume of its own either way (its only mount is the read-only
 
 ## Provisioning (one time)
 
+This repo has no CI job that ships its contents onto mypc automatically (same
+caveat as `rag-service-recovery.md` and `fruit-feishu-gateway-recovery.md`).
+Get a checkout of this branch/commit onto the host first -- a throwaway
+`git clone` under `/data/ocee/deploy/` is fine, it does not need to persist --
+then, on mypc:
+
 ```bash
-ssh mypc 'cd /data/ocee/deploy/openclaw-litellm && ./provision-database.sh'
+cd <that checkout>/deploy/openclaw-litellm && ./provision-database.sh
 ```
 
 Idempotent: a no-op if `litellm-database.env` already exists; refuses to
 guess (rather than silently create a second role) if the role exists without
-a matching env file.
+a matching env file. Uses the existing `openclaw_poc` role only to issue
+`CREATE ROLE`/`CREATE DATABASE` -- it does not touch `postgres.yml`'s own
+container-recreation path, so it is not gated by
+`mypc_stateful_services_enabled`/`mypc_postgres_adoption_approved`.
 
 ## Deploying LiteLLM with its database wired up
 
@@ -144,27 +159,86 @@ a matching env file.
    ```
 
 2. Run the Ansible role with `LITELLM_DATABASE_URL` sourced from the
-   provisioned env file, targeting only the LiteLLM service:
+   provisioned env file. This uses the same one-service allowlist gate as
+   every other stateful-adoption run in this repo (see
+   `docs/runbooks/mypc-nexus-image-adoption.md`'s "Data-Layer Adoption
+   Sequence") even though LiteLLM itself is not the thing being gated here --
+   `roles/infra-services/tasks/main.yml` only imports `litellm.yml` (and
+   skips postgres/redis/minio/clickhouse entirely) when the allowlist is
+   exactly `["litellm"]`:
 
    ```bash
-   ssh mypc 'cd <vecta-infra checkout> && set -a && \
-     . /data/ocee/deploy/openclaw-litellm/litellm-database.env && set +a && \
-     uvx --from ansible-core ansible-playbook playbooks/infra.yml \
-       -i inventories/mypc/hosts.ini -e ansible_host=mypc \
-       -e mypc_deploy_enabled=true --tags infra-services --limit mypc'
+   cd <that checkout>
+   set -a && . /data/ocee/deploy/openclaw-litellm/litellm-database.env && set +a
+   export PATH=/home/hige/.local/bin:$PATH   # uv/uvx live under this user's home
+   uvx --from ansible-core --with docker --with requests ansible-playbook \
+     playbooks/infra.yml \
+     -i inventories/mypc/hosts.ini -e ansible_host=mypc -e ansible_connection=local \
+     -e mypc_deploy_enabled=true \
+     -e mypc_stateful_services_enabled=true \
+     -e '{"mypc_stateful_service_allowlist":["litellm"]}' \
+     --tags infra-services --limit mypc
    ```
 
-   The role's own assert fails the play before touching the container if
-   `litellm_database_url_effective` resolves empty -- it will not silently
-   start LiteLLM without a database again.
+   Notes from actually running this (2026-09-07):
+   - `ansible_connection=local` is required: the tracked `hosts.ini` targets
+     `mypc-host.example.com` with `ansible_host` overridden to `mypc`, but
+     root's own `~/.ssh/config` on mypc has no `mypc` alias and self-SSH
+     loopback as root is not set up. Running the module locally (we are
+     already on mypc) sidesteps that entirely and is the simpler fix.
+   - `--with docker --with requests` is required: the bare
+     `uvx --from ansible-core` environment does not include the `docker`/
+     `requests` Python packages `community.docker.docker_container` needs.
+   - **Never add `--diff` to a `--check` (or real) run of this playbook.**
+     `docker_container`'s diff output prints the full container environment,
+     including every secret in it, straight to your terminal. This was
+     learned the expensive way during this ticket -- see the Incident
+     section below.
+   - The role's own assert fails the play before touching the container if
+     `litellm_database_url_effective` resolves empty -- it will not silently
+     start LiteLLM without a database again.
+   - The post-adoption regression script
+     (`scripts/mypc-data-layer-regression.sh --service litellm --phase
+     after`) can fail once on a *first* deploy against a fresh database:
+     LiteLLM runs all pending Prisma migrations on first connect (dozens of
+     files, ~15-20s here), during which `/health/liveliness` is unreachable
+     and the regression script's retry budget is shorter than that. Re-run
+     the regression script by hand after confirming the container is
+     actually healthy (`curl http://127.0.0.1:4000/health/readiness`) rather
+     than treating one failed attempt as a broken deploy. This is a one-time
+     cost -- later restarts against the same already-migrated database do
+     not re-run migrations.
 
 3. Verify with a real request, not a health check: an actual
-   `/key/generate` call against a synthetic instance id, followed by a real
-   `/key/delete` of the key it returned, and a real `/v1/chat/completions`
-   (or equivalent) round trip proving existing traffic still works. See the
-   ticket for the exact evidence recorded.
+   `/key/generate` call against a synthetic instance id, a real
+   `/chat/completions` round trip proving existing traffic still works, and
+   a real `/key/delete` of the generated key -- with the deletion verified by
+   querying `LiteLLM_VerificationToken` directly, not assumed from a 200.
+   Fetch `LITELLM_MASTER_KEY` with `docker exec openclaw-litellm printenv
+   LITELLM_MASTER_KEY` inside the *same* remote script that uses it, and
+   mask the `key` field of `/key/generate`'s response before it leaves the
+   host -- the `token`/`token_id` field is a lookup id already stored in
+   plaintext in `llm_virtual_keys.litellm_token_id`, not a bearer secret, and
+   is fine to see. See the ticket for the full recorded evidence.
 
 4. Release the lock.
+
+## Incident: `--diff` leaked live secrets during this ticket's first deploy attempt
+
+The first `--check --diff` run of step 2 above printed the full
+`docker_container` environment diff to the operator's terminal, which
+included: the freshly-generated `litellm_gateway` database password, and the
+pre-existing `LITELLM_MASTER_KEY`, `DEEPSEEK_API_KEY`, `ZAI_API_KEY`, and
+`MOONSHOT_API_KEY` values. The `litellm_gateway` role/database (self-owned,
+not yet in use by any running container) were immediately dropped and
+re-provisioned with a new password before the real deploy ran. The four
+pre-existing provider/master-key secrets were **not** rotated as part of this
+ticket -- that is a separate, higher-blast-radius action (multiple containers
+and, for the provider keys, third-party billing accounts reference them) that
+needs an explicit decision, not a unilateral one made mid-deploy. Do not pass
+`--diff` to this playbook; if you need to see what would change, diff the
+non-secret fields only (image, ports, volumes, restart policy, memory/cpu --
+see `docker inspect` structural fields), never the `env` block.
 
 ## Backup and restore rehearsal
 
