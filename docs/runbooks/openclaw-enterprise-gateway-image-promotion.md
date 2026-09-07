@@ -409,6 +409,12 @@ If empty, build first via `vecta-infra`'s `.github/workflows/build-mypc-images.y
 - `image_names`: empty (builds all contract images).
 
 Dispatch: `gh workflow run build-mypc-images.yml -R ZenoWangzy/vecta-infra -f source_sha=<sha> -f source_branch=main`.
+Poll with `gh run list -R ZenoWangzy/vecta-infra --workflow build-mypc-images.yml --limit 1`
++ `gh run watch <id> -R ZenoWangzy/vecta-infra`. Success criterion: run
+conclusion `success` **and** the target SHA now appears in
+`docker image ls` on `mypc` for each service the window touches — the workflow
+run going green is necessary but the actual proof is the image being there,
+same "exit 0 isn't a criterion" rule as everywhere else in this doc.
 
 The same real-red-vs-network-blip judgment call from §1 applies here too, on a
 different workflow. Hit it this window: the dispatched build's own
@@ -481,14 +487,99 @@ file's contents ahead of time: `grep -c`/`grep -o` for key names only, or read
 a single field into a shell variable and echo just a pass/fail or the one
 value you actually need — never `cat`/`head`/`sed -n` a whole file that
 isn't something you wrote yourself in this session.
-Poll with `gh run list -R ZenoWangzy/vecta-infra --workflow build-mypc-images.yml --limit 1`
-+ `gh run watch <id> -R ZenoWangzy/vecta-infra`. Success criterion: run
-conclusion `success` **and** the target SHA now appears in
-`docker image ls` on `mypc` for each service the window touches — the workflow
-run going green is necessary but the actual proof is the image being there,
-same "exit 0 isn't a criterion" rule as everywhere else in this doc.
 
-*(Not yet executed this window — blocked on §1.)*
+## 2a. The cold-clone trap, and why it's fixed now (ticket 143)
+
+`Download selected VectA source` (the step right after the one discussed
+above — a different clone, of `vecta` itself, not `vecta-infra`) tries a
+warm local cache first and only falls back to a direct clone if that cache
+doesn't qualify for the exact `source_sha`. That fallback clone is a full,
+cold, `--depth=1` clone of the whole `vecta` monorepo over the same throttled
+link — three attempts, up to ~18 minutes each, so a cold cache costs up to
+**38 minutes** and can still fail. Hit this for real this window: run
+`34084544530` burned 38 minutes across three genuine multi-minute stalls
+(`Connection timed out`, then `GnuTLS recv error (-110)` twice) before giving
+up entirely.
+
+**Root cause, found by reading the code, not guessing**: the cache
+(`/home/github-runner/.cache/vecta-main.git`, a bare shallow repo) qualifies
+only if all four hold — directory exists; `git cat-file -e
+$SOURCE_SHA^{commit}` resolves; `git rev-parse refs/heads/main` **equals**
+`$SOURCE_SHA` exactly (not just "reachable" — the local `main` ref itself
+must point there); `git fsck --connectivity-only $SOURCE_SHA` passes. Its
+`origin` remote was `file:///home/gerald/project/vecta` — **a path that only
+exists on a developer's WSL2 workstation, not on `mypc`.** Nobody could ever
+fetch through it. This is the exact same shape as ticket 52's release-checkout
+drift: a remote pointing somewhere unreachable, silent until the one moment
+it's needed, and it's needed on every single build. The cache wasn't
+"coincidentally cold" — it was configured to be permanently unable to warm
+itself.
+
+**Fix, in three pieces, all in this repo now**:
+
+1. **The remote**: repointed to `file:///data/ocee/.git` — `/data/ocee` is
+   this host's own production `vecta` checkout, full history, already has
+   working SSH auth to the real GitHub remote (`git@github.com:...`, root's
+   keys). Considered pointing the cache straight at GitHub instead (SSH or
+   HTTPS); rejected because `github-runner` has **no SSH key at all**
+   (`~/.ssh` doesn't exist for that user) and HTTPS needs the same
+   `VECTA_READ_TOKEN` the build job only has as a job secret, not something
+   to hand this user permanently. Reusing `/data/ocee`'s already-working,
+   already-audited credential is smaller and safer than provisioning a new
+   one.
+2. **`scripts/warm-vecta-source-cache.sh`** — the two-hop relay, proven
+   manually before being turned into this script: `git -C /data/ocee fetch
+   origin main` (small, incremental, real SSH auth — 8.4s/529KiB cold, ~5s
+   when already close), then `sudo -u github-runner git --git-dir=$CACHE
+   fetch --depth=1 --force file:///data/ocee/.git
+   refs/remotes/origin/main:refs/heads/main` (local, no auth, sub-second).
+   Two things that will bite anyone reimplementing this: the shallow ref
+   update is a **non-fast-forward** as far as git can tell (shallow history
+   has no common ancestor to compare), so `--force` is required, not
+   optional; and the cross-user local fetch trips git's dubious-ownership
+   guard the first time, needing one idempotent, config-only
+   `git config --global --add safe.directory /data/ocee/.git` as
+   `github-runner` (never touches objects or a working tree).
+3. **`scripts/warm-vecta-source-cache.{service,timer}`** — a systemd oneshot
+   + timer, installed by hand on `mypc` (`/usr/local/sbin/`,
+   `/etc/systemd/system/`, `daemon-reload`, `systemctl enable --now
+   warm-vecta-source-cache.timer`), firing every 10 minutes. No existing
+   Ansible role manages the runner hosts themselves (they were hand-installed
+   the same way the timer now is) — formalizing this into Ansible is a
+   reasonable follow-up, not required for the fix to work.
+
+**Also changed**: the direct-clone fallback branch now logs *why* it's
+falling back (cache present-but-stale vs. missing entirely, with the cache's
+actual current tip) before attempting the network clone — previously a
+cold-cache fallback and a genuine mid-clone network failure produced
+indistinguishable log output. The literal string
+`"Cached VectA source unusable; falling back to GitHub"` (a different,
+narrower branch — the cache qualified but the local clone from it itself
+failed) is unchanged and still covered by
+`scripts/test_build_mypc_images_contract.py`.
+
+**Measured effect** — the number that matters, not exit codes:
+
+| | clone step | whole build |
+|---|---|---|
+| Cold (the 38-minute run) | 18-38 min, failed | failed |
+| Warm, this session, manual two-hop | 4s | 3m40s |
+| Warm, **fully automatic** (timer-fired cache, next build dispatched with zero manual cache touch in between) | 4s | 1m30s |
+
+The automatic case is the one that matters: the timer fired on its own
+schedule (`OnBootSec=2min` after enable, then `OnUnitActiveSec=10min`), and
+a build dispatched afterward with no manual intervention on the cache used
+it (`"Using cached exact VectA source"` in the run log) and finished the
+clone step in 4 seconds.
+
+**Judgment criteria for "is this actually working," not exit codes**:
+`systemctl list-timers warm-vecta-source-cache.timer` shows a real `LAST`
+and `NEXT`, not just "enabled"; `journalctl -u warm-vecta-source-cache.service`
+shows successive `cache warm: refs/heads/main = <sha>` lines advancing as
+`main` advances, un-prompted; and a real `build-mypc-images.yml` run's
+`Download selected VectA source` step logs `"Using cached exact VectA
+source"` and completes in single-digit seconds without you having touched
+the cache that session.
 
 ## 3. Reading the live `-f` chain (before you touch anything)
 

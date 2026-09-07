@@ -1,0 +1,10 @@
+[Unit]
+Description=Ticket 143: keep the vecta-main.git source cache warm for build-mypc-images.yml
+# Only ever a fetch into local git object stores -- no production containers,
+# no working tree, no relation to the runner services themselves. Safe to
+# run at any time regardless of build/deploy activity.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/warm-vecta-source-cache.sh
+User=root
