@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -130,9 +132,164 @@ class EvidenceQueryTests(unittest.TestCase):
         finally:
             MODULE.GitHubClient = original
 
-        self.assertEqual(evidence, (10, 20))
+        self.assertEqual(evidence, MODULE.EvidenceResult(10, 20, SHA))
         runs_query = next(q for path, q in recorded if path.endswith("/actions/runs"))
         self.assertEqual(runs_query.get("head_sha"), SHA)
+
+
+class LastStageCopyPrefixTests(unittest.TestCase):
+    def test_keeps_only_final_stage_and_derives_src_from_dist(self) -> None:
+        dockerfile = """
+FROM node:20 AS builder
+COPY packages/foo packages/foo
+RUN build
+
+FROM node:20
+COPY --from=builder /app/packages/foo/dist packages/foo/dist
+COPY --from=builder /app/packages/foo/package.json packages/foo/
+COPY --from=builder /usr/local/bin/node /usr/local/bin/node
+COPY scripts/entrypoint.sh /app/entrypoint.sh
+"""
+        self.assertEqual(
+            sorted(MODULE._last_stage_copy_prefixes(dockerfile)),
+            sorted(
+                [
+                    "packages/foo/src",
+                    "packages/foo/package.json",
+                    "scripts/entrypoint.sh",
+                ]
+            ),
+        )
+
+
+class LoadPrefixTableTests(unittest.TestCase):
+    def test_reads_contract_and_dockerfiles_from_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts").mkdir()
+            (root / "scripts" / "production-image-contract.json").write_text(
+                json.dumps(
+                    {"images": [{"name": "demo", "dockerfile": "packages/demo/Dockerfile"}]}
+                )
+            )
+            (root / "packages" / "demo").mkdir(parents=True)
+            (root / "packages" / "demo" / "Dockerfile").write_text(
+                "FROM node:20\nCOPY packages/demo packages/demo\n"
+            )
+            prefixes, recipe_paths = MODULE.load_prefix_table(root)
+        self.assertIn(("demo", "packages/demo"), prefixes)
+        self.assertEqual(
+            recipe_paths,
+            {"scripts/production-image-contract.json", "packages/demo/Dockerfile"},
+        )
+
+
+class DiffAffectsImageTests(unittest.TestCase):
+    def test_matches_prefix_directory_or_recipe_file_only(self) -> None:
+        prefixes = [("demo", "packages/demo/src")]
+        recipe_paths = {"scripts/production-image-contract.json"}
+        paths = [
+            "packages/demo/src/index.ts",  # inside the prefix dir -> hit
+            "packages/demo/src2/index.ts",  # look-alike prefix -> not a hit
+            "docs/readme.md",  # unrelated -> not a hit
+            "scripts/production-image-contract.json",  # the recipe itself -> hit
+        ]
+        self.assertEqual(
+            MODULE.diff_affects_image(paths, prefixes, recipe_paths),
+            ["packages/demo/src/index.ts", "scripts/production-image-contract.json"],
+        )
+
+
+class SelectEvidencedAncestorTests(unittest.TestCase):
+    def test_returns_first_ancestor_with_evidence(self) -> None:
+        self.assertEqual(
+            MODULE.select_evidenced_ancestor(
+                ["a", "b", "c"], lambda s: {"b": (1, 2)}.get(s)
+            ),
+            ("b", 1, 2),
+        )
+
+    def test_returns_none_when_no_ancestor_has_evidence(self) -> None:
+        self.assertIsNone(MODULE.select_evidenced_ancestor(["a"], lambda s: None))
+
+
+class AncestorFallbackVerifyTests(unittest.TestCase):
+    """Ticket 141: a tip with no evidence falls back to an evidenced ancestor,
+    but only when nothing between that ancestor and the tip is image-affecting.
+    """
+
+    SHA_TIP = "1" * 40
+    SHA_ANCESTOR = "2" * 40
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        (root / "scripts").mkdir()
+        (root / "scripts" / "production-image-contract.json").write_text(
+            json.dumps(
+                {"images": [{"name": "demo", "dockerfile": "packages/demo/Dockerfile"}]}
+            )
+        )
+        (root / "packages" / "demo").mkdir(parents=True)
+        (root / "packages" / "demo" / "Dockerfile").write_text(
+            "FROM node:20 AS builder\n"
+            "COPY packages/demo packages/demo\n"
+            "FROM node:20\n"
+            "COPY --from=builder /app/packages/demo/dist packages/demo/dist\n"
+        )
+        self.vecta_root = root
+
+    def _fake_client(self, files: list[str]) -> type:
+        tip, ancestor = self.SHA_TIP, self.SHA_ANCESTOR
+
+        class FakeClient:
+            def __init__(self, *, api_url: str, token: str) -> None:
+                pass
+
+            def get_json_list(self, path: str, query: dict[str, str]):
+                assert path.endswith("/commits")
+                assert query["sha"] == tip
+                return [{"sha": tip}, {"sha": ancestor}]
+
+            def get_json(self, path: str, query: dict[str, str]):
+                if path.endswith("/actions/runs"):
+                    if query["head_sha"] == ancestor:
+                        return {"workflow_runs": [run(sha=ancestor)]}
+                    return {"workflow_runs": []}
+                if path.endswith("/jobs"):
+                    return {"jobs": [job()]}
+                if "/compare/" in path:
+                    return {
+                        "status": "ahead",
+                        "files": [{"filename": f} for f in files],
+                    }
+                raise AssertionError(f"unexpected path {path}")
+
+        return FakeClient
+
+    def _verify(self, files: list[str]) -> MODULE.EvidenceResult:
+        original = MODULE.GitHubClient
+        MODULE.GitHubClient = self._fake_client(files)
+        try:
+            return MODULE.verify(
+                repo="ZenoWangzy/vecta",
+                sha=self.SHA_TIP,
+                branch="main",
+                token="t",
+                api_url="https://api.github.com",
+                vecta_root=self.vecta_root,
+            )
+        finally:
+            MODULE.GitHubClient = original
+
+    def test_accepts_ancestor_evidence_when_diff_is_docs_only(self) -> None:
+        result = self._verify(["README.md", "docs/notes.md"])
+        self.assertEqual(result, MODULE.EvidenceResult(10, 20, self.SHA_ANCESTOR))
+
+    def test_rejects_ancestor_evidence_when_diff_touches_an_image_path(self) -> None:
+        with self.assertRaises(MODULE.EvidenceError):
+            self._verify(["packages/demo/src/index.ts"])
 
 
 if __name__ == "__main__":
