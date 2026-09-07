@@ -1,0 +1,89 @@
+# fruit-industry-pack -- declarative recovery definition (ticket 150). Fourth
+# in the F78/F79 series: openclaw-fruit-feishu-gateway (132) ->
+# openclaw-rag-service (145) -> openclaw-wecom-contact-sync (145) -> this one.
+#
+# DESPITE THE CONTAINER NAME, THIS IS THE SOLE PRODUCTION FRUIT-INDUSTRY-PACK
+# INSTANCE -- ~330 req/h of real MCP-over-SSE traffic, Fruit tenant employees.
+# "canary" here is a historical label, not a lifecycle promise: nothing else
+# in production serves this role. A rename was evaluated and rejected -- see
+# the ticket for the full cost accounting -- so this file, this comment
+# block, and the `vecta.disposable=false` / `vecta.production=true` labels
+# below are the marker that replaces it. Before deleting or reprovisioning
+# any container matching `*canary*` on this host, read this file first.
+#
+# Before this ticket: no compose project, no systemd unit, no crontab entry.
+# `RestartPolicy=unless-stopped` only survives a Docker daemon restart for a
+# container the daemon already knows about; a `docker rm` or host
+# reprovision loses it for good. `scripts/ops/fruit-account-onboard.sh`'s
+# `recreate_container()` (vecta repo) looks like a recovery path but is not
+# one: it bootstraps by `docker inspect`-ing THIS running container, so it
+# fails exactly when you'd need it -- once the container is gone. This file
+# was produced by reading the running container's own inspected state, not
+# by designing a new target state; every field below is meant to match what
+# was live on 2026-09-07. Full inventory:
+# .scratch/fruit-v41-daily-reconciliation/issues/150-the-only-production-fruit-pack-instance-is-named-canary.md
+# (vecta repo) and docs/runbooks/fruit-industry-pack-canary-recovery.md (this
+# repo) for how to actually use it.
+#
+# WHY A SEPARATE PROJECT, NOT `fruit-support-services` OR THE
+# `openclaw-enterprise` `-f` CHAIN.
+# `deploy/fruit-support-services/docker-compose.yml` (ticket 145) floated
+# folding this container in once its real traffic allowed a shared change
+# window. That did not end up being the pattern that was actually followed:
+# every other Fruit support container that shipped a recovery path
+# (fruit-feishu-gateway, rag-service, wecom-contact-sync) got its OWN
+# project, not a merge into fruit-support-services -- so this follows the
+# precedent that was actually executed, not the one that was only proposed.
+# Joining `openclaw-enterprise`'s 31-file `-f` chain was rejected for the
+# same reason as the other three: this container's release cadence has
+# nothing to do with openclaw-enterprise's, and the network dependency
+# (postgres/minio/fleet-gateway reachability) is fully satisfied by
+# `external: true` below without joining that chain's lifecycle.
+#
+# WHY THE PINNED TAG LOOKS LIKE THE FEISHU GATEWAY'S.
+# `5d9a930b981cc47fcbfa2ed58a8a1e83afdfefe4` is genuinely what is running
+# today (2026-09-07) -- this is the same source commit `openclaw-fruit-
+# feishu-gateway` was pinned to in ticket 132, because both images were built
+# from the same release. `FRUIT_SOURCE_COMMIT` in the env file agrees.
+#
+# WHY `env_file` POINTS AT A FILE THAT ISN'T IN THIS REPO.
+# The 36 environment variables include `DATABASE_URL` and other live
+# secrets. `fruit-industry-pack.env` sits next to this file only on the host
+# (`/data/ocee/deploy/fruit-industry-pack/`, root:root 600) and is never
+# committed -- see `fruit-industry-pack.env.example` in this same directory
+# for the key names with placeholder values.
+
+name: fruit-industry-pack
+
+services:
+  vecta-fruit-industry-pack-canary:
+    image: 127.0.0.1:8082/fruit-industry-pack:5d9a930b981cc47fcbfa2ed58a8a1e83afdfefe4
+    container_name: vecta-fruit-industry-pack-canary
+    restart: unless-stopped
+    user: node
+    working_dir: /app
+    entrypoint: ["docker-entrypoint.sh"]
+    command: ["node", "packages/fruit-industry-pack/dist/cli.js"]
+    env_file:
+      - ./fruit-industry-pack.env
+    ports:
+      - "127.0.0.1:18002:8002"
+    labels:
+      vecta.production: "true"
+      vecta.disposable: "false"
+      vecta.description: "Sole production fruit-industry-pack instance (~330 req/h real MCP-over-SSE traffic, Fruit tenant). Name is historical, not a lifecycle signal -- see ticket 150."
+    networks:
+      openclaw-enterprise_openclaw-net: {}
+    # No volumes: the live container has Mounts=[] -- stateless. FRUIT_MODEL_PATH
+    # and FRUIT_ROLE_MATRIX_PATH both resolve to paths baked into the image
+    # (confirmed live, not assumed from the key names), not to any bind mount.
+    # No healthcheck: the live container's Config.Healthcheck is null. The app
+    # does serve /healthz (packages/fruit-industry-pack/src/app.ts) and it's a
+    # real readiness check (touches postgres read-only) -- adding a
+    # compose-level healthcheck here would be a real improvement, but it's a
+    # state change, not a reproduction of current state; do it as its own
+    # follow-up (see the runbook).
+
+networks:
+  openclaw-enterprise_openclaw-net:
+    external: true
