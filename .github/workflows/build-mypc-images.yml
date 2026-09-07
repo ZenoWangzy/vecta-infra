@@ -321,6 +321,7 @@ jobs:
           --repo ZenoWangzy/vecta
           --sha "$SOURCE_SHA"
           --branch "$SOURCE_BRANCH"
+          --vecta-checkout vecta
         env:
           VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
 
