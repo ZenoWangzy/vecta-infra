@@ -44,8 +44,14 @@ if [ ! -d "$CACHE" ]; then
 fi
 
 # Cross-user local fetch trips git's dubious-ownership guard the first time;
-# this is idempotent and config-only, never touches objects or a tree.
-sudo -u github-runner git config --global --add safe.directory "$OCEE/.git" 2>/dev/null || true
+# this is config-only, never touches objects or a tree. `--add` on its own is
+# NOT idempotent -- it appends every run, growing github-runner's shared
+# ~/.gitconfig without bound (ticket 136: a 10-minute timer, forever). Check
+# before adding so a second run leaves the file unchanged.
+if ! sudo -u github-runner git config --global --get-all safe.directory 2>/dev/null \
+  | grep -qxF "$OCEE/.git"; then
+  sudo -u github-runner git config --global --add safe.directory "$OCEE/.git" 2>/dev/null || true
+fi
 
 log "hop 2: fetching runner cache from $OCEE locally (no auth, no network)"
 if ! timeout "$HOP_TIMEOUT" sudo -u github-runner git --git-dir="$CACHE" \
