@@ -1,0 +1,50 @@
+# rag-service — declarative recovery definition (ticket 145, mirrors ticket 132's
+# fruit-feishu-gateway pattern). openclaw-rag-service has no compose project, no
+# systemd unit, no crontab; it is currently a hand-run container with
+# RestartPolicy=unless-stopped, so `docker rm` (accidental or host reimage) leaves
+# nothing that would bring it back.
+#
+# Standalone compose project referencing openclaw-enterprise's own network as
+# external — same reasoning as fruit-feishu-gateway/fruit-support-services:
+# real network dependency (talks to postgres/embedding backends by container
+# name on this network), no compose lifecycle dependency on openclaw-enterprise's
+# 31-file -f chain.
+#
+# The real env values live at mypc:/data/ocee/deploy/rag-service/rag-service.env
+# (root:root, 600) — generated with `docker inspect --format
+# '{{range .Config.Env}}{{println .}}{{end}}'`, never committed. See
+# rag-service.env.example for the key names only.
+services:
+  openclaw-rag-service:
+    container_name: openclaw-rag-service
+    image: 127.0.0.1:8082/rag-service:89da897ec9f7a1b0e1fb59d1ad0238ec46680ecb
+    entrypoint: ["docker-entrypoint.sh"]
+    command: ["node", "packages/rag-service/dist/fastify-server.js"]
+    working_dir: /app
+    restart: unless-stopped
+    env_file:
+      - ./rag-service.env
+    mem_limit: 1g
+    ports:
+      - "8000:8000"
+    volumes:
+      - openclaw-enterprise_rag_model_cache:/home/node/.cache/huggingface
+      - /data/ocee/packages/rag-service/knowledge:/app/knowledge
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      openclaw-enterprise_openclaw-net:
+        aliases:
+          - openclaw-rag-service
+          - rag-service
+
+networks:
+  openclaw-enterprise_openclaw-net:
+    external: true
+
+volumes:
+  openclaw-enterprise_rag_model_cache:
+    external: true
