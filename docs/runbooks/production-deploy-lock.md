@@ -31,6 +31,7 @@ Covers, at minimum, any deploy/promotion/rollback touching:
 - `openclaw-channel-gateway`
 - `fruit-v4-isolated-uat` (and its `fruit-v4-isolated-setup` migration sibling)
 - `openclaw-fruit-feishu-gateway` (added by ticket 132, see below)
+- `openclaw-rag-service` (added by ticket 145, see below)
 
 **`openclaw-fruit-feishu-gateway` is covered as of ticket 132.** It used to
 be deliberately excluded here on the grounds that nothing recreated it, so
@@ -40,6 +41,12 @@ added `deploy/fruit-feishu-gateway/docker-compose.yml` and
 `docker compose -p fruit-feishu-gateway ...` against it, or any
 `recreate_container()` run in `scripts/ops/fruit-account-onboard.sh` (vecta
 repo) that touches it, takes this lock first.
+
+**`openclaw-rag-service` is covered as of ticket 145, for the same reason.**
+It had no recreate path of any kind (not even a fragile self-bootstrapping
+one) before this ticket added `deploy/rag-service/docker-compose.yml` and
+`docs/runbooks/rag-service-recovery.md`. Any
+`docker compose -p rag-service ...` against it takes this lock first.
 
 **Deliberately excludes Hermes per-instance config refresh
 (`POST /api/instances/:id/refresh-config`).** See "Judgment call: should
