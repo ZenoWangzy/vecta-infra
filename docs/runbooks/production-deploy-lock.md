@@ -224,34 +224,67 @@ reading it.
 
 ## Judgment call: should refresh-config take this lock?
 
-`POST /api/instances/:id/refresh-config` regenerates one employee's Hermes
-runtime container from whatever is currently installed. It genuinely can
-collide with a gateway/pack promotion — refreshing mid-image-swap can leave
-an employee with the old pack removed and the new one not yet reachable.
-**It should not take this lock anyway.** Three reasons:
+**No — but an earlier version of this section had the wrong reason for it.**
+It originally argued the one real collision was already covered by
+`openclaw-enterprise-gateway-image-promotion.md` §1c's "no admin anywhere may
+approve a skill" rule. That rule guards a different thing:
+`refreshSkillAvailabilityForAllInstances` (reached from `routes/skills.ts`,
+`routes/approvals.ts`, `routes/platform-curated-skills.ts`) — a fire-and-forget
+loop with no per-tenant filter and no lockout, triggered by *skill*
+administration actions, not by deploys. Conflating that with the deploy/refresh
+collision below shipped a citation that doesn't hold up. Corrected here
+(ticket 140 follow-up), after the coordinator caught it.
 
-1. **Granularity mismatch.** This lock serializes a rare (a few times a
-   week), high-stakes, always-supervised operation against itself.
-   `refresh-config` fires per employee instance, routinely, including from
-   an automated self-heal path (`getOrCreateInstance`) with no human in the
-   loop. Routing a frequent, automatic, per-tenant operation through a lock
-   designed for "don't let two people turn the same production valve at
-   once" turns a cheap mechanism into contention on a hot path, for a
-   collision that only matters during a narrow sub-case of one specific
-   ceremony.
-2. **The actual dangerous window already has its own, narrower exclusion
-   rule.** `openclaw-enterprise-gateway-image-promotion.md` §1c already
-   says, for exactly the pack-version-flip ceremony where this collision is
-   real: "During this whole window, no admin anywhere may approve a skill."
-   That's the correct scope for this hazard — it's about not racing the
-   specific manual refresh sequence in that ceremony, not about gating every
-   refresh against every gateway deploy everywhere.
-3. **A normal (non-ceremony) gateway/channel-gateway promotion doesn't
-   trigger this hazard at all.** §1c's own gate is "empty diff → normal
-   path, no refresh ceremony owed." The corruption case needs the pack
-   manifest/`SKILL.md` to actually change; most promotions covered by this
-   lock never touch that.
+**The actual collision** (measured directly in ticket 139, not inferred): a
+single employee's `POST /api/instances/:id/refresh-config` copies the new
+runtime into that employee's container via `prepareHermesRuntimeInContainer`
+(`hermes/runtime-switcher.ts:60-70`) — **not** `resetDir()`, which only ever
+touches fleet-gateway's own local staging directory. The employee-container
+sequence is four independent `docker exec`/`putArchive` calls, not a
+transaction: (1) `rm -rf` the currently-managed plugin directories, (2)
+`putArchive` the freshly generated hermes tree in, (3) rebuild
+`runtime-skills`, (4) write the `active-runtime` marker. Between (1) and (2),
+that employee has "old plugin gone, new one not in yet." If `fleet-gateway`
+gets recreated (`up -d`) anywhere in that window, the copy never finishes and
+the employee is stuck there. Ticket 139 measured this window directly on a
+real refresh: **0.83 seconds** (`16:37:28.126` gone → `16:37:28.953` back).
+This can happen on *any* fleet-gateway recreate, not only a pack-version-flip
+ceremony — §1c's "empty diff → normal path" framing doesn't exempt it.
 
-If this collision recurs in practice, the right fix is a second, narrower
-flag scoped to "a §1c ceremony is in progress" — not folding a
-high-frequency, per-tenant endpoint into this lock's blast radius.
+**Still shouldn't take this lock — granularity mismatch.** This lock
+serializes a rare (a few times a week), high-stakes, always-supervised
+operation against itself. `refresh-config` fires per employee instance,
+including from an automated self-heal path (`getOrCreateInstance`) with no
+human in the loop. Making every one of those acquire-and-release this lock
+turns a cheap mechanism into contention (and a forgotten-release surface) on
+a hot path, to protect a sub-second window.
+
+**The accepted middle ground: refresh checks, never holds.** Before each
+employee's refresh, ticket 139's procedure runs the same non-blocking,
+read-only probe `status` already exposes — it doesn't acquire anything, so it
+never blocks a deploy, never needs releasing, and can't be forgotten held:
+
+```bash
+ssh mypc 'bash -s -- status' < scripts/deploy-lock.sh   # exit 0 = safe to start this refresh, non-zero = don't
+```
+
+Non-zero prints the current holder/containers/`acquired_at`; the refresh
+procedure stops and does not retry or guess whether that holder is stale (if
+that judgment is needed, it's the same one this doc already describes for a
+denied `acquire`).
+
+**The residual gap, stated instead of ignored: this only protects one
+direction.** It stops "a deploy is in progress, don't start a refresh." It
+does **not** stop "a refresh is already in flight, a deploy starts anyway" —
+a deploy's own `acquire` has no way to see a refresh that took no lock and
+left no record. Closing that direction symmetrically would mean refresh
+*does* take (at least a shared/read-mode) lock for its ~1-second copy window,
+which reintroduces the exact hot-path/automatic-trigger cost the granularity
+argument above rules out — `getOrCreateInstance`'s self-heal path would then
+be doing a lock dance on every cold start. The trade accepted here: the
+window is sub-second and, per ticket 139's own procedure, refreshes are done
+one at a time, in a deliberate sequence, with an explicit pre-check for "no
+live session on this employee" — not a background flood. If `refresh-config`
+ever becomes a frequent, uncontrolled trigger (rather than the sequenced
+manual ceremony ticket 139 describes), this trade should be revisited before
+trusting it further.

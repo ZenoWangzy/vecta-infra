@@ -92,6 +92,11 @@ case "$cmd" in
     ;;
 
   status)
+    # Public contract, not just a debug helper: exit 0/non-zero here is also
+    # what ticket 139's per-employee refresh-config procedure gates on as a
+    # read-only, non-acquiring pre-flight check (production-deploy-lock.md,
+    # "Judgment call: should refresh-config take this lock?"). Keep this
+    # exit-code meaning stable.
     if [ ! -f "$LOCK_FILE" ]; then
       echo "FREE (lock file does not exist yet — never acquired)"
       exit 0
