@@ -26,7 +26,25 @@
       {{ litellm_moonshot_api_base | default((litellm_existing_env.stdout_lines | default([]) | select('match', '^MOONSHOT_API_BASE=') | map('regex_replace', '^MOONSHOT_API_BASE=', '') | list | first | default(lookup('env', 'MOONSHOT_API_BASE'), true)), true) }}
     litellm_moonshot_api_key_effective: >-
       {{ litellm_moonshot_api_key | default((litellm_existing_env.stdout_lines | default([]) | select('match', '^MOONSHOT_API_KEY=') | map('regex_replace', '^MOONSHOT_API_KEY=', '') | list | first | default(lookup('env', 'MOONSHOT_API_KEY'), true)), true) }}
+    litellm_database_url_effective: >-
+      {{ litellm_database_url | default((litellm_existing_env.stdout_lines | default([]) | select('match', '^DATABASE_URL=') | map('regex_replace', '^DATABASE_URL=', '') | list | first | default(lookup('env', 'LITELLM_DATABASE_URL'), true)), true) }}
   changed_when: false
+  no_log: true
+
+# Ticket 1052: DATABASE_URL was never set on this container, so every
+# database-backed LiteLLM endpoint (/key/generate, /key/delete, /key/update)
+# has always returned 500. Fail loudly here instead of silently starting the
+# proxy without a database again -- that silent path is exactly how the gap
+# went unnoticed for as long as it did.
+- name: Require a resolved LiteLLM database URL before (re)starting the proxy
+  ansible.builtin.assert:
+    that:
+      - litellm_database_url_effective | length > 0
+    fail_msg: >-
+      litellm_database_url_effective resolved empty. Set LITELLM_DATABASE_URL
+      in the environment ansible-playbook runs in (see
+      docs/runbooks/openclaw-litellm-database.md) before deploying LiteLLM --
+      do not start the proxy without a database.
   no_log: true
 
 - name: Start LiteLLM proxy
@@ -49,6 +67,7 @@
       DEEPSEEK_API_KEY: "{{ litellm_deepseek_api_key_effective }}"
       MOONSHOT_API_BASE: "{{ litellm_moonshot_api_base_effective }}"
       MOONSHOT_API_KEY: "{{ litellm_moonshot_api_key_effective }}"
+      DATABASE_URL: "{{ litellm_database_url_effective }}"
     healthcheck: >-
       {{ (litellm_healthcheck_enabled | default(true) | bool) | ternary(
         litellm_healthcheck | default({

@@ -302,6 +302,14 @@ postgres_user: "{{ lookup('env', 'POSTGRES_USER') | default('openclaw_poc', true
 postgres_password: "{{ lookup('env', 'POSTGRES_PASSWORD') | default('poc-db-password-change-me', true) }}"
 postgres_db: "{{ lookup('env', 'POSTGRES_DB') | default('openclaw_poc', true) }}"
 redis_password: "{{ lookup('env', 'REDIS_PASSWORD') | default('changeme-redis-pw', true) }}"
+# Ticket 1052: LiteLLM's own database (Prisma-managed state for /key/generate,
+# /key/delete, /key/update -- distinct from openclaw_poc and from the
+# pre-existing `litellm` database that belongs to openclaw-fruit-litellm).
+# No default value on purpose: an empty resolution must fail the play (see
+# roles/infra-services/tasks/litellm.yml), not silently start LiteLLM without
+# a database again. Provisioning the role/database themselves is a one-time,
+# reviewed script -- see docs/runbooks/openclaw-litellm-database.md.
+litellm_database_url: "{{ lookup('env', 'LITELLM_DATABASE_URL') | default('', true) }}"
 
 # Open WebUI trusted-header users. The role derives tenant_id from employees in
 # the target DB and upserts channel_user_mapping(channel='open-webui').
