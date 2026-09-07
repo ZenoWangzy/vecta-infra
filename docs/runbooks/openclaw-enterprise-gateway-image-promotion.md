@@ -18,6 +18,29 @@ It does **not** cover the isolated `fruit-v4-isolated-uat` sidecar (see
 `admin-console` (contract-excluded, per the 2026-09-06 `compose.images.yml`
 comment: "契约内服务；rag/directory/baidu 仍在契约外，另开票").
 
+## 0. Take the production deploy lock first
+
+Ticket 140: two workflows promoted this exact container at the same time on
+2026-09-07 with neither side aware of the other, because coordination had no
+mechanism other than "hope nobody else is deploying." Before step 1, acquire
+`scripts/deploy-lock.sh` from `vecta-infra` (full contract, staleness rule,
+and why it's a single lock rather than one per container:
+`docs/runbooks/production-deploy-lock.md`):
+
+```bash
+ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 mypc \
+  'bash -s -- acquire --holder "<your name/session>" \
+     --session "<session URL or id>" \
+     --containers "openclaw-fleet-gateway,openclaw-channel-gateway"' \
+  < scripts/deploy-lock.sh
+```
+
+`ACQUIRED` → continue to step 1. `DENIED` → it prints who currently holds
+it, what they're touching, and when they took it — go find that session
+before doing anything else in this file. Do not proceed on the assumption
+that a denial is stale; `production-deploy-lock.md` explains the (non-
+timestamp) way to actually tell.
+
 ## 1. Which SHA is safe to build
 
 The naive rule — "build whatever `origin/main` HEAD is" — breaks the first time a
@@ -734,3 +757,17 @@ tracked as separate tickets. The `openclaw-fruit-feishu-gateway` container
 (no compose project, no systemd, no cron — see the 2026-09-06 investigation
 in this window's report) is explicitly out of scope here too; it has its own
 follow-up ticket.
+
+## 8. Release the production deploy lock
+
+Last step, after §4/§4a's verification (and §6's, if this window rotated the
+writer password) all pass — not before, and not skipped because "it's just a
+`rm`":
+
+```bash
+ssh mypc 'bash -s -- release' < scripts/deploy-lock.sh
+```
+
+If you forget, it self-expires (`production-deploy-lock.md`'s ttl backstop)
+— but the next operator's `status` check works whether or not you remembered,
+so release explicitly rather than relying on that.
