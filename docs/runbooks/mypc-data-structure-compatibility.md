@@ -60,13 +60,16 @@ Preserve these production bind paths during any app recreation:
 | Fleet templates | `/data/ocee/templates` | `/app/templates` |
 | Fleet shared plugins | `/data/ocee/deploy/instances/shared/plugins` | `/app/shared-plugins` |
 | Fleet LiteLLM config | `/data/ocee/infra/litellm/config.yaml` | `/app/litellm-config.yaml` |
-| Fleet fruit pack | `/data/ocee/packages/fruit-industry-pack` | `/app/industry-packs/fruit` |
 | Channel Gateway | `/data/ocee/packages/channel-gateway/data` | `/app/packages/channel-gateway/data` |
 | Open WebUI wrapper | `/data/ocee/infra/open-webui/entrypoint-wrapper.sh` | `/app/backend/entrypoint-wrapper.sh` |
 | Open WebUI patches | `/data/ocee/infra/open-webui/patches` | `/patches` |
 | Open WebUI nginx | `/data/ocee/infra/open-webui/nginx.conf` | `/etc/nginx/conf.d/default.conf` |
 
-The mypc inventory now carries these paths explicitly.
+The mypc inventory carries the remaining host-backed paths explicitly. Fruit
+runtime is an exception: do not preserve or recreate a host bind at
+`/app/industry-packs/fruit`. Fleet must load its manifests, ontology descriptor,
+and Hermes hooks from the baked image assets at that path. The recreation
+contract validates the absence of that bind after the new container starts.
 
 ## Database Shape
 
@@ -92,8 +95,9 @@ generated from live `docker inspect` plus backup Compose evidence.
 
 1. Keep `mypc_deploy_enabled=false` and `mypc_stateful_services_enabled=false`.
 2. Keep mirroring local cache images into mypc Nexus for rollback/audit.
-3. Recover an authoritative mypc service spec preserving every env key, port,
-   network, alias, bind path, and volume.
+3. Recover an authoritative mypc service spec preserving every still-authoritative
+   env key, port, network, alias, host-backed bind path, and volume; do not
+   recreate the retired Fruit runtime bind.
 4. Render Ansible app roles against mypc with production path variables and the
    `deploy_image_tags` cache-bridge map.
 5. Recreate stateless services first: A2A, Directory, Admin, Baidu. The mypc

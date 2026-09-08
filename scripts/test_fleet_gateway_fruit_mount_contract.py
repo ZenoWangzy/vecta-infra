@@ -64,17 +64,27 @@ def assert_source_contract() -> None:
 
     assert "fleet_gateway_fruit_pack_host_path" not in inventory
     assert "fleet_gateway_fruit_pack_host_path" not in role
-    assert "--arg fruit " not in role
-    assert "select(.Source == $fruit" not in role
-    assert (
-        'select(.Type == "bind" and .Destination == "/app/industry-packs/fruit")'
-        in role
+    preflight_start = role.index(
+        "- name: Require the reviewed mypc Fleet mount contract"
     )
-    assert (
-        'and ([.[0].Mounts[] | select(.Type == "bind" and '
-        '.Destination == "/app/industry-packs/fruit")] | length == 0)'
-        in role
+    recreate_start = role.index(
+        "- name: Recreate mypc Fleet gateway from the identical Nexus image"
     )
+    postcondition_start = role.index(
+        "- name: Require the recreated mypc Fleet gateway has no Fruit host bind"
+    )
+    assert preflight_start < recreate_start < postcondition_start
+
+    preflight = role[preflight_start:recreate_start]
+    postcondition = role[postcondition_start:]
+    fruit_bind_predicate = (
+        '.Type == "bind" and .Destination == "/app/industry-packs/fruit"'
+    )
+    assert fruit_bind_predicate not in preflight
+    assert fruit_bind_predicate in postcondition
+    assert "--arg fruit " not in preflight
+    assert "select(.Source == $fruit" not in preflight
+    assert "fleet_gateway_instances_host_path" in preflight
 
 
 def assert_regression_fixtures() -> None:
