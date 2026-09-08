@@ -88,13 +88,11 @@
     --arg templates {{ fleet_gateway_templates_host_path | quote }}
     --arg plugins {{ fleet_gateway_shared_plugins_host_path | quote }}
     --arg litellm {{ fleet_gateway_litellm_config_host_path | quote }}
-    --arg fruit {{ fleet_gateway_fruit_pack_host_path | quote }}
     '([.[0].Mounts[] | select(.Source == $instances and .Destination == "/app/data/instances" and .RW)] | length == 1)
     and ([.[0].Mounts[] | select(.Source == $knowledge and .Destination == "/app/knowledge" and .RW)] | length == 1)
     and ([.[0].Mounts[] | select(.Source == $templates and .Destination == "/app/templates" and (.RW | not))] | length == 1)
     and ([.[0].Mounts[] | select(.Source == $plugins and .Destination == "/app/shared-plugins" and (.RW | not))] | length == 1)
     and ([.[0].Mounts[] | select(.Source == $litellm and .Destination == "/app/litellm-config.yaml" and (.RW | not))] | length == 1)
-    and ([.[0].Mounts[] | select(.Source == $fruit and .Destination == "/app/industry-packs/fruit" and (.RW | not))] | length == 1)
     and ([.[0].Mounts[] | select(.Source == "/var/run/docker.sock" and .Destination == "/var/run/docker.sock" and .RW)] | length == 1)'
   args:
     executable: /bin/bash
@@ -196,7 +194,6 @@
       - "{{ fleet_gateway_templates_host_path }}:/app/templates:ro"
       - "{{ fleet_gateway_shared_plugins_host_path }}:/app/shared-plugins:ro"
       - "{{ fleet_gateway_litellm_config_host_path }}:/app/litellm-config.yaml:ro"
-      - "{{ fleet_gateway_fruit_pack_host_path }}:/app/industry-packs/fruit:ro"
       - "/var/run/docker.sock:/var/run/docker.sock:rw"
     networks:
       - name: "{{ docker_network }}"
@@ -211,6 +208,16 @@
     memory: "{{ fleet_gateway_memory }}"
     cpus: "{{ fleet_gateway_cpus }}"
   no_log: true
+
+- name: Require the recreated mypc Fleet gateway has no Fruit host bind
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    docker inspect {{ fleet_gateway_container_name | quote }} |
+    jq -e '([.[0].Mounts[] | select(.Type == "bind" and .Destination == "/app/industry-packs/fruit")] | length == 0)'
+  args:
+    executable: /bin/bash
+  changed_when: false
+  check_mode: false
 
 - name: Require the same per-user runtime count after Fleet adoption
   ansible.builtin.shell: |
