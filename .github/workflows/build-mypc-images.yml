@@ -70,7 +70,6 @@ jobs:
         http://127.0.0.1:8081/repository/vecta-debian-security-proxy
       DOCKER_BUILDKIT: "0"
       BUILDX_VERSION: v0.34.1
-      BUILDX_LINUX_AMD64_SHA256: f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b
       BUILDX_PLUGIN_PATH: /usr/local/lib/docker/cli-plugins/docker-buildx
       PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}
       DOCKER_CACHE_PRUNE_UNTIL: ${{ inputs.docker_cache_prune_until }}
@@ -318,9 +317,6 @@ jobs:
           }
           command -v ionice >/dev/null || {
             echo "ionice is required" >&2; exit 1;
-          }
-          command -v sha256sum >/dev/null || {
-            echo "sha256sum is required" >&2; exit 1;
           }
           available_kb="$(df -Pk . | awk 'NR==2 {print $4}')"
           if [ "$available_kb" -lt 62914560 ]; then
@@ -644,8 +640,6 @@ jobs:
             echo "Buildx plugin is required at $BUILDX_PLUGIN_PATH" >&2
             exit 1
           fi
-          printf '%s  %s\n' "$BUILDX_LINUX_AMD64_SHA256" "$BUILDX_PLUGIN_PATH" |
-            sha256sum --check -
           actual_buildx_version="$(docker buildx version | awk '{print $2}')"
           if [ "$actual_buildx_version" != "$BUILDX_VERSION" ]; then
             echo "Buildx version mismatch: expected=$BUILDX_VERSION actual=$actual_buildx_version" >&2

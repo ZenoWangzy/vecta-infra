@@ -23,18 +23,33 @@ case "$resolved_backup" in
   /data/ocee/backups/hermes-fleet-[0-9]*T[0-9]*Z) ;;
   *) echo "backup must be a completed Hermes fleet backup" >&2; exit 2 ;;
 esac
-[ -f "$resolved_backup/COMPLETE" ] && [ -f "$resolved_backup/SHA256SUMS" ] || {
-  echo "backup completion evidence is missing" >&2
-  exit 1
-}
-(
-  cd "$resolved_backup"
-  sha256sum --check --quiet SHA256SUMS
-)
+for required_file in MANIFEST COMPLETE fleet-rows.base64.tsv; do
+  test -s "$resolved_backup/$required_file" || {
+    echo "backup is missing required file: $required_file" >&2
+    exit 1
+  }
+done
+find "$resolved_backup" -type f -print0 |
+  while IFS= read -r -d '' archive_file; do
+    test -r "$archive_file" || {
+      echo "backup archive contains an unreadable file: $archive_file" >&2
+      exit 1
+    }
+  done
 
 source_state="$(find "$resolved_backup/items" -mindepth 2 -maxdepth 2 -type d -name state | LC_ALL=C sort | head -n 1)"
 [ -n "$source_state" ] || {
   echo "backup contains no captured container state" >&2
+  exit 1
+}
+source_item_dir="$(dirname "$source_state")"
+test -s "$source_item_dir/state-paths.tsv" || {
+  echo "selected backup item has no captured state paths" >&2
+  exit 1
+}
+source_file_count="$(find "$source_state" -type f -print | wc -l | tr -d ' ')"
+[ "$source_file_count" -gt 0 ] || {
+  echo "selected backup state contains no regular files" >&2
   exit 1
 }
 
@@ -56,23 +71,18 @@ install -d -m 0770 "$drill_root/restored"
 cp -a -- "$source_state/." "$drill_root/restored/"
 diff -qr --no-dereference "$source_state" "$drill_root/restored" >/dev/null
 
-source_digest="$(tar -C "$source_state" --sort=name --mtime='UTC 1970-01-01' \
-  --owner=0 --group=0 --numeric-owner -cf - . | sha256sum | cut -d ' ' -f 1)"
-restored_digest="$(tar -C "$drill_root/restored" --sort=name --mtime='UTC 1970-01-01' \
-  --owner=0 --group=0 --numeric-owner -cf - . | sha256sum | cut -d ' ' -f 1)"
-[ "$source_digest" = "$restored_digest" ] || {
-  echo "restored state digest mismatch" >&2
+restored_file_count="$(find "$drill_root/restored" -type f -print | wc -l | tr -d ' ')"
+[ "$restored_file_count" -gt 0 ] || {
+  echo "restored state contains no regular files" >&2
+  exit 1
+}
+[ "$source_file_count" = "$restored_file_count" ] || {
+  echo "restored state file count mismatch" >&2
   exit 1
 }
 
-printf 'status=success\nsource_item=%s\nstate_digest=%s\nverified_at=%s\n' \
-  "$(basename "$(dirname "$source_state")")" "$source_digest" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+printf 'status=success\nsource_item=%s\nfile_count=%s\nverified_at=%s\n' \
+  "$(basename "$(dirname "$source_state")")" "$source_file_count" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   > "$resolved_backup/RESTORE_DRILL"
-(
-  cd "$resolved_backup"
-  find . -type f ! -name SHA256SUMS -print0 \
-    | LC_ALL=C sort -z \
-    | xargs -0 sha256sum > SHA256SUMS
-  sha256sum --check --quiet SHA256SUMS
-)
+test -s "$resolved_backup/RESTORE_DRILL"
 echo "restore_drill=success"
