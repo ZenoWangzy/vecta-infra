@@ -112,6 +112,45 @@ def run_backup_rejection(label: str, rows: str) -> None:
         assert not (backups / f".{session_id}.incomplete").exists(), label
 
 
+def run_backup_target_rejection() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        backups = root / "backups"
+        instances = root / "instances"
+        backups.mkdir()
+        instances.mkdir()
+        session_id = "hermes-fleet-20260909T000000Z"
+        os.symlink(root / "missing-target", backups / session_id)
+        script = fixture_script(BACKUP_PATH, root)
+        fake_bin = backup_fixture_bin(root, fleet_row("safe"))
+        result = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--execute",
+                "--backup-root",
+                str(backups),
+                "--instance-root",
+                str(instances),
+                "--session-id",
+                session_id,
+            ],
+            cwd=ROOT,
+            env={
+                **os.environ,
+                "FAKE_ROWS": str(root / "fleet-rows.tsv"),
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0, result.stdout
+        assert "backup target already exists" in result.stderr, result.stderr
+        assert (backups / session_id).is_symlink()
+        assert not (backups / f".{session_id}.incomplete").exists()
+
+
 def make_restore_fixture(
     root: Path,
     *,
@@ -141,6 +180,39 @@ def make_restore_fixture(
     return backup, state, outside
 
 
+def restore_fixture_bin(root: Path) -> Path:
+    fake_bin = backup_fixture_bin(root, "")
+    write_executable(
+        fake_bin / "mktemp",
+        """#!/bin/sh
+set -eu
+if [ "${1:-}" = -d ]; then
+  mkdir -p "$FAKE_DRILL_ROOT"
+  printf '%s\\n' "$FAKE_DRILL_ROOT"
+  exit 0
+fi
+exec /usr/bin/mktemp "$@"
+""",
+    )
+    write_executable(
+        fake_bin / "rm",
+        """#!/bin/sh
+set -eu
+if [ "${1:-}" = -rf ]; then
+  target="${2:-}"
+  if [ "$target" = -- ]; then
+    target="${3:-}"
+  fi
+  if [ "$target" = "${FAKE_DRILL_ROOT:-}" ]; then
+    exit 0
+  fi
+fi
+exec /bin/rm "$@"
+""",
+    )
+    return fake_bin
+
+
 def run_restore_fixture(
     label: str,
     *,
@@ -153,7 +225,8 @@ def run_restore_fixture(
         root = Path(temporary)
         (root / "backups").mkdir()
         script = fixture_script(RESTORE_PATH, root)
-        fake_bin = backup_fixture_bin(root, "")
+        drill_root = root / "backups" / ".hermes-restore-drill.fixture"
+        fake_bin = restore_fixture_bin(root)
         backup, state, outside = make_restore_fixture(
             root,
             state_paths=state_paths,
@@ -163,7 +236,11 @@ def run_restore_fixture(
         result = subprocess.run(
             ["bash", str(script), "--backup-dir", str(backup), "--execute"],
             cwd=ROOT,
-            env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            env={
+                **os.environ,
+                "FAKE_DRILL_ROOT": str(drill_root),
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            },
             text=True,
             capture_output=True,
             check=False,
@@ -173,8 +250,13 @@ def run_restore_fixture(
             evidence = (backup / "RESTORE_DRILL").read_text()
             assert "status=success" in evidence
             assert "file_count=1" in evidence
-            assert (state / "external-link").is_symlink() if with_symlink else True
-            assert outside is not None and outside.read_text() == "outside\n" if with_symlink else True
+            if with_symlink:
+                assert outside is not None
+                restored_link = drill_root / "restored" / "external-link"
+                assert (state / "external-link").is_symlink()
+                assert restored_link.is_symlink()
+                assert os.readlink(restored_link) == str(outside)
+                assert outside.read_text() == "outside\n"
         else:
             assert result.returncode != 0, f"{label}: {result.stdout} {result.stderr}"
             assert not (backup / "RESTORE_DRILL").exists(), label
@@ -192,6 +274,7 @@ def assert_executable_fixtures() -> None:
         ("duplicate employee id", fleet_row("same") + fleet_row("same")),
     ):
         run_backup_rejection(label, rows)
+    run_backup_target_rejection()
 
     run_restore_fixture(
         "empty state paths",

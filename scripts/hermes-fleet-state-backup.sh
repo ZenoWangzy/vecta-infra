@@ -65,10 +65,11 @@ getfacl -cp "$resolved_backup_root" | grep -qx 'default:user:shiyao:rwx' || {
 
 final_dir="$resolved_backup_root/$SESSION_ID"
 staging_dir="$resolved_backup_root/.${SESSION_ID}.incomplete"
-[ ! -e "$final_dir" ] && [ ! -e "$staging_dir" ] || {
+if [ -e "$final_dir" ] || [ -L "$final_dir" ] || \
+  [ -e "$staging_dir" ] || [ -L "$staging_dir" ]; then
   echo "backup target already exists" >&2
   exit 1
-}
+fi
 
 rows_file="$(mktemp)"
 decoded_id_file="$(mktemp)"
@@ -132,18 +133,27 @@ docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -At -F '|' -c \
 row_count=0
 running_count=0
 nonrunning_count=0
-declare -A seen_employee_ids=()
-declare -A seen_item_dirs=()
+# ponytail: O(n²) scans keep this Bash 3-compatible; use a set only if fleet size makes it measurable.
+seen_employee_ids='|'
+seen_item_dirs='|'
 while IFS='|' read -r employee_b64 status lifecycle agent_type container_ref; do
   decode_employee_id "$employee_b64"
   item_id="item-$employee_id"
   item_dir="$staging_dir/items/$item_id"
-  if [[ -n "${seen_employee_ids[$employee_id]+x}" || -n "${seen_item_dirs[$item_dir]+x}" ]]; then
-    echo "duplicate employee id or backup item directory: $employee_id" >&2
-    exit 1
-  fi
-  seen_employee_ids["$employee_id"]=1
-  seen_item_dirs["$item_dir"]=1
+  case "$seen_employee_ids" in
+    *"|$employee_id|"*)
+      echo "duplicate employee id or backup item directory: $employee_id" >&2
+      exit 1
+      ;;
+  esac
+  case "$seen_item_dirs" in
+    *"|$item_dir|"*)
+      echo "duplicate employee id or backup item directory: $employee_id" >&2
+      exit 1
+      ;;
+  esac
+  seen_employee_ids="${seen_employee_ids}${employee_id}|"
+  seen_item_dirs="${seen_item_dirs}${item_dir}|"
   row_count=$((row_count + 1))
   if [ "$status" = running ]; then
     running_count=$((running_count + 1))
@@ -240,6 +250,10 @@ while IFS='|' read -r employee_b64 status lifecycle agent_type container_ref; do
   decode_employee_id "$employee_b64"
   item_id="item-$employee_id"
   item_dir="$staging_dir/items/$item_id"
+  if [ -e "$item_dir" ] || [ -L "$item_dir" ]; then
+    echo "backup item directory already exists: $item_dir" >&2
+    exit 1
+  fi
   install -d -m 0770 "$item_dir"
   printf 'employee_id_base64=%s\nstatus=%s\nlifecycle=%s\nagent_type=%s\n' \
     "$employee_b64" "$status" "$lifecycle" "$agent_type" > "$item_dir/row.meta"
