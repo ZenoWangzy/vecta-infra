@@ -59,6 +59,7 @@ jobs:
             roles:
               - role: vecta-app
           PLAYBOOK
+          echo "CONTRACT_PYTHON=$ansible_env/bin/python" >> "$GITHUB_ENV"
 
       # Globbed, not listed: a new scripts/test_*.py is picked up without
       # editing this file, so there is no second list to go stale.
@@ -68,6 +69,6 @@ jobs:
           shopt -s failglob
           for contract in scripts/test_*.py; do
             echo "::group::${contract}"
-            python3 "${contract}"
+            "${CONTRACT_PYTHON}" "${contract}"
             echo "::endgroup::"
           done

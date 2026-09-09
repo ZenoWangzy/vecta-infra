@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 import unittest
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ROLE = ROOT / "roles/vecta-app/tasks/fleet_gateway_mypc.yml"
@@ -21,25 +23,205 @@ AUDIT_OWNER_MARKERS = re.compile(
 )
 
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(loader: UniqueKeyLoader, node, deep: bool = False):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+_MISSING = object()
+
+
+class BooleanExpressionParser:
+    _TOKEN = re.compile(
+        r"\s*(?:(==|!=)|([A-Za-z_][A-Za-z0-9_.]*)|([0-9]+)|([()|]))"
+    )
+
+    def __init__(self, expression: str, values: dict[str, object]) -> None:
+        source = expression.strip()
+        if source.startswith("{{"):
+            if not source.endswith("}}"):
+                raise ValueError(f"unclosed Jinja expression: {expression}")
+            source = source[2:-2].strip()
+        self.tokens = self._tokenize(source)
+        self.values = values
+        self.position = 0
+
+    @classmethod
+    def _tokenize(cls, source: str) -> list[str]:
+        tokens = []
+        position = 0
+        while position < len(source):
+            match = cls._TOKEN.match(source, position)
+            if match is None:
+                raise ValueError(f"unsupported expression syntax near {source[position:]!r}")
+            token = next(group for group in match.groups() if group is not None)
+            tokens.append(token)
+            position = match.end()
+        if not tokens:
+            raise ValueError("empty expression")
+        return tokens
+
+    def _peek(self) -> str | None:
+        return self.tokens[self.position] if self.position < len(self.tokens) else None
+
+    def _consume(self, expected: str | None = None) -> str:
+        token = self._peek()
+        if token is None:
+            raise ValueError("unexpected end of expression")
+        if expected is not None and token != expected:
+            raise ValueError(f"expected {expected!r}, got {token!r}")
+        self.position += 1
+        return token
+
+    def _match(self, token: str) -> bool:
+        if self._peek() == token:
+            self.position += 1
+            return True
+        return False
+
+    def parse(self) -> bool:
+        value = self._parse_or()
+        if self._peek() is not None:
+            raise ValueError(f"unexpected token {self._peek()!r}")
+        return bool(value)
+
+    def _parse_or(self):
+        value = self._parse_and()
+        while self._match("or"):
+            right = self._parse_and()
+            value = bool(value) or bool(right)
+        return value
+
+    def _parse_and(self):
+        value = self._parse_not()
+        while self._match("and"):
+            right = self._parse_not()
+            value = bool(value) and bool(right)
+        return value
+
+    def _parse_not(self):
+        if self._match("not"):
+            return not self._parse_not()
+        return self._parse_comparison()
+
+    def _parse_comparison(self):
+        left = self._parse_value()
+        operator = self._peek()
+        if operator not in ("==", "!="):
+            return left
+        self.position += 1
+        right = self._parse_value()
+        return left == right if operator == "==" else left != right
+
+    def _parse_value(self):
+        value = self._parse_primary()
+        if self._match("|"):
+            self._consume("default")
+            self._consume("(")
+            fallback = int(self._consume())
+            self._consume(")")
+            value = fallback if value is _MISSING else value
+        if value is _MISSING:
+            raise ValueError("unknown variable without a default filter")
+        return value
+
+    def _parse_primary(self):
+        if self._match("("):
+            value = self._parse_or()
+            self._consume(")")
+            return value
+        token = self._consume()
+        if token.isdigit():
+            return int(token)
+        if token in ("true", "false"):
+            return token == "true"
+        if token in ("and", "or", "not", "default"):
+            raise ValueError(f"unexpected operator {token!r}")
+        return self.values.get(token, _MISSING)
+
+
 class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
     def setUp(self) -> None:
         self.role = ROLE.read_text()
         self.inventory = INVENTORY.read_text()
         self.runbook = RUNBOOK.read_text()
+        self.role_tasks = yaml.load(self.role, Loader=UniqueKeyLoader)
+        self.assertIsInstance(self.role_tasks, list)
 
     def task_block(self, task_name: str) -> str:
         start = self.role.index(f"- name: {task_name}")
         end = self.role.find("\n- name:", start + 1)
         return self.role[start:] if end == -1 else self.role[start:end]
 
-    def when_clause(self, task_name: str) -> str:
-        match = re.search(
-            r"\n  when:\n((?:    .*\n)+)",
-            self.task_block(task_name),
+    def yaml_task(self, task_name: str) -> dict:
+        matches = [
+            task
+            for task in self.role_tasks
+            if isinstance(task, dict) and task.get("name") == task_name
+        ]
+        self.assertEqual(len(matches), 1, f"{task_name} must have one YAML task")
+        return matches[0]
+
+    def set_fact_assignments(self) -> dict:
+        assignments = {}
+        for task in self.role_tasks:
+            if not isinstance(task, dict):
+                continue
+            facts = task.get("ansible.builtin.set_fact")
+            if not isinstance(facts, dict):
+                continue
+            for fact_name, expression in facts.items():
+                assignments.setdefault(fact_name, []).append(
+                    (task.get("name"), expression)
+                )
+        return assignments
+
+    def fact_expression(self, fact_name: str) -> str:
+        entries = self.set_fact_assignments().get(fact_name, [])
+        self.assertEqual(len(entries), 1, f"{fact_name} must be defined once")
+        expression = entries[0][1]
+        self.assertIsInstance(expression, str, fact_name)
+        return expression
+
+    def when_expressions(self, task_name: str) -> list[str]:
+        when = self.yaml_task(task_name).get("when")
+        self.assertIsInstance(when, list, f"{task_name} must use list-form when")
+        for expression in when:
+            self.assertIsInstance(expression, str, task_name)
+        return when
+
+    def evaluate_when(self, task_name: str, values: dict[str, object]) -> bool:
+        return all(
+            BooleanExpressionParser(expression, values).parse()
+            for expression in self.when_expressions(task_name)
         )
-        if match is None:
-            self.fail(f"{task_name} has no list-form when clause")
-        return match.group(1)
+
+    @staticmethod
+    def normalize_expression(expression: str) -> str:
+        expression = expression.strip()
+        if expression.startswith("{{") and expression.endswith("}}"):
+            expression = expression[2:-2]
+        return " ".join(expression.split())
 
     def test_role_is_the_only_audit_volume_owner(self) -> None:
         owner_files = {
@@ -149,48 +331,55 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
         ):
             self.assertIn("when:", self.task_block(task_name), task_name)
 
-    def test_transition_facts_and_truth_table_are_exact(self) -> None:
-        normalized_compliance = " ".join(
-            self.task_block(
-                "Record whether current Fleet gateway is already audit-contract compliant"
-            ).split()
-        )
-        self.assertIn(
-            "mypc_fleet_gateway_audit_contract_compliant: >- "
-            "{{ mypc_fleet_gateway_audit_contract.rc == 0 and "
-            "(mypc_fleet_gateway_audit_writeability.rc | default(1)) == 0 }}",
-            normalized_compliance,
-        )
+    def test_yaml_task_names_are_unique(self) -> None:
+        names = []
+        for task in self.role_tasks:
+            self.assertIsInstance(task, dict)
+            name = task.get("name")
+            self.assertIsInstance(name, str)
+            names.append(name)
+        self.assertEqual(len(names), len(set(names)))
 
-        normalized_repair = " ".join(
-            self.task_block(
-                "Decide whether Fleet audit migration or repair is required"
-            ).split()
-        )
-        self.assertIn(
-            "mypc_fleet_gateway_audit_repair_required: >- "
-            "{{ not mypc_fleet_gateway_audit_contract_compliant }}",
-            normalized_repair,
-        )
+    def test_transition_fact_definitions_are_unique_and_exact(self) -> None:
+        approved = {
+            "mypc_fleet_gateway_audit_contract_compliant": (
+                "mypc_fleet_gateway_audit_contract.rc == 0 and "
+                "(mypc_fleet_gateway_audit_writeability.rc | default(1)) == 0"
+            ),
+            "mypc_fleet_gateway_audit_repair_required": (
+                "not mypc_fleet_gateway_audit_contract_compliant"
+            ),
+            "mypc_fleet_gateway_image_changed": (
+                "mypc_fleet_gateway_live.Config.Image != fleet_gateway_image"
+            ),
+            "mypc_fleet_gateway_recreate_required": (
+                "mypc_fleet_gateway_audit_repair_required or "
+                "mypc_fleet_gateway_image_changed"
+            ),
+        }
+        assignments = self.set_fact_assignments()
+        for fact_name, expression in approved.items():
+            entries = assignments.get(fact_name, [])
+            self.assertEqual(len(entries), 1, fact_name)
+            self.assertIsInstance(entries[0][1], str, fact_name)
+            self.assertEqual(
+                self.normalize_expression(entries[0][1]),
+                expression,
+                fact_name,
+            )
+        for fact_name, entries in assignments.items():
+            self.assertEqual(len(entries), 1, f"{fact_name} is reassigned")
 
-        normalized_image = " ".join(
-            self.task_block("Decide whether the selected Fleet gateway image differs").split()
-        )
-        self.assertIn(
-            'mypc_fleet_gateway_image_changed: "{{ mypc_fleet_gateway_live.Config.Image != fleet_gateway_image }}"',
-            normalized_image,
-        )
-
-        normalized_recreate = " ".join(
-            self.task_block("Decide whether the Fleet gateway needs recreation").split()
-        )
-        self.assertIn(
-            "mypc_fleet_gateway_recreate_required: >- "
-            "{{ mypc_fleet_gateway_audit_repair_required or "
-            "mypc_fleet_gateway_image_changed }}",
-            normalized_recreate,
-        )
-
+    def test_transition_truth_table_is_driven_by_role_expressions(self) -> None:
+        expressions = {
+            fact_name: self.fact_expression(fact_name)
+            for fact_name in (
+                "mypc_fleet_gateway_audit_contract_compliant",
+                "mypc_fleet_gateway_audit_repair_required",
+                "mypc_fleet_gateway_image_changed",
+                "mypc_fleet_gateway_recreate_required",
+            )
+        }
         truth_table = (
             ((True, False), (False, False, False)),
             ((True, True), (True, False, True)),
@@ -198,10 +387,52 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
             ((False, True), (True, True, True)),
         )
         for (audit_compliant, image_changed), expected in truth_table:
+            values = {
+                "ansible_check_mode": False,
+                "mypc_fleet_gateway_audit_contract.rc": (
+                    0 if audit_compliant else 1
+                ),
+                "mypc_fleet_gateway_audit_writeability.rc": 0,
+                "mypc_fleet_gateway_live.Config.Image": (
+                    "old-image" if image_changed else "selected-image"
+                ),
+                "fleet_gateway_image": "selected-image",
+            }
+            values[
+                "mypc_fleet_gateway_audit_contract_compliant"
+            ] = BooleanExpressionParser(
+                expressions["mypc_fleet_gateway_audit_contract_compliant"],
+                values,
+            ).parse()
+            values["mypc_fleet_gateway_audit_repair_required"] = (
+                BooleanExpressionParser(
+                    expressions["mypc_fleet_gateway_audit_repair_required"],
+                    values,
+                ).parse()
+            )
+            values["mypc_fleet_gateway_image_changed"] = BooleanExpressionParser(
+                expressions["mypc_fleet_gateway_image_changed"],
+                values,
+            ).parse()
+            values["mypc_fleet_gateway_recreate_required"] = (
+                BooleanExpressionParser(
+                    expressions["mypc_fleet_gateway_recreate_required"],
+                    values,
+                ).parse()
+            )
             actual = (
-                image_changed,
-                not audit_compliant,
-                (not audit_compliant) or image_changed,
+                self.evaluate_when(
+                    "Pull the selected Fleet image for an explicit Fleet gateway transition",
+                    values,
+                ),
+                self.evaluate_when(
+                    "Stop Fleet gateway before preparing its audit volume",
+                    values,
+                ),
+                self.evaluate_when(
+                    "Recreate mypc Fleet gateway from the selected Nexus image",
+                    values,
+                ),
             )
             self.assertEqual(actual, expected)
 
@@ -241,7 +472,7 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
         self.assertNotIn("must match the live image", self.role)
 
     def test_image_and_audit_guards_are_mutually_exclusive(self) -> None:
-        pull_when = self.when_clause(
+        pull_when = self.when_expressions(
             "Pull the selected Fleet image for an explicit Fleet gateway transition"
         )
         self.assertIn("mypc_fleet_gateway_image_changed", pull_when)
@@ -257,7 +488,7 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
             "Seed the empty Fleet audit volume from the quiesced gateway",
         )
         for task_name in audit_tasks:
-            audit_when = self.when_clause(task_name)
+            audit_when = self.when_expressions(task_name)
             self.assertIn(
                 "mypc_fleet_gateway_audit_repair_required",
                 audit_when,
