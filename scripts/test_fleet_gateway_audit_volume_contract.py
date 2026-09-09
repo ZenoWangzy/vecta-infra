@@ -21,6 +21,7 @@ AUDIT_OWNER_MARKERS = re.compile(
     r"AUDIT_DIR|fleet_gateway_audit_(?:volume|dir)|/app/data/audit",
     re.IGNORECASE,
 )
+SET_FACT_MODULES = ("ansible.builtin.set_fact", "set_fact")
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -182,24 +183,27 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
         self.assertEqual(len(matches), 1, f"{task_name} must have one YAML task")
         return matches[0]
 
-    def set_fact_assignments(self) -> dict:
+    def set_fact_assignments(self, tasks=None) -> dict:
+        if tasks is None:
+            tasks = self.role_tasks
         assignments = {}
-        for task in self.role_tasks:
+        for task in tasks:
             if not isinstance(task, dict):
                 continue
-            facts = task.get("ansible.builtin.set_fact")
-            if not isinstance(facts, dict):
-                continue
-            for fact_name, expression in facts.items():
-                assignments.setdefault(fact_name, []).append(
-                    (task.get("name"), expression)
-                )
+            for module_name in SET_FACT_MODULES:
+                facts = task.get(module_name)
+                if not isinstance(facts, dict):
+                    continue
+                for fact_name, expression in facts.items():
+                    assignments.setdefault(fact_name, []).append(
+                        (task.get("name"), module_name, expression)
+                    )
         return assignments
 
     def fact_expression(self, fact_name: str) -> str:
         entries = self.set_fact_assignments().get(fact_name, [])
         self.assertEqual(len(entries), 1, f"{fact_name} must be defined once")
-        expression = entries[0][1]
+        expression = entries[0][2]
         self.assertIsInstance(expression, str, fact_name)
         return expression
 
@@ -222,6 +226,10 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
         if expression.startswith("{{") and expression.endswith("}}"):
             expression = expression[2:-2]
         return " ".join(expression.split())
+
+    def assert_set_fact_assignments_unique(self, assignments: dict) -> None:
+        for fact_name, entries in assignments.items():
+            self.assertEqual(len(entries), 1, f"{fact_name} is reassigned")
 
     def test_role_is_the_only_audit_volume_owner(self) -> None:
         owner_files = {
@@ -340,6 +348,21 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
             names.append(name)
         self.assertEqual(len(names), len(set(names)))
 
+    def test_short_set_fact_reassignment_is_rejected(self) -> None:
+        tasks = [
+            {
+                "name": "initial FQCN definition",
+                "ansible.builtin.set_fact": {"gate": "{{ true }}"},
+            },
+            {
+                "name": "later short-name rewrite",
+                "set_fact": {"gate": "{{ false }}"},
+            },
+        ]
+        assignments = self.set_fact_assignments(tasks)
+        with self.assertRaises(AssertionError):
+            self.assert_set_fact_assignments_unique(assignments)
+
     def test_transition_fact_definitions_are_unique_and_exact(self) -> None:
         approved = {
             "mypc_fleet_gateway_audit_contract_compliant": (
@@ -361,14 +384,13 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
         for fact_name, expression in approved.items():
             entries = assignments.get(fact_name, [])
             self.assertEqual(len(entries), 1, fact_name)
-            self.assertIsInstance(entries[0][1], str, fact_name)
+            self.assertIsInstance(entries[0][2], str, fact_name)
             self.assertEqual(
-                self.normalize_expression(entries[0][1]),
+                self.normalize_expression(entries[0][2]),
                 expression,
                 fact_name,
             )
-        for fact_name, entries in assignments.items():
-            self.assertEqual(len(entries), 1, f"{fact_name} is reassigned")
+        self.assert_set_fact_assignments_unique(assignments)
 
     def test_transition_truth_table_is_driven_by_role_expressions(self) -> None:
         expressions = {
