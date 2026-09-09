@@ -102,31 +102,167 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
         self.assertIn('test -w "$AUDIT_DIR"', postcondition)
         self.assertIn("mypc_fleet_gateway_audit_contract_compliant", self.role)
 
-    def test_compliant_rerun_skips_stop_chown_and_recreate(self) -> None:
-        compliance = self.task_block(
-            "Check whether current mypc Fleet gateway already has the audit contract"
+    def test_compliant_same_image_skips_audit_mutation_and_recreation(self) -> None:
+        decisions = self.role[
+            self.role.index(
+                "- name: Record whether current Fleet gateway is already audit-contract compliant"
+            ) :
+        ]
+        self.assertIn("mypc_fleet_gateway_audit_repair_required", decisions)
+        self.assertIn("mypc_fleet_gateway_image_changed", decisions)
+        self.assertIn("mypc_fleet_gateway_recreate_required", decisions)
+        self.assertIn(
+            "mypc_fleet_gateway_live.Config.Image != fleet_gateway_image",
+            decisions,
         )
-        writeability = self.task_block(
-            "Probe the current Fleet gateway audit writeability postcondition"
+        self.assertIn(
+            "mypc_fleet_gateway_audit_repair_required or",
+            self.task_block("Decide whether the Fleet gateway needs recreation"),
         )
-        self.assertIn('Config.User == $runtime_user', compliance)
-        self.assertIn('"AUDIT_DIR=" + $audit_dir', compliance)
-        self.assertIn('.Type == "volume" and .Name == $audit_volume', compliance)
-        self.assertIn('test -w "$AUDIT_DIR"', writeability)
+
+        for task_name in (
+            "Pull the selected Fleet image for an explicit Fleet gateway transition",
+            "Capture running per-user runtime count before Fleet adoption",
+            "Back up Fleet instance state before Nexus adoption",
+            "Run Fleet regression before Nexus adoption",
+            "Stop Fleet gateway before preparing its audit volume",
+            "Ensure the external named Fleet audit volume exists",
+            "Check whether the Fleet audit volume needs first-use seeding",
+            "Check Fleet audit volume ownership against the validated runtime identity",
+            "Repair Fleet audit volume ownership when it differs",
+            "Seed the empty Fleet audit volume from the quiesced gateway",
+            "Recreate mypc Fleet gateway from the selected Nexus image",
+            "Require the recreated mypc Fleet gateway has no Fruit host bind",
+            "Require recreated Fleet gateway audit volume and runtime contract",
+            "Require recreated Fleet gateway audit directory is writable by its runtime identity",
+            "Require the same per-user runtime count after Fleet adoption",
+            "Run Fleet regression after Nexus adoption",
+        ):
+            self.assertIn("when:", self.task_block(task_name), task_name)
+
+    def test_compliant_explicit_image_change_recreates_without_audit_repair(self) -> None:
+        pull = self.task_block(
+            "Pull the selected Fleet image for an explicit Fleet gateway transition"
+        )
+        self.assertIn("mypc_fleet_gateway_image_changed", pull)
 
         for task_name in (
             "Stop Fleet gateway before preparing its audit volume",
+            "Ensure the external named Fleet audit volume exists",
+            "Check whether the Fleet audit volume needs first-use seeding",
+            "Check Fleet audit volume ownership against the validated runtime identity",
             "Repair Fleet audit volume ownership when it differs",
-            "Recreate mypc Fleet gateway from the identical Nexus image",
+            "Seed the empty Fleet audit volume from the quiesced gateway",
         ):
-            task = self.task_block(task_name)
-            self.assertIn("not mypc_fleet_gateway_audit_contract_compliant", task)
+            self.assertIn(
+                "mypc_fleet_gateway_audit_repair_required",
+                self.task_block(task_name),
+                task_name,
+            )
 
-        repair = self.task_block("Repair Fleet audit volume ownership when it differs")
-        self.assertIn(
-            "changed_when: mypc_fleet_gateway_audit_ownership.rc == 1", repair
+        recreate = self.task_block(
+            "Recreate mypc Fleet gateway from the selected Nexus image"
         )
-        self.assertNotIn("changed_when: true", repair)
+        self.assertIn("mypc_fleet_gateway_recreate_required", recreate)
+        self.assertIn('image: "{{ fleet_gateway_image }}"', recreate)
+        self.assertIn(
+            "{{ fleet_gateway_audit_volume }}:{{ fleet_gateway_audit_dir }}:rw",
+            recreate,
+        )
+        self.assertIn("'AUDIT_DIR': fleet_gateway_audit_dir", recreate)
+        self.assertIn('user: "{{ mypc_fleet_gateway_runtime_user }}"', recreate)
+        self.assertNotIn("identical", recreate.lower())
+        self.assertNotIn("mypc_fleet_gateway_image_ids", self.role)
+        self.assertNotIn("must match the live image", self.role)
+
+    def test_noncompliant_same_image_repairs_without_pull_then_recreates(self) -> None:
+        pull = self.task_block(
+            "Pull the selected Fleet image for an explicit Fleet gateway transition"
+        )
+        self.assertIn("mypc_fleet_gateway_image_changed", pull)
+
+        for task_name in (
+            "Stop Fleet gateway before preparing its audit volume",
+            "Ensure the external named Fleet audit volume exists",
+            "Check whether the Fleet audit volume needs first-use seeding",
+            "Check Fleet audit volume ownership against the validated runtime identity",
+            "Repair Fleet audit volume ownership when it differs",
+            "Seed the empty Fleet audit volume from the quiesced gateway",
+        ):
+            self.assertIn(
+                "mypc_fleet_gateway_audit_repair_required",
+                self.task_block(task_name),
+                task_name,
+            )
+
+        self.assertEqual(
+            self.role.count("- name: Stop Fleet gateway before preparing its audit volume"),
+            1,
+        )
+        self.assertIn(
+            "mypc_fleet_gateway_recreate_required",
+            self.task_block("Recreate mypc Fleet gateway from the selected Nexus image"),
+        )
+
+    def test_noncompliant_changed_image_quiesces_once_then_repairs_and_recreates(self) -> None:
+        ordered_tasks = (
+            "Stop Fleet gateway before preparing its audit volume",
+            "Ensure the external named Fleet audit volume exists",
+            "Check whether the Fleet audit volume needs first-use seeding",
+            "Check Fleet audit volume ownership against the validated runtime identity",
+            "Repair Fleet audit volume ownership when it differs",
+            "Seed the empty Fleet audit volume from the quiesced gateway",
+            "Recreate mypc Fleet gateway from the selected Nexus image",
+        )
+        positions = [self.role.index(f"- name: {name}") for name in ordered_tasks]
+        self.assertEqual(
+            self.role.count("- name: Stop Fleet gateway before preparing its audit volume"),
+            1,
+        )
+        self.assertEqual(positions, sorted(positions))
+
+        for task_name in ordered_tasks[2:-1]:
+            self.assertIn(
+                "mypc_fleet_gateway_audit_repair_required",
+                self.task_block(task_name),
+                task_name,
+            )
+        self.assertIn(
+            "mypc_fleet_gateway_audit_ownership.rc == 1",
+            self.task_block("Repair Fleet audit volume ownership when it differs"),
+        )
+        self.assertIn(
+            "failed_when: mypc_fleet_gateway_audit_ownership_repair.rc != 0",
+            self.task_block("Repair Fleet audit volume ownership when it differs"),
+        )
+        self.assertIn(
+            "mypc_fleet_gateway_recreate_required",
+            self.task_block("Recreate mypc Fleet gateway from the selected Nexus image"),
+        )
+
+    def test_unapproved_or_unresolvable_target_fails_closed(self) -> None:
+        approval_gate = self.task_block(
+            "Refuse a Fleet gateway image that does not descend from the ticket 00 fail-closed guard"
+        )
+        self.assertIn("mypc_fleet_gateway_guard_fetch.rc == 0", approval_gate)
+        self.assertIn("mypc_fleet_gateway_guard_check.rc == 0", approval_gate)
+
+        target_exists = self.task_block(
+            "Require the selected Fleet gateway target image exists"
+        )
+        self.assertIn(
+            "failed_when: mypc_fleet_gateway_target_image.rc != 0",
+            target_exists,
+        )
+        pull_start = self.role.index(
+            "- name: Pull the selected Fleet image for an explicit Fleet gateway transition"
+        )
+        self.assertLess(
+            self.role.index(
+                "- name: Refuse a Fleet gateway image that does not descend from the ticket 00 fail-closed guard"
+            ),
+            pull_start,
+        )
 
     def test_seed_happens_after_quiescing_and_before_recreate(self) -> None:
         stop = self.role.index("- name: Stop Fleet gateway before preparing")
@@ -141,7 +277,7 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
         )
         seed = self.role.index("- name: Seed the empty Fleet audit volume")
         recreate = self.role.index(
-            "- name: Recreate mypc Fleet gateway from the identical Nexus image"
+            "- name: Recreate mypc Fleet gateway from the selected Nexus image"
         )
         self.assertLess(stop, seed)
         self.assertLess(stop, empty)

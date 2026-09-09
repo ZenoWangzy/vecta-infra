@@ -68,7 +68,7 @@ def assert_source_contract() -> None:
         "- name: Require the reviewed mypc Fleet mount contract"
     )
     recreate_start = role.index(
-        "- name: Recreate mypc Fleet gateway from the identical Nexus image"
+        "- name: Recreate mypc Fleet gateway from the selected Nexus image"
     )
     postcondition_start = role.index(
         "- name: Require the recreated mypc Fleet gateway has no Fruit host bind"

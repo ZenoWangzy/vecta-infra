@@ -57,27 +57,37 @@ The role contract is:
 
 1. Preflight the current container and allow either no audit mount or exactly
    the expected named-volume mount and AUDIT_DIR value.
-2. Check whether the running container already has the expected named volume,
-   AUDIT_DIR, validated runtime identity, and successful writeability
-   postcondition. If it already satisfies all four, a normal rerun skips stop,
-   recursive chown, volume preparation, and forced recreation.
-3. Only when that check is not compliant, stop the running gateway first so all
-   audit writers are quiesced. Do not inspect or repair the audit volume before
-   this stop.
-4. Ensure the named Docker volume exists with
-   community.docker.docker_volume. This volume is external to the container
-   lifecycle; it is not owned by a Compose overlay.
-5. As root, inspect whether the stopped volume is empty or non-empty, then
+2. Check the running container's audit mount, AUDIT_DIR, validated runtime
+   identity, and successful writeability postcondition. Independently compare
+   the explicitly approved target image reference with the live container's
+   image reference. A compliant audit mount therefore does not suppress a
+   requested image transition; a compliant same-image rerun skips migration,
+   pull, and recreation. If the running container already satisfies the audit
+   contract and the target image is unchanged, no migration or recreation runs.
+3. Validate the explicitly supplied target tag against the reviewed source
+   ancestry and require the pulled/local target image to exist. No implicit
+   latest or unknown target is accepted; targets that cannot be resolved or
+   approved fail closed before any pull or recreation.
+4. Only when audit migration/repair is required, stop the running gateway once
+   so all audit writers are quiesced. Do not inspect or repair the audit volume
+   before this stop. An image-only transition on a compliant audit mount does
+   not run this migration path.
+5. When audit migration/repair is required, ensure the named Docker volume
+   exists with `community.docker.docker_volume`. This volume is external to the
+   container lifecycle; it is not owned by a Compose overlay.
+6. As root, inspect whether the stopped volume is empty or non-empty, then
    inspect ownership against the validated runtime identity. `find` failures
    are fatal. Repair ownership only when it differs; a successful no-op check
    must remain unchanged and a failed `chown` is fatal.
-6. Seed only when the stopped volume was confirmed empty. Stage the existing
+7. Seed only when the stopped volume was confirmed empty. Stage the existing
    audit directory, copy it into the named volume, and set the validated
    runtime ownership. `mktemp`, `docker cp`, copy, and chown failures fail
-   closed. A non-empty volume never enters the seed path.
-7. Recreate the gateway with AUDIT_DIR and the named-volume mount, using the
+   closed.
+   A non-empty volume never enters the seed path.
+8. When either audit repair or an explicit image transition is required,
+   recreate the gateway with AUDIT_DIR and the named-volume mount, using the
    validated runtime identity.
-8. Require the recreated container to report the expected Config.User,
+9. Require the recreated container to report the expected Config.User,
    AUDIT_DIR, named-volume destination, read-write mode, and successful write
    and cleanup as that identity.
 
@@ -93,7 +103,9 @@ layer into the external named volume. The gateway is stopped before the empty
 check, ownership inspection/repair, or copy, so writers are quiesced while the
 source is staged. A non-empty volume is retained in place and is never seeded.
 A failed find, ownership repair, copy, or postcondition fails the role and does
-not delete the source container or the named volume.
+not delete the source container or the named volume. An image-only transition
+on an already compliant audit mount skips migration and recreates with the same
+volume, AUDIT_DIR, environment, and validated user.
 
 The 2026-09-07 rehearsal and any earlier host transcript are historical
 production records, not current live evidence. They can explain the original
@@ -118,6 +130,11 @@ It must cover all of the following without adding a dependency:
 - a non-empty volume never enters the seed path;
 - the recreated container must have the exact volume type, name, destination,
   read-write mode, runtime identity, and writeability behavior.
+- a compliant same-image rerun skips pull, stop, chown, seed, and recreate;
+  a compliant explicit-image-change rerun skips audit repair but recreates with
+  the same volume, AUDIT_DIR, environment, and validated user; and a
+  non-compliant changed-image run stops once, repairs before recreation, and
+  does not require the target image to equal the live image.
 
 The related Fruit host-bind contract remains part of the same PR gate.
 
