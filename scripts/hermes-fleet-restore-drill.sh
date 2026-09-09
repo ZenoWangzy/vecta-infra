@@ -42,6 +42,16 @@ source_state="$(find "$resolved_backup/items" -mindepth 2 -maxdepth 2 -type d -n
   echo "backup contains no captured container state" >&2
   exit 1
 }
+source_item_dir="$(dirname "$source_state")"
+test -s "$source_item_dir/state-paths.tsv" || {
+  echo "selected backup item has no captured state paths" >&2
+  exit 1
+}
+source_file_count="$(find "$source_state" -type f -print | wc -l | tr -d ' ')"
+[ "$source_file_count" -gt 0 ] || {
+  echo "selected backup state contains no regular files" >&2
+  exit 1
+}
 
 if [ "$EXECUTE" != true ]; then
   echo "restore drill preflight passed; pass --execute to restore and compare one item"
@@ -61,8 +71,11 @@ install -d -m 0770 "$drill_root/restored"
 cp -a -- "$source_state/." "$drill_root/restored/"
 diff -qr --no-dereference "$source_state" "$drill_root/restored" >/dev/null
 
-source_file_count="$(find "$source_state" -type f -print | wc -l | tr -d ' ')"
 restored_file_count="$(find "$drill_root/restored" -type f -print | wc -l | tr -d ' ')"
+[ "$restored_file_count" -gt 0 ] || {
+  echo "restored state contains no regular files" >&2
+  exit 1
+}
 [ "$source_file_count" = "$restored_file_count" ] || {
   echo "restored state file count mismatch" >&2
   exit 1

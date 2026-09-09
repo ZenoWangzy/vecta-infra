@@ -71,14 +71,50 @@ staging_dir="$resolved_backup_root/.${SESSION_ID}.incomplete"
 }
 
 rows_file="$(mktemp)"
+decoded_id_file="$(mktemp)"
+invalid_id_file="$(mktemp)"
 current_container=""
 current_was_paused=false
+staging_dir_created=false
+
+decode_employee_id() {
+  local employee_b64="$1"
+  if [ -z "$employee_b64" ]; then
+    echo "fleet row has an empty employee id" >&2
+    exit 1
+  fi
+  if ! printf '%s' "$employee_b64" | base64 -d > "$decoded_id_file"; then
+    echo "fleet row has an invalid employee id encoding" >&2
+    exit 1
+  fi
+  if [ ! -s "$decoded_id_file" ]; then
+    echo "fleet row has an empty employee id" >&2
+    exit 1
+  fi
+  LC_ALL=C tr -d 'A-Za-z0-9@._+-' < "$decoded_id_file" > "$invalid_id_file"
+  if [ -s "$invalid_id_file" ]; then
+    echo "employee id contains an unsafe path character" >&2
+    exit 1
+  fi
+  employee_id="$(<"$decoded_id_file")"
+  case "$employee_id" in
+    .|..) echo "employee id is not a valid item name" >&2; exit 1 ;;
+  esac
+}
 
 cleanup() {
   if [ -n "$current_container" ] && [ "$current_was_paused" = false ]; then
     docker unpause "$current_container" >/dev/null 2>&1 || true
   fi
+  if [ "$staging_dir_created" = true ] && [ -d "$staging_dir" ]; then
+    case "$staging_dir" in
+      "$resolved_backup_root"/."$SESSION_ID".incomplete) rm -rf -- "$staging_dir" ;;
+      *) echo "refusing unsafe backup cleanup" >&2 ;;
+    esac
+  fi
   unlink "$rows_file" 2>/dev/null || true
+  unlink "$decoded_id_file" 2>/dev/null || true
+  unlink "$invalid_id_file" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -88,11 +124,26 @@ docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -At -F '|' -c \
      FROM fleet_instances
     ORDER BY employee_id" > "$rows_file"
 
+[ -s "$rows_file" ] || {
+  echo "fleet rows query returned no rows" >&2
+  exit 1
+}
+
 row_count=0
 running_count=0
 nonrunning_count=0
+declare -A seen_employee_ids=()
+declare -A seen_item_dirs=()
 while IFS='|' read -r employee_b64 status lifecycle agent_type container_ref; do
-  [ -n "$employee_b64" ] || continue
+  decode_employee_id "$employee_b64"
+  item_id="item-$employee_id"
+  item_dir="$staging_dir/items/$item_id"
+  if [[ -n "${seen_employee_ids[$employee_id]+x}" || -n "${seen_item_dirs[$item_dir]+x}" ]]; then
+    echo "duplicate employee id or backup item directory: $employee_id" >&2
+    exit 1
+  fi
+  seen_employee_ids["$employee_id"]=1
+  seen_item_dirs["$item_dir"]=1
   row_count=$((row_count + 1))
   if [ "$status" = running ]; then
     running_count=$((running_count + 1))
@@ -118,6 +169,11 @@ while IFS='|' read -r employee_b64 status lifecycle agent_type container_ref; do
   fi
 done < "$rows_file"
 
+[ "$row_count" -gt 0 ] || {
+  echo "fleet rows query returned no rows" >&2
+  exit 1
+}
+
 printf 'fleet_rows=%s running_hermes=%s nonrunning=%s target=%s\n' \
   "$row_count" "$running_count" "$nonrunning_count" "$final_dir"
 
@@ -126,6 +182,7 @@ if [ "$EXECUTE" != true ]; then
   exit 0
 fi
 
+staging_dir_created=true
 install -d -m 0770 "$staging_dir/items"
 cp -- "$rows_file" "$staging_dir/fleet-rows.base64.tsv"
 
@@ -180,12 +237,7 @@ copy_container_state() {
 }
 
 while IFS='|' read -r employee_b64 status lifecycle agent_type container_ref; do
-  [ -n "$employee_b64" ] || continue
-  employee_id="$(printf '%s' "$employee_b64" | base64 -d)"
-  if ! printf '%s' "$employee_id" | grep -Eq '^[A-Za-z0-9@._+-]+$'; then
-    echo "employee id contains an unsafe path character" >&2
-    exit 1
-  fi
+  decode_employee_id "$employee_b64"
   item_id="item-$employee_id"
   item_dir="$staging_dir/items/$item_id"
   install -d -m 0770 "$item_dir"
@@ -234,10 +286,12 @@ find "$staging_dir" -type f -print0 |
     }
   done
 
+setfacl -m u:shiyao:rwx,m::rwx,d:u:shiyao:rwx,d:m::rwx "$staging_dir"
+getfacl -cp "$staging_dir" | grep -qx 'user:shiyao:rwx'
+getfacl -cp "$staging_dir" | grep -qx 'mask::rwx'
+getfacl -cp "$staging_dir" | grep -qx 'default:user:shiyao:rwx'
+getfacl -cp "$staging_dir" | grep -qx 'default:mask::rwx'
+
 mv -- "$staging_dir" "$final_dir"
-setfacl -m u:shiyao:rwx,m::rwx,d:u:shiyao:rwx,d:m::rwx "$final_dir"
-getfacl -cp "$final_dir" | grep -qx 'user:shiyao:rwx'
-getfacl -cp "$final_dir" | grep -qx 'mask::rwx'
-getfacl -cp "$final_dir" | grep -qx 'default:user:shiyao:rwx'
-getfacl -cp "$final_dir" | grep -qx 'default:mask::rwx'
+staging_dir_created=false
 printf 'backup_complete=%s\n' "$final_dir"
