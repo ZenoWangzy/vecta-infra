@@ -45,6 +45,7 @@
 - name: Refuse a Fleet gateway image that does not descend from the ticket 00 fail-closed guard
   ansible.builtin.assert:
     that:
+      - mypc_fleet_gateway_guard_fetch.rc == 0
       - mypc_fleet_gateway_guard_check.rc == 0
     fail_msg: >-
       fleet_gateway_image={{ fleet_gateway_image }} (sha
@@ -75,8 +76,14 @@
     that:
       - mypc_fleet_gateway_live.State.Running | bool
       - mypc_fleet_gateway_live.Config.User == fleet_gateway_user
+      - mypc_fleet_gateway_live.Config.Image | length > 0
       - mypc_fleet_gateway_live.Config.Env | length > 0
     fail_msg: "The existing Fleet gateway is not a valid migration source."
+  no_log: true
+
+- name: Pin the validated Fleet gateway runtime identity
+  ansible.builtin.set_fact:
+    mypc_fleet_gateway_runtime_user: "{{ mypc_fleet_gateway_live.Config.User }}"
   no_log: true
 
 - name: Require the reviewed mypc Fleet mount contract
@@ -88,48 +95,111 @@
     --arg templates {{ fleet_gateway_templates_host_path | quote }}
     --arg plugins {{ fleet_gateway_shared_plugins_host_path | quote }}
     --arg litellm {{ fleet_gateway_litellm_config_host_path | quote }}
+    --arg audit_dir {{ fleet_gateway_audit_dir | quote }}
+    --arg audit_volume {{ fleet_gateway_audit_volume | quote }}
     '([.[0].Mounts[] | select(.Source == $instances and .Destination == "/app/data/instances" and .RW)] | length == 1)
     and ([.[0].Mounts[] | select(.Source == $knowledge and .Destination == "/app/knowledge" and .RW)] | length == 1)
     and ([.[0].Mounts[] | select(.Source == $templates and .Destination == "/app/templates" and (.RW | not))] | length == 1)
     and ([.[0].Mounts[] | select(.Source == $plugins and .Destination == "/app/shared-plugins" and (.RW | not))] | length == 1)
     and ([.[0].Mounts[] | select(.Source == $litellm and .Destination == "/app/litellm-config.yaml" and (.RW | not))] | length == 1)
-    and ([.[0].Mounts[] | select(.Source == "/var/run/docker.sock" and .Destination == "/var/run/docker.sock" and .RW)] | length == 1)'
+    and ([.[0].Mounts[] | select(.Source == "/var/run/docker.sock" and .Destination == "/var/run/docker.sock" and .RW)] | length == 1)
+    and (([.[0].Mounts[] | select(.Destination == $audit_dir)] | length == 0)
+      or ([.[0].Mounts[] | select(.Type == "volume" and .Name == $audit_volume and .Destination == $audit_dir and .RW)] | length == 1))
+    and (([.[0].Config.Env[] | select(startswith("AUDIT_DIR="))] | length == 0)
+      or ([.[0].Config.Env[] | select(. == ("AUDIT_DIR=" + $audit_dir))] | length == 1))'
   args:
     executable: /bin/bash
   changed_when: false
   check_mode: false
 
-- name: Pull the selected Fleet image without changing the live container
+- name: Check whether current mypc Fleet gateway already has the audit contract
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    docker inspect {{ fleet_gateway_container_name | quote }} |
+    jq -e --arg audit_dir {{ fleet_gateway_audit_dir | quote }}
+    --arg audit_volume {{ fleet_gateway_audit_volume | quote }}
+    --arg runtime_user {{ mypc_fleet_gateway_runtime_user | quote }}
+    '.[0].State.Running
+    and .[0].Config.User == $runtime_user
+    and ([.[0].Config.Env[] | select(startswith("AUDIT_DIR="))] | length == 1)
+    and ([.[0].Config.Env[] | select(. == ("AUDIT_DIR=" + $audit_dir))] | length == 1)
+    and ([.[0].Mounts[] | select(.Destination == $audit_dir)] | length == 1)
+    and ([.[0].Mounts[] | select(.Type == "volume" and .Name == $audit_volume and .Destination == $audit_dir and .RW)] | length == 1)'
+  args:
+    executable: /bin/bash
+  register: mypc_fleet_gateway_audit_contract
+  changed_when: false
+  failed_when: mypc_fleet_gateway_audit_contract.rc not in [0, 1]
+  check_mode: false
+  no_log: true
+
+- name: Probe the current Fleet gateway audit writeability postcondition
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - --user
+      - "{{ mypc_fleet_gateway_runtime_user }}"
+      - "{{ fleet_gateway_container_name }}"
+      - /bin/sh
+      - -ec
+      - >-
+        test "$AUDIT_DIR" = {{ fleet_gateway_audit_dir | quote }} &&
+        test -w "$AUDIT_DIR" &&
+        probe="$AUDIT_DIR/.audit-writeability-check.$$" &&
+        : > "$probe" &&
+        rm -f "$probe"
+  register: mypc_fleet_gateway_audit_writeability
+  changed_when: false
+  failed_when: mypc_fleet_gateway_audit_writeability.rc not in [0, 1]
+  check_mode: false
+  when: mypc_fleet_gateway_audit_contract.rc == 0
+  no_log: true
+
+- name: Record whether current Fleet gateway is already audit-contract compliant
+  ansible.builtin.set_fact:
+    mypc_fleet_gateway_audit_contract_compliant: >-
+      {{ mypc_fleet_gateway_audit_contract.rc == 0 and
+         (mypc_fleet_gateway_audit_writeability.rc | default(1)) == 0 }}
+
+- name: Decide whether Fleet audit migration or repair is required
+  ansible.builtin.set_fact:
+    mypc_fleet_gateway_audit_repair_required: >-
+      {{ not mypc_fleet_gateway_audit_contract_compliant }}
+
+- name: Decide whether the selected Fleet gateway image differs
+  ansible.builtin.set_fact:
+    mypc_fleet_gateway_image_changed: "{{ mypc_fleet_gateway_live.Config.Image != fleet_gateway_image }}"
+
+- name: Decide whether the Fleet gateway needs recreation
+  ansible.builtin.set_fact:
+    mypc_fleet_gateway_recreate_required: >-
+      {{ mypc_fleet_gateway_audit_repair_required or mypc_fleet_gateway_image_changed }}
+
+- name: Pull the selected Fleet image for an explicit Fleet gateway transition
   community.docker.docker_image:
     name: "{{ fleet_gateway_image }}"
     source: pull
     force_source: true
     state: present
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_image_changed
   no_log: true
 
-- name: Capture current and selected Fleet image identities
+- name: Require the selected Fleet gateway target image exists
   ansible.builtin.command:
     argv:
       - docker
       - image
       - inspect
-      - --format
-      - "{{ '{{' }}.Id{{ '}}' }}"
-      - "{{ mypc_fleet_gateway_live.Image }}"
       - "{{ fleet_gateway_image }}"
-  register: mypc_fleet_gateway_image_ids
+  register: mypc_fleet_gateway_target_image
   changed_when: false
+  failed_when: mypc_fleet_gateway_target_image.rc != 0
   check_mode: false
+  when: not ansible_check_mode
   no_log: true
-
-- name: Require the selected Fleet image to match the live image
-  ansible.builtin.assert:
-    that:
-      - mypc_fleet_gateway_image_ids.stdout_lines | length == 2
-      - mypc_fleet_gateway_image_ids.stdout_lines[0] == mypc_fleet_gateway_image_ids.stdout_lines[1]
-    fail_msg: >-
-      The mypc Fleet Gateway image must match the live image ID for this
-      configuration-only recreation.
 
 - name: Capture running per-user runtime count before Fleet adoption
   ansible.builtin.shell: >-
@@ -140,6 +210,9 @@
   register: mypc_fleet_runtime_count_before
   changed_when: false
   check_mode: false
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_recreate_required
 
 - name: Back up Fleet instance state before Nexus adoption
   ansible.builtin.shell: |
@@ -152,8 +225,6 @@
     {
       echo "source_image=$(docker inspect -f '{{ '{{' }}.Config.Image{{ '}}' }}' {{ fleet_gateway_container_name | quote }})"
       echo "target_image={{ fleet_gateway_image }}"
-      echo "source_image_id={{ mypc_fleet_gateway_image_ids.stdout_lines[0] }}"
-      echo "target_image_id={{ mypc_fleet_gateway_image_ids.stdout_lines[1] }}"
       echo "platform_root_employee_ids={{ platform_root_employee_ids | join(',') }}"
       echo "runtime_count_before={{ mypc_fleet_runtime_count_before.stdout | trim }}"
       echo "instances_path={{ fleet_gateway_instances_host_path }}"
@@ -161,15 +232,144 @@
   args:
     executable: /bin/bash
   changed_when: true
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_recreate_required
 
 - name: Run Fleet regression before Nexus adoption
   ansible.builtin.script:
     cmd: "{{ role_path }}/../../scripts/mypc-app-regression.sh --service fleet-gateway --phase before"
   changed_when: false
   check_mode: false
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_recreate_required
 
-- name: Recreate mypc Fleet gateway from the identical Nexus image
+- name: Stop Fleet gateway before preparing its audit volume
+  ansible.builtin.command:
+    argv: [docker, stop, "{{ fleet_gateway_container_name }}"]
+  changed_when: true
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_audit_repair_required
+  no_log: true
+
+- name: Ensure the external named Fleet audit volume exists
+  community.docker.docker_volume:
+    name: "{{ fleet_gateway_audit_volume }}"
+    state: present
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_audit_repair_required
+  no_log: true
+
+- name: Check whether the Fleet audit volume needs first-use seeding
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --user
+      - "0"
+      - --entrypoint
+      - /bin/sh
+      - --volume
+      - "{{ fleet_gateway_audit_volume }}:{{ fleet_gateway_audit_dir }}:rw"
+      - "{{ fleet_gateway_image }}"
+      - -ec
+      - >-
+        entry="$(find {{ fleet_gateway_audit_dir | quote }} -mindepth 1
+        -print -quit)" || exit 2;
+        test -z "$entry"
+  register: mypc_fleet_gateway_audit_empty
+  changed_when: false
+  failed_when: mypc_fleet_gateway_audit_empty.rc not in [0, 1]
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_audit_repair_required
+  no_log: true
+
+- name: Check Fleet audit volume ownership against the validated runtime identity
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --user
+      - "0"
+      - --entrypoint
+      - /bin/sh
+      - --volume
+      - "{{ fleet_gateway_audit_volume }}:{{ fleet_gateway_audit_dir }}:rw"
+      - "{{ fleet_gateway_image }}"
+      - -ec
+      - >-
+        expected="{{ mypc_fleet_gateway_runtime_user }}";
+        entry="$(find {{ fleet_gateway_audit_dir | quote }} -xdev
+        \( ! -uid "${expected%%:*}" -o ! -gid "${expected##*:}" \)
+        -print -quit)" || exit 2;
+        test -z "$entry"
+  register: mypc_fleet_gateway_audit_ownership
+  changed_when: false
+  failed_when: mypc_fleet_gateway_audit_ownership.rc not in [0, 1]
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_audit_repair_required
+  no_log: true
+
+- name: Repair Fleet audit volume ownership when it differs
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --user
+      - "0"
+      - --entrypoint
+      - /bin/sh
+      - --volume
+      - "{{ fleet_gateway_audit_volume }}:{{ fleet_gateway_audit_dir }}:rw"
+      - "{{ fleet_gateway_image }}"
+      - -ec
+      - "chown -R {{ mypc_fleet_gateway_runtime_user | quote }} {{ fleet_gateway_audit_dir | quote }}"
+  register: mypc_fleet_gateway_audit_ownership_repair
+  changed_when: mypc_fleet_gateway_audit_ownership.rc == 1
+  failed_when: mypc_fleet_gateway_audit_ownership_repair.rc != 0
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_audit_repair_required
+    - mypc_fleet_gateway_audit_ownership.rc == 1
+  no_log: true
+
+- name: Seed the empty Fleet audit volume from the quiesced gateway
+  ansible.builtin.shell: |
+    set -euo pipefail
+    stage_dir="$(mktemp -d)"
+    trap 'rm -rf "$stage_dir"' EXIT
+    docker cp "{{ fleet_gateway_container_name }}:{{ fleet_gateway_audit_dir }}/." "$stage_dir/"
+    docker run --rm \
+      --user 0 \
+      --entrypoint /bin/sh \
+      --volume "{{ fleet_gateway_audit_volume }}:{{ fleet_gateway_audit_dir }}:rw" \
+      --volume "$stage_dir:/audit-seed:ro" \
+      "{{ fleet_gateway_image }}" \
+      -ec 'cp -a /audit-seed/. "{{ fleet_gateway_audit_dir }}" &&
+        chown -R "{{ mypc_fleet_gateway_runtime_user }}" "{{ fleet_gateway_audit_dir }}"'
+  args:
+    executable: /bin/bash
+  changed_when: true
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_audit_repair_required
+    - mypc_fleet_gateway_audit_empty.rc == 0
+  no_log: true
+
+- name: Recreate mypc Fleet gateway from the selected Nexus image
   community.docker.docker_container:
     name: "{{ fleet_gateway_container_name }}"
     image: "{{ fleet_gateway_image }}"
@@ -177,13 +377,14 @@
     pull: true
     image_name_mismatch: recreate
     restart_policy: "{{ fleet_gateway_restart_policy }}"
-    user: "{{ fleet_gateway_user }}"
+    user: "{{ mypc_fleet_gateway_runtime_user }}"
     command: "{{ mypc_fleet_gateway_live.Config.Cmd }}"
     entrypoint: "{{ mypc_fleet_gateway_live.Config.Entrypoint }}"
     env: >-
       {{
         dict(mypc_fleet_gateway_live.Config.Env | map('split', '=', 1))
         | combine({
+          'AUDIT_DIR': fleet_gateway_audit_dir,
           'PLATFORM_ROOT_EMPLOYEE_IDS': platform_root_employee_ids | join(','),
         })
       }}
@@ -194,6 +395,7 @@
       - "{{ fleet_gateway_templates_host_path }}:/app/templates:ro"
       - "{{ fleet_gateway_shared_plugins_host_path }}:/app/shared-plugins:ro"
       - "{{ fleet_gateway_litellm_config_host_path }}:/app/litellm-config.yaml:ro"
+      - "{{ fleet_gateway_audit_volume }}:{{ fleet_gateway_audit_dir }}:rw"
       - "/var/run/docker.sock:/var/run/docker.sock:rw"
     networks:
       - name: "{{ docker_network }}"
@@ -207,6 +409,9 @@
     log_options: "{{ fleet_gateway_log_options }}"
     memory: "{{ fleet_gateway_memory }}"
     cpus: "{{ fleet_gateway_cpus }}"
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_recreate_required
   no_log: true
 
 - name: Require the recreated mypc Fleet gateway has no Fruit host bind
@@ -218,6 +423,51 @@
     executable: /bin/bash
   changed_when: false
   check_mode: false
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_recreate_required
+
+- name: Require recreated Fleet gateway audit volume and runtime contract
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    docker inspect {{ fleet_gateway_container_name | quote }} |
+    jq -e --arg audit_dir {{ fleet_gateway_audit_dir | quote }}
+    --arg audit_volume {{ fleet_gateway_audit_volume | quote }}
+    --arg runtime_user {{ mypc_fleet_gateway_runtime_user | quote }}
+    '.[0].Config.User == $runtime_user
+    and ([.[0].Config.Env[] | select(. == ("AUDIT_DIR=" + $audit_dir))] | length == 1)
+    and ([.[0].Mounts[] | select(.Type == "volume" and .Name == $audit_volume and .Destination == $audit_dir and .RW)] | length == 1)'
+  args:
+    executable: /bin/bash
+  changed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_recreate_required
+  no_log: true
+
+- name: Require recreated Fleet gateway audit directory is writable by its runtime identity
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - --user
+      - "{{ mypc_fleet_gateway_runtime_user }}"
+      - "{{ fleet_gateway_container_name }}"
+      - /bin/sh
+      - -ec
+      - >-
+        test "$AUDIT_DIR" = {{ fleet_gateway_audit_dir | quote }} &&
+        test -w "$AUDIT_DIR" &&
+        probe="$AUDIT_DIR/.audit-writeability-check.$$" &&
+        : > "$probe" &&
+        rm -f "$probe"
+  changed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_recreate_required
+  no_log: true
 
 - name: Require the same per-user runtime count after Fleet adoption
   ansible.builtin.shell: |
@@ -227,7 +477,9 @@
   args:
     executable: /bin/bash
   changed_when: false
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_recreate_required
 
 - name: Run Fleet regression after Nexus adoption
   ansible.builtin.script:
@@ -236,4 +488,6 @@
     EXPECTED_IMAGE: "{{ fleet_gateway_image }}"
     EXPECTED_PLATFORM_ROOT_EMPLOYEE_IDS: "{{ platform_root_employee_ids | join(',') }}"
   changed_when: false
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_recreate_required

@@ -119,7 +119,11 @@ fleet_gateway_shared_plugins_host_path: /data/ocee/deploy/instances/shared/plugi
 fleet_gateway_litellm_config_host_path: /data/ocee/infra/litellm/config.yaml
 fleet_gateway_container_name: openclaw-fleet-gateway
 fleet_gateway_restart_policy: unless-stopped
-fleet_gateway_user: "100:110"
+# Matches the fleet-gateway image's RUNTIME_UID/RUNTIME_GID defaults. The role
+# verifies this against the live container before it creates or mounts state.
+fleet_gateway_user: "1000:1000"
+fleet_gateway_audit_volume: fleet_gateway_audit_data
+fleet_gateway_audit_dir: /app/data/audit
 fleet_gateway_published_ports:
   - "3000:3000"
 fleet_gateway_network_aliases:
@@ -218,15 +222,15 @@ deploy_image_tags:
   # Ticket 101: the 2026-07-18 cache-<image-id> default (cache-a6d8bcce5249)
   # pre-dates the fail-closed industry-pack guard added by ticket 00
   # (packages/fleet-gateway/src/hermes/config-generator.ts, first shipped in
-  # 9498cb86). It was only ever caught by the "selected image ID == live
+  # 9498cb86). It was only ever caught by the old "selected image ID == live
   # image ID" assert in fleet_gateway_mypc.yml, not by this default being
   # correct. Pinned here to the production revision live at audit time
   # (2026-09-06) so a run without an explicit -e override lands on a
-  # fail-closed image instead of relying solely on that assert. Production
+  # fail-closed image instead of relying solely on runtime guards. Production
   # moves independently of this file (a separate compose-chain release
   # process, not this role) and WILL outrun this pin again -- the durable
-  # guards are the tag-shape assert and the live-image-ID assert added to
-  # fleet_gateway_mypc.yml, not this literal value. See
+  # guards are the source ancestry, target existence, and live container
+  # contract checks in fleet_gateway_mypc.yml, not this literal value. See
   # docs/ops/2026-09-06-ticket-101-fleet-gateway-tag-audit.md in vecta.
   fleet-gateway: b375e34309b2f4b73effbf71c2e8395c04456b67
   rag-service: 89da897ec9f7a1b0e1fb59d1ad0238ec46680ecb
