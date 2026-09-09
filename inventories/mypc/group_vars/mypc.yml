@@ -119,7 +119,11 @@ fleet_gateway_shared_plugins_host_path: /data/ocee/deploy/instances/shared/plugi
 fleet_gateway_litellm_config_host_path: /data/ocee/infra/litellm/config.yaml
 fleet_gateway_container_name: openclaw-fleet-gateway
 fleet_gateway_restart_policy: unless-stopped
-fleet_gateway_user: "100:110"
+# Matches the fleet-gateway image's RUNTIME_UID/RUNTIME_GID defaults. The role
+# verifies this against the live container before it creates or mounts state.
+fleet_gateway_user: "1000:1000"
+fleet_gateway_audit_volume: fleet_gateway_audit_data
+fleet_gateway_audit_dir: /app/data/audit
 fleet_gateway_published_ports:
   - "3000:3000"
 fleet_gateway_network_aliases:
