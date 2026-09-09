@@ -132,9 +132,10 @@ It must cover all of the following without adding a dependency:
   read-write mode, runtime identity, and writeability behavior.
 - a compliant same-image rerun skips pull, stop, chown, seed, and recreate;
   a compliant explicit-image-change rerun skips audit repair but recreates with
-  the same volume, AUDIT_DIR, environment, and validated user; and a
-  non-compliant changed-image run stops once, repairs before recreation, and
-  does not require the target image to equal the live image.
+  the same volume, AUDIT_DIR, environment, and validated user; a
+  non-compliant same-image run repairs without pull; and a non-compliant
+  changed-image run stops once, repairs before recreation, and does not
+  require the target image to equal the live image.
 
 The related Fruit host-bind contract remains part of the same PR gate.
 

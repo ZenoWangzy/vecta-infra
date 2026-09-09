@@ -32,6 +32,15 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
         end = self.role.find("\n- name:", start + 1)
         return self.role[start:] if end == -1 else self.role[start:end]
 
+    def when_clause(self, task_name: str) -> str:
+        match = re.search(
+            r"\n  when:\n((?:    .*\n)+)",
+            self.task_block(task_name),
+        )
+        if match is None:
+            self.fail(f"{task_name} has no list-form when clause")
+        return match.group(1)
+
     def test_role_is_the_only_audit_volume_owner(self) -> None:
         owner_files = {
             path
@@ -174,6 +183,36 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
         self.assertNotIn("identical", recreate.lower())
         self.assertNotIn("mypc_fleet_gateway_image_ids", self.role)
         self.assertNotIn("must match the live image", self.role)
+
+    def test_image_and_audit_guards_are_mutually_exclusive(self) -> None:
+        pull_when = self.when_clause(
+            "Pull the selected Fleet image for an explicit Fleet gateway transition"
+        )
+        self.assertIn("mypc_fleet_gateway_image_changed", pull_when)
+        self.assertNotIn("mypc_fleet_gateway_audit_repair_required", pull_when)
+        self.assertNotIn("mypc_fleet_gateway_recreate_required", pull_when)
+
+        audit_tasks = (
+            "Stop Fleet gateway before preparing its audit volume",
+            "Ensure the external named Fleet audit volume exists",
+            "Check whether the Fleet audit volume needs first-use seeding",
+            "Check Fleet audit volume ownership against the validated runtime identity",
+            "Repair Fleet audit volume ownership when it differs",
+            "Seed the empty Fleet audit volume from the quiesced gateway",
+        )
+        for task_name in audit_tasks:
+            audit_when = self.when_clause(task_name)
+            self.assertIn(
+                "mypc_fleet_gateway_audit_repair_required",
+                audit_when,
+                task_name,
+            )
+            self.assertNotIn("mypc_fleet_gateway_image_changed", audit_when, task_name)
+            self.assertNotIn(
+                "mypc_fleet_gateway_recreate_required",
+                audit_when,
+                task_name,
+            )
 
     def test_noncompliant_same_image_repairs_without_pull_then_recreates(self) -> None:
         pull = self.task_block(

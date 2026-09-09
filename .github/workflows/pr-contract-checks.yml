@@ -36,6 +36,30 @@ jobs:
           git --version
           docker compose version
 
+      - name: Run Ansible syntax check for VectA app role
+        run: |
+          set -euo pipefail
+          ansible_env="$RUNNER_TEMP/ansible"
+          collection_path="$RUNNER_TEMP/ansible-collections"
+          python3 -m venv "$ansible_env"
+          # No ansible-core version is pinned elsewhere; pin the parser here
+          # while reusing the repository's collection requirements.
+          "$ansible_env/bin/python" -m pip install --disable-pip-version-check --no-input \
+            "ansible-core==2.19.13"
+          "$ansible_env/bin/ansible-galaxy" collection install \
+            -r collections/requirements.yml \
+            --collections-path "$collection_path"
+          ANSIBLE_COLLECTIONS_PATH="$collection_path" \
+            "$ansible_env/bin/ansible-playbook" --syntax-check \
+            -i inventories/mypc/hosts.ini /dev/stdin <<'PLAYBOOK'
+          ---
+          - name: Syntax check vecta-app role including Fleet gateway tasks
+            hosts: mypc
+            gather_facts: false
+            roles:
+              - role: vecta-app
+          PLAYBOOK
+
       # Globbed, not listed: a new scripts/test_*.py is picked up without
       # editing this file, so there is no second list to go stale.
       - name: Run scripts/test_*.py
