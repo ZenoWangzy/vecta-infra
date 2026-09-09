@@ -15,6 +15,8 @@ def main() -> None:
         assert "--execute" in script
         assert "eval " not in script
         assert "docker inspect " not in script or "--format" in script
+        for forbidden in ("sha" + "256sum", "SHA" + "256SUMS", ".sha256"):
+            assert forbidden not in script, forbidden
 
     for literal in (
         "user:shiyao:rwx",
@@ -31,14 +33,27 @@ def main() -> None:
         "/app/plugins",
         "/opt/data",
         "fleet-rows.base64.tsv",
-        "sha256sum --check --quiet SHA256SUMS",
+        'find "$staging_dir" -type f -print0',
+        'test -r "$archive_file"',
+        "for required_file in MANIFEST COMPLETE",
+        'test -s "$staging_dir/$required_file"',
         ".incomplete",
     ):
         assert literal in BACKUP, literal
 
     assert "Config.Env" not in BACKUP
     assert "rm -rf" not in BACKUP
-    assert "sha256sum --check --quiet SHA256SUMS" in RESTORE
+    for literal in (
+        "for required_file in MANIFEST COMPLETE fleet-rows.base64.tsv",
+        'test -s "$resolved_backup/$required_file"',
+        'find "$resolved_backup/items"',
+        'find "$resolved_backup" -type f -print0',
+        'test -r "$archive_file"',
+        "file_count=",
+        'test -s "$resolved_backup/RESTORE_DRILL"',
+        "status=success",
+    ):
+        assert literal in RESTORE, literal
     assert "diff -qr --no-dereference" in RESTORE
     assert "/data/ocee/backups/.hermes-restore-drill." in RESTORE
     assert "refusing unsafe restore-drill cleanup" in RESTORE

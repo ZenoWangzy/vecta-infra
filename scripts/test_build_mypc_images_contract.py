@@ -141,18 +141,14 @@ def assert_static_contract(workflow: str) -> None:
         '--sha "$SOURCE_SHA"',
         '--branch "$SOURCE_BRANCH"',
         f"BUILDX_VERSION: {BUILDX_VERSION}",
-        f"BUILDX_LINUX_AMD64_SHA256: {BUILDX_SHA256}",
         f"BUILDX_PLUGIN_PATH: {BUILDX_PLUGIN_PATH}",
         "command -v nice >/dev/null",
         "command -v ionice >/dev/null",
-        "command -v sha256sum >/dev/null",
         'docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-docker-config.XXXXXX")"',
         'trap \'rm -rf "$docker_config"\' EXIT',
         'export DOCKER_CONFIG="$docker_config"',
         'if [ ! -x "$BUILDX_PLUGIN_PATH" ]; then',
         'echo "Buildx plugin is required at $BUILDX_PLUGIN_PATH"',
-        '"$BUILDX_LINUX_AMD64_SHA256" "$BUILDX_PLUGIN_PATH"',
-        "sha256sum --check -",
         'actual_buildx_version="$(docker buildx version | awk',
         "docker buildx use default",
         'builder_info="$(docker buildx inspect default)"',
@@ -199,6 +195,8 @@ def assert_static_contract(workflow: str) -> None:
     )
     assert "docker buildx create" not in workflow
     assert "docker-container" not in workflow
+    assert "sha256sum" not in workflow
+    assert "BUILDX_LINUX_AMD64_SHA256" not in workflow
     assert "ddns.net" not in workflow
     assert "PROXY_USERNAME" not in workflow
     assert "PROXY_PASSWORD" not in workflow
@@ -372,7 +370,6 @@ def run_fake_build(
     build_script: str,
     *,
     plugin_present: bool = True,
-    sha_failure: bool = False,
     version: str = BUILDX_VERSION,
     driver: str = "docker",
 ) -> tuple[subprocess.CompletedProcess[str], str, list[Path]]:
@@ -387,19 +384,6 @@ def run_fake_build(
         if plugin_present:
             plugin_path.parent.mkdir()
             write_executable(plugin_path, "#!/bin/sh\nexit 0\n")
-        write_executable(
-            fake_bin / "sha256sum",
-            """#!/bin/sh
-set -eu
-input="$(cat)"
-printf 'sha256sum %s\n' "$input" >> "$FAKE_LOG"
-[ "${FAKE_SHA_FAILURE:-0}" != 1 ] || exit 42
-actual_sha="${input%% *}"
-actual_path="${input#*  }"
-[ "$actual_sha" = "$EXPECTED_BUILDX_SHA" ]
-[ "$actual_path" = "$BUILDX_PLUGIN_PATH" ] || exit 43
-""",
-        )
         write_executable(
             fake_bin / "docker",
             """#!/bin/sh
@@ -462,10 +446,7 @@ printf 'node %s\n' "$*" >> "$FAKE_LOG"
                 "PATH": f"{fake_bin}:{environment['PATH']}",
                 "RUNNER_TEMP": str(runner_temp),
                 "BUILDX_VERSION": BUILDX_VERSION,
-                "BUILDX_LINUX_AMD64_SHA256": BUILDX_SHA256,
                 "BUILDX_PLUGIN_PATH": str(plugin_path),
-                "EXPECTED_BUILDX_SHA": BUILDX_SHA256,
-                "FAKE_SHA_FAILURE": "1" if sha_failure else "0",
                 "FAKE_BUILDX_VERSION": version,
                 "FAKE_BUILDX_DRIVER": driver,
                 "FAKE_LOG": str(log_path),
@@ -501,7 +482,6 @@ def assert_fake_contract(workflow: str) -> None:
 
     success, success_log, success_leftovers = run_fake_build(build_script)
     assert success.returncode == 0, success.stderr
-    assert f"sha256sum {BUILDX_SHA256}" in success_log
     assert "docker buildx version" in success_log
     assert "docker buildx use default" in success_log
     assert "docker buildx inspect default" in success_log
@@ -519,7 +499,6 @@ def assert_fake_contract(workflow: str) -> None:
 
     failures = (
         ("missing", run_fake_build(build_script, plugin_present=False)),
-        ("checksum", run_fake_build(build_script, sha_failure=True)),
         ("version", run_fake_build(build_script, version="v0.34.0")),
         ("driver", run_fake_build(build_script, driver="docker-container")),
     )

@@ -37,7 +37,7 @@ if ! printf '%s' "$SESSION_ID" | grep -Eq '^hermes-fleet-[0-9]{8}T[0-9]{6}Z$'; t
   exit 2
 fi
 
-for command in docker getfacl setfacl realpath sha256sum base64; do
+for command in docker getfacl setfacl realpath base64; do
   command -v "$command" >/dev/null || {
     echo "$command is required" >&2
     exit 1
@@ -186,7 +186,7 @@ while IFS='|' read -r employee_b64 status lifecycle agent_type container_ref; do
     echo "employee id contains an unsafe path character" >&2
     exit 1
   fi
-  item_id="$(printf '%s' "$employee_id" | sha256sum | cut -c1-16)"
+  item_id="item-$employee_id"
   item_dir="$staging_dir/items/$item_id"
   install -d -m 0770 "$item_dir"
   printf 'employee_id_base64=%s\nstatus=%s\nlifecycle=%s\nagent_type=%s\n' \
@@ -216,13 +216,23 @@ printf 'session_id=%s\nfleet_rows=%s\nrunning_hermes=%s\nnonrunning=%s\n' \
   > "$staging_dir/MANIFEST"
 printf 'complete\n' > "$staging_dir/COMPLETE"
 
-(
-  cd "$staging_dir"
-  find . -type f ! -name SHA256SUMS -print0 \
-    | LC_ALL=C sort -z \
-    | xargs -0 sha256sum > SHA256SUMS
-  sha256sum --check --quiet SHA256SUMS
-)
+for required_file in MANIFEST COMPLETE; do
+  test -s "$staging_dir/$required_file" || {
+    echo "backup is missing required file: $required_file" >&2
+    exit 1
+  }
+done
+test -e "$staging_dir/fleet-rows.base64.tsv" || {
+  echo "backup is missing required file: fleet-rows.base64.tsv" >&2
+  exit 1
+}
+find "$staging_dir" -type f -print0 |
+  while IFS= read -r -d '' archive_file; do
+    test -r "$archive_file" || {
+      echo "backup archive contains an unreadable file: $archive_file" >&2
+      exit 1
+    }
+  done
 
 mv -- "$staging_dir" "$final_dir"
 setfacl -m u:shiyao:rwx,m::rwx,d:u:shiyao:rwx,d:m::rwx "$final_dir"
