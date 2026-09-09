@@ -149,6 +149,62 @@ class FleetGatewayAuditVolumeContractTest(unittest.TestCase):
         ):
             self.assertIn("when:", self.task_block(task_name), task_name)
 
+    def test_transition_facts_and_truth_table_are_exact(self) -> None:
+        normalized_compliance = " ".join(
+            self.task_block(
+                "Record whether current Fleet gateway is already audit-contract compliant"
+            ).split()
+        )
+        self.assertIn(
+            "mypc_fleet_gateway_audit_contract_compliant: >- "
+            "{{ mypc_fleet_gateway_audit_contract.rc == 0 and "
+            "(mypc_fleet_gateway_audit_writeability.rc | default(1)) == 0 }}",
+            normalized_compliance,
+        )
+
+        normalized_repair = " ".join(
+            self.task_block(
+                "Decide whether Fleet audit migration or repair is required"
+            ).split()
+        )
+        self.assertIn(
+            "mypc_fleet_gateway_audit_repair_required: >- "
+            "{{ not mypc_fleet_gateway_audit_contract_compliant }}",
+            normalized_repair,
+        )
+
+        normalized_image = " ".join(
+            self.task_block("Decide whether the selected Fleet gateway image differs").split()
+        )
+        self.assertIn(
+            'mypc_fleet_gateway_image_changed: "{{ mypc_fleet_gateway_live.Config.Image != fleet_gateway_image }}"',
+            normalized_image,
+        )
+
+        normalized_recreate = " ".join(
+            self.task_block("Decide whether the Fleet gateway needs recreation").split()
+        )
+        self.assertIn(
+            "mypc_fleet_gateway_recreate_required: >- "
+            "{{ mypc_fleet_gateway_audit_repair_required or "
+            "mypc_fleet_gateway_image_changed }}",
+            normalized_recreate,
+        )
+
+        truth_table = (
+            ((True, False), (False, False, False)),
+            ((True, True), (True, False, True)),
+            ((False, False), (False, True, True)),
+            ((False, True), (True, True, True)),
+        )
+        for (audit_compliant, image_changed), expected in truth_table:
+            actual = (
+                image_changed,
+                not audit_compliant,
+                (not audit_compliant) or image_changed,
+            )
+            self.assertEqual(actual, expected)
+
     def test_compliant_explicit_image_change_recreates_without_audit_repair(self) -> None:
         pull = self.task_block(
             "Pull the selected Fleet image for an explicit Fleet gateway transition"
