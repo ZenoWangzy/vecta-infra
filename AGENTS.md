@@ -15,12 +15,13 @@ must be the current VectA main HEAD. The `production` environment is an audit
 label without reviewer or protection gates. This evidence is independent of
 VectA workflow execution and is not a production deployment or health claim.
 
-The VectA contribution lifecycle remains mandatory: topic branch -> `develop`
--> required postsubmit validation -> `main`. A verified production `hotfix/*`
-merged into VectA `main` must return through `main -> develop`. Infrastructure
-workflows preserve the production/myPC branch, runner, permission, and audit
-boundaries and never turn a manual image build into an automatic production
-deployment.
+The VectA branch lifecycle follows the current `CONTRIBUTING.md`: `main` is
+the only long-lived branch; normal work starts from current `main` on a topic
+branch and uses a PR to `main`. A production repair uses a `hotfix/<name>` topic
+branch from VectA `main` and also merges to `main`; there is no `develop`
+integration branch or hotfix return leg. Infrastructure workflows preserve the
+production/myPC branch, runner, permission, and audit boundaries and never turn
+a manual image build into an automatic production deployment.
 
 Keep this file as the agent entry point. Put durable contribution and delivery
 conventions in `CONTRIBUTING.md`, not generated indexes or repeated detail here.

@@ -27,12 +27,14 @@ contract changes.
 
 ## Branch Delivery Convention
 
-- Normal VectA changes start on a topic branch and merge to `develop` first.
-  That merged SHA must complete the required postsubmit and promotion evidence
-  before it can promote through `develop -> main`.
-- A production repair starts on `hotfix/<name>` from VectA `main` and merges to
-  `main`. Once the main SHA is verified, the exact change returns through
-  `main -> develop` before later promotion.
+- `main` is the only long-lived branch. There is no integration branch, no
+  promotion PR, and no hotfix return leg.
+- Normal VectA work starts from current `main` on a topic branch and opens a PR
+  to `main`. A production repair uses a `hotfix/<name>` topic branch from VectA
+  `main` and also merges to `main`.
+- After a topic PR merges to `main`, the merged `main` commit must complete the
+  existing `Postsubmit validate` job before it is eligible for a production image
+  build. The manual image workflow still uses the current VectA `main` at dispatch time.
 - VectA `main` is the production release lane. It runs the protected mypc
   release checks. A production deploy remains a separately approved action.
 - Infrastructure workflows must preserve those branch and runner boundaries,
