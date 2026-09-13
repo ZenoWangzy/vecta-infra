@@ -1,64 +1,63 @@
 # Managed by Ansible — do not edit on server directly.
+# Legacy aliases retain caller compatibility; all use GLM subscription first.
 model_list:
+  - model_name: glm-5.3-flash
+    litellm_params:
+      model: openai/glm-5.3-flash
+      api_key: os.environ/ZAI_API_KEY
+      api_base: https://open.bigmodel.cn/api/coding/paas/v4
+
   - model_name: glm-5
     litellm_params:
-      model: openai/glm-5
+      model: openai/glm-5.3-flash
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: glm-5.1
     litellm_params:
-      model: openai/glm-5.1
+      model: openai/glm-5.3-flash
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
-  # Legacy group name. The 58 fleet instances that carry
-  # default_model=deepseek-chat need no database write because this group
-  # resolves to the unified vision model below.
   - model_name: deepseek-chat
     litellm_params:
-      model: deepseek/deepseek-v4-flash-vision-exp
-      api_key: os.environ/DEEPSEEK_API_KEY
-      api_base: https://api.deepseek.com
+      model: openai/glm-5.3-flash
+      api_key: os.environ/ZAI_API_KEY
+      api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
-  # Every DeepSeek route is unified on the natively multimodal model so that
-  # photographs sent through the WeChat channel reach the model as images.
-  # deepseek-v4-pro is retired by founder decision (2026-08-28).
   - model_name: deepseek-v4-flash-vision-exp
     litellm_params:
-      model: deepseek/deepseek-v4-flash-vision-exp
-      api_key: os.environ/DEEPSEEK_API_KEY
-      api_base: https://api.deepseek.com
+      model: openai/glm-5.3-flash
+      api_key: os.environ/ZAI_API_KEY
+      api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: multimodal-vision
     litellm_params:
-      model: openai/kimi-k2.6
-      api_key: os.environ/MOONSHOT_API_KEY
-      api_base: os.environ/MOONSHOT_API_BASE
+      model: openai/glm-5.3-flash
+      api_key: os.environ/ZAI_API_KEY
+      api_base: https://open.bigmodel.cn/api/coding/paas/v4
+
+  - model_name: deepseek-flash
+    litellm_params:
+      model: openai/deepseek-flash
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com
 
 router_settings:
   routing: "simple-shuffle"
-  num_retries: 4
+  num_retries: 1
   timeout: 60
-  retry_after: 5
-  allowed_fails: 10
+  retry_after: 1
+  allowed_fails: 2
   cooldown_time: 30
-  # Acyclic by construction: every chain terminates at multimodal-vision.
-  # A cycle here takes the whole LLM egress down, because a group whose only
-  # fallback is a group that falls back to it retries until every attempt is
-  # exhausted. That is what happened on 2026-08-28.
+  # One-way fallback: the paid route never returns to the subscription.
   fallbacks:
-    - glm-5:
-        - glm-5.1
-        - deepseek-chat
-        - multimodal-vision
-    - glm-5.1:
-        - deepseek-chat
-        - multimodal-vision
-    - deepseek-chat:
-        - multimodal-vision
-    - deepseek-v4-flash-vision-exp:
-        - multimodal-vision
+    - glm-5.3-flash: [deepseek-flash]
+    - glm-5: [deepseek-flash]
+    - glm-5.1: [deepseek-flash]
+    - deepseek-chat: [deepseek-flash]
+    - deepseek-v4-flash-vision-exp: [deepseek-flash]
+    - multimodal-vision: [deepseek-flash]
 
 general_settings:
   drop_params: true
