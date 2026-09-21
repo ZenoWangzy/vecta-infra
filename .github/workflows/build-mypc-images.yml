@@ -75,6 +75,35 @@ jobs:
       DOCKER_CACHE_PRUNE_UNTIL: ${{ inputs.docker_cache_prune_until }}
       NEXUS_ADMIN_PASSWORD_SECRET_NAME: MYPC_NEXUS_ADMIN_PASSWORD
     steps:
+      - name: Configure git proxy
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # Use the runner-local bridge when it is alive, without making it a
+          # hard dependency or touching the shared runner user's gitconfig.
+          LOCAL_PROXY="http://127.0.0.1:3129"
+          DOOR="https://github.com/${GITHUB_REPOSITORY}.git/info/refs?service=git-upload-pack"
+          LOCAL_PROXY_RC=0
+          curl -sS -o /dev/null -m 15 -x "$LOCAL_PROXY" --noproxy '' "$DOOR" \
+            || LOCAL_PROXY_RC=$?
+          if [ "$LOCAL_PROXY_RC" -ne 0 ]; then
+            echo "::warning::local squild TLS bridge unavailable (proxy curl exit ${LOCAL_PROXY_RC}); keeping existing GitHub transport"
+            exit 0
+          fi
+          GIT_CONFIG_GLOBAL="$RUNNER_TEMP/vecta-infra-git-proxy-gitconfig"
+          : > "$GIT_CONFIG_GLOBAL"
+          echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL" >> "$GITHUB_ENV"
+          export GIT_CONFIG_GLOBAL
+          git config --global http.proxy "$LOCAL_PROXY"
+          git config --global https.proxy "$LOCAL_PROXY"
+          {
+            printf 'http_proxy=%s\n' "$LOCAL_PROXY"
+            printf 'https_proxy=%s\n' "$LOCAL_PROXY"
+            printf 'HTTP_PROXY=%s\n' "$LOCAL_PROXY"
+            printf 'HTTPS_PROXY=%s\n' "$LOCAL_PROXY"
+          } >> "$GITHUB_ENV"
+          echo "git/curl proxy enabled: local squild TLS bridge answered (proxy curl exit ${LOCAL_PROXY_RC})"
+
       - name: Checkout infra contract
         working-directory: .
         run: |

@@ -36,18 +36,19 @@ uvx --from ansible-core ansible-playbook -i inventories/mypc/hosts.ini \
 
 ## Transport design
 
-GitHub git traffic in the remaining CN-hosted production paths uses one of two
-paths:
+GitHub git traffic in the remaining CN-hosted production paths uses one of
+these paths:
 
 | Path | Used by | Safeguards that apply |
 |---|---|---|
-| HTTPS via squid proxy (`geraldsynnas.ddns.net:8888`) | `vecta`'s `ci.yml` PR-gate and postsubmit checkout on the `mypc-ci` runner. **Not** the production image build — `build-mypc-images.yml` is isolated from this path entirely, see the per-host contract below | token auth, proxy probe + dead-proxy fallback, `http.lowSpeedLimit/lowSpeedTime` |
+| HTTPS via runner-local squild TLS bridge (`127.0.0.1:3129`) | `vecta`'s `ci.yml` self-hosted jobs and `vecta-infra`'s production image build when the bridge probe succeeds | job-scoped Git config, proxy probe, no proxy credentials; cache-miss clones inherit the proxy |
+| HTTPS direct fallback | `vecta-infra` production image build when the local bridge is unavailable | existing transport behavior; no new dependency |
 | ssh direct (`github.com:22`) | operator pushes; prod `/data/ocee` fetches | none of the above; ssh keepalives do not detect a throttled-but-alive stream |
 
-GFW intermittently throttles bulk data on long-lived port-22 connections while
-letting the handshake and small packets through. A transfer on the ssh path can
-therefore stall at 0 B/s forever without erroring. The HTTPS+proxy path is the
-only one with working stall protection, so **CI fetches must never leave it**.
+GFW intermittently throttles bulk data on long-lived connections while letting
+the handshake and small packets through. The local bridge is preferred for
+bulk CI transfers; the production image workflow keeps its old direct path as
+fallback when the bridge is absent.
 
 ## Per-host contract
 
@@ -68,16 +69,13 @@ only one with working stall protection, so **CI fetches must never leave it**.
   path — verified: writing a poisoned `http.proxy` into a stand-in `$HOME`,
   running the updated step, and diffing that file before/after showed it
   byte-identical.
-- `build-mypc-images.yml` itself has never configured a proxy since `18b5a46`
-  hardened it, and does not read `$HOME/.gitconfig` either way: its job sets
-  `GIT_CONFIG_GLOBAL: /dev/null` and `GIT_CONFIG_SYSTEM: /dev/null` (added in
-  `af9b347`, before `18b5a46`, and locked by
-  `scripts/test_build_mypc_images_contract.py`'s negative assertions), so
-  every `git` invocation in that job goes straight to GitHub regardless of
-  what any other job on this host has written to the shared home. That is a
-  deliberate choice, not an oversight: mypc's direct GitHub reachability
-  tested 3/3 versus 1/3 through the squid proxy (ticket 131), so this
-  workflow is better off never touching it.
+- `build-mypc-images.yml` starts with an optional `Configure git proxy` step.
+  It probes `http://127.0.0.1:3129`; when the bridge answers, the step writes
+  a temporary job-scoped `GIT_CONFIG_GLOBAL` through `$GITHUB_ENV`, configures
+  Git's HTTP/HTTPS proxy, and exports the same proxy for curl-based GitHub API
+  calls. When it does not answer, `GIT_CONFIG_GLOBAL: /dev/null` and the
+  existing direct transport remain unchanged. The shared `$HOME/.gitconfig`
+  is never touched, and no proxy credential is stored.
 
 ### mypc prod checkout (`/data/ocee`, root)
 
