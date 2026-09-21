@@ -1,0 +1,62 @@
+---
+- name: Keep Docker proxy changes scoped to the two CI users
+  ansible.builtin.assert:
+    that:
+      - ci_rootless_docker_users | map(attribute='name') | sort == ['vecta-ci', 'vecta-ci-2']
+      - ci_rootless_docker_users | map(attribute='uid') | select('equalto', 0) | list | length == 0
+    fail_msg: Rootless Docker proxy changes may target only vecta-ci and vecta-ci-2.
+
+- name: Ensure rootless Docker service drop-in directories exist
+  ansible.builtin.file:
+    path: "{{ item.home }}/.config/systemd/user/docker.service.d"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0755"
+  loop: "{{ ci_rootless_docker_users }}"
+
+- name: Route rootless Docker registry traffic through the host proxy
+  ansible.builtin.copy:
+    dest: "{{ item.home }}/.config/systemd/user/docker.service.d/proxy.conf"
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0644"
+    content: |
+      [Service]
+      Environment="HTTP_PROXY={{ ci_rootless_docker_proxy }}"
+      Environment="HTTPS_PROXY={{ ci_rootless_docker_proxy }}"
+      Environment="NO_PROXY=localhost,127.0.0.1,::1"
+  loop: "{{ ci_rootless_docker_users }}"
+  register: ci_rootless_docker_proxy_dropins
+
+- name: Reload and restart changed rootless Docker services
+  ansible.builtin.systemd_service:
+    name: docker.service
+    scope: user
+    daemon_reload: true
+    state: restarted
+  become_user: "{{ item.item.name }}"
+  environment:
+    HOME: "{{ item.item.home }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ item.item.uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ item.item.uid }}/bus"
+  loop: "{{ ci_rootless_docker_proxy_dropins.results }}"
+  when:
+    - item.changed
+    - not ansible_check_mode
+
+- name: Verify each rootless daemon can pull the CI PostgreSQL image
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - pull
+      - "{{ ci_rootless_docker_probe_image }}"
+  become_user: "{{ item.name }}"
+  environment:
+    HOME: "{{ item.home }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ item.uid }}"
+    DOCKER_HOST: "unix:///run/user/{{ item.uid }}/docker.sock"
+  loop: "{{ ci_rootless_docker_users }}"
+  register: ci_rootless_docker_pull_probe
+  changed_when: "'Downloaded newer image' in ci_rootless_docker_pull_probe.stdout"
+  when: not ansible_check_mode

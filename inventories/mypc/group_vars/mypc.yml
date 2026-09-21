@@ -1,4 +1,15 @@
 # mypc production inventory. Set TODO values before first deploy.
+# CI runner Docker is rootless and intentionally separate from production Docker.
+ci_rootless_docker_users:
+  - name: vecta-ci
+    uid: 1003
+    home: /home/vecta-ci
+  - name: vecta-ci-2
+    uid: 1004
+    home: /home/vecta-ci-2
+ci_rootless_docker_proxy: "http://127.0.0.1:3129"
+ci_rootless_docker_probe_image: "pgvector/pgvector:pg16"
+
 # Third-party infra images (pinned, not affected by deploy_sha).
 # Keep these pointed at the production-local Nexus Docker registry. Sync the
 # upstream source images into Nexus before any approved role adopts a service.
