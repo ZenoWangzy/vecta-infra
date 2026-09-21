@@ -1,0 +1,13 @@
+---
+- name: Configure mypc CI runner rootless Docker daemons
+  hosts: mypc
+  gather_facts: false
+  become: true
+
+  pre_tasks:
+    - name: Require explicit mypc change approval
+      ansible.builtin.assert:
+        that: [mypc_deploy_enabled | default(false) | bool]
+
+  roles:
+    - role: ci-runner
