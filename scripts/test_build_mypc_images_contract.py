@@ -190,6 +190,8 @@ def assert_static_contract(workflow: str) -> None:
         'git config --global http.proxy "$LOCAL_PROXY"',
         'git config --global https.proxy "$LOCAL_PROXY"',
         'printf \'https_proxy=%s\\n\' "$LOCAL_PROXY"',
+        "printf 'no_proxy=%s\\n' 'localhost,127.0.0.1,::1'",
+        "printf 'NO_PROXY=%s\\n' 'localhost,127.0.0.1,::1'",
         "keeping existing GitHub transport",
     ):
         assert literal in workflow, literal

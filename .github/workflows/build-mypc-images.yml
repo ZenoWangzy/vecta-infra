@@ -101,6 +101,8 @@ jobs:
             printf 'https_proxy=%s\n' "$LOCAL_PROXY"
             printf 'HTTP_PROXY=%s\n' "$LOCAL_PROXY"
             printf 'HTTPS_PROXY=%s\n' "$LOCAL_PROXY"
+            printf 'no_proxy=%s\n' 'localhost,127.0.0.1,::1'
+            printf 'NO_PROXY=%s\n' 'localhost,127.0.0.1,::1'
           } >> "$GITHUB_ENV"
           echo "git/curl proxy enabled: local squild TLS bridge answered (proxy curl exit ${LOCAL_PROXY_RC})"
 
