@@ -179,7 +179,20 @@ def assert_static_contract(workflow: str) -> None:
     assert workflow.index(checkout_step) < workflow.index(fruit_contract_step)
     assert workflow.index(hermes_seed_step) < workflow.index(image_build_step)
     assert "uses: actions/checkout@" not in workflow
-    assert "- name: Configure git proxy" not in workflow
+    proxy_step = "- name: Configure git proxy"
+    assert workflow.count(proxy_step) == 1
+    assert workflow.index(proxy_step) < workflow.index(checkout_step)
+    for literal in (
+        'LOCAL_PROXY="http://127.0.0.1:3129"',
+        'curl -sS -o /dev/null -m 15 -x "$LOCAL_PROXY" --noproxy \'\' "$DOOR"',
+        'GIT_CONFIG_GLOBAL="$RUNNER_TEMP/vecta-infra-git-proxy-gitconfig"',
+        'echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL" >> "$GITHUB_ENV"',
+        'git config --global http.proxy "$LOCAL_PROXY"',
+        'git config --global https.proxy "$LOCAL_PROXY"',
+        'printf \'https_proxy=%s\\n\' "$LOCAL_PROXY"',
+        "keeping existing GitHub transport",
+    ):
+        assert literal in workflow, literal
     assert "GIT_CONFIG_GLOBAL: /dev/null" in workflow
     assert "GIT_CONFIG_SYSTEM: /dev/null" in workflow
     assert 'GIT_NO_REPLACE_OBJECTS: "1"' in workflow

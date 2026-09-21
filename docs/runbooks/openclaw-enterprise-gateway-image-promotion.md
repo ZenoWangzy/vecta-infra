@@ -429,58 +429,21 @@ warning immediately below before touching this. A `SOURCE_SHA` mismatch, a
 provenance-validator failure, or a Docker build error inside the job remain
 genuinely-red and need a real stop-and-report instead.
 
-**Do not add the squid proxy to this workflow. It was deliberately removed
-(commit `18b5a46`, `fix(release): harden mypc image admission`) and the
-removal is locked by `scripts/test_build_mypc_images_contract.py`**
-(`assert "ddns.net" not in workflow`, `"PROXY_USERNAME" not in workflow`,
-`"PROXY_PASSWORD" not in workflow`, `"HTTPS_PROXY"`/`"https_proxy" not in
-download_script`, `"GIT_HTTP_LOW_SPEED_TIME" not in workflow`). This looks
-like an oversight the first time you read it — `ci-git-transport-and-proxy.md`
-used to say "proxy and lowSpeed settings are injected per job by
-`build-mypc-images.yml`", which was stale prose left over from before
-`18b5a46` and was simply false at the time (`grep -c "8888\|geraldsynnas"
-.github/workflows/build-mypc-images.yml` is `0`; fixed by ticket 136). It is
-not an oversight.
-Measured properly this window, as the actual `github-runner` user, 3 samples
-each:
-```
-direct (GIT_CONFIG_GLOBAL=/dev/null, no proxy): exit=0 (1s), exit=0 (3s), exit=0 (1s)
-via the proxy (shared ~/.gitconfig): exit=124 (15s), exit=0 (4s), exit=124 (15s)
-proxy's own small-request probe (api.github.com/zen): http_code=200, reachable
-```
-Direct was 3/3 reliable; the proxy was 1/3 despite passing its own probe —
-exactly the "small requests pass, bulk/protracted git protocol stalls" GFW
-pattern the transport doc itself describes. Routing this step's fetch through
-the proxy would make it *less* reliable, not more. `18b5a46` was right;
-treat any future urge to "fix" this by re-adding the proxy as a signal to
-re-measure before touching code, not to act on the urge.
+`build-mypc-images.yml` now probes the runner-local squild TLS bridge and uses
+it only when available. This is job-scoped and credential-free: it writes a
+temporary `GIT_CONFIG_GLOBAL` and proxy environment through `$GITHUB_ENV`, so
+the shared `/home/github-runner/.gitconfig` is untouched. If the bridge is
+down, the workflow keeps its existing direct transport.
 
-**A related trap that used to bite silently, fixed now (ticket 136):**
-`/home/github-runner` is shared by three runner services
-(`mypc-vecta-infra-prod-build`, `-2`, and `mypc-ci`). `ci.yml`'s own
-`Configure git proxy` step used to write `git config --global http.proxy`
-into that shared `~/.gitconfig` when it ran on `mypc-ci`, and unset it again
-in its own fallback branch. Whether this workflow's bare `git` calls ended up
-going through the proxy therefore used to depend on which branch `ci.yml`
-last happened to take on a completely unrelated runner — nobody had decided
-this, and it appeared in no workflow file. `build-mypc-images.yml` itself was
-never affected in practice, only because `Checkout infra contract` and
-`Download selected VectA source` both set
-`GIT_CONFIG_GLOBAL=/dev/null`/`GIT_CONFIG_SYSTEM=/dev/null`, blinding
-themselves to that file on purpose — **if you ever remove that isolation for
-some other reason, you inherit whatever the shared home last held, silently;
-that isolation is the actual safety property here, not the state of
-`~/.gitconfig`.** As of ticket 136, `ci.yml`'s proxy step no longer writes
-into `$HOME/.gitconfig` at all — it redirects its own `git config --global`
-calls to a job-scoped file via `GIT_CONFIG_GLOBAL`, propagated to later
-steps in the same job through `$GITHUB_ENV` — so there is nothing left for
-this shared file to accumulate from that path, and **the "check and clear
-the shared file before every dispatch" workaround this paragraph used to
-prescribe is no longer necessary** — there is no manual pre-dispatch step
-here any more. `~/.gitconfig` can still carry unrelated, harmless residue (for
-example duplicate `safe.directory` entries added every ten minutes by
-`warm-vecta-source-cache.sh`, ticket 143) — that is not a proxy config and
-does not change this workflow's transport.
+Measured on the runner, three bulk-transfer samples each:
+```
+local squild bridge (127.0.0.1:3129): 3.47 / 3.72 / 3.82 MB/s
+vecta-vps proxy: 546 KB/s
+direct GitHub: 141-237 KB/s
+```
+The local bridge wins because it is materially faster for this bulk transfer;
+the probe is only a liveness gate, not a credential or hard dependency. The
+cache and exact-SHA checks remain unchanged.
 
 **Never print the full content of a file on `mypc` that you did not create,
 regardless of what kind of file it looks like.** This bit twice this window —
@@ -498,11 +461,12 @@ isn't something you wrote yourself in this session.
 
 `Download selected VectA source` (the step right after the one discussed
 above — a different clone, of `vecta` itself, not `vecta-infra`) tries a
-warm local cache first and only falls back to a direct clone if that cache
-doesn't qualify for the exact `source_sha`. That fallback clone is a full,
-cold, `--depth=1` clone of the whole `vecta` monorepo over the same throttled
-link — three attempts, up to ~18 minutes each, so a cold cache costs up to
-**38 minutes** and can still fail. Hit this for real this window: run
+warm local cache first and only falls back to a GitHub clone if that cache
+doesn't qualify for the exact `source_sha`. When the bridge probe succeeds,
+that cache-miss clone inherits the job-scoped proxy; when it fails, existing
+direct behavior remains. The fallback is still a full, cold, `--depth=1`
+clone — three attempts, up to ~18 minutes each, so a cold cache can cost up to
+**38 minutes**. Hit this for real this window: run
 `34084544530` burned 38 minutes across three genuine multi-minute stalls
 (`Connection timed out`, then `GnuTLS recv error (-110)` twice) before giving
 up entirely.
