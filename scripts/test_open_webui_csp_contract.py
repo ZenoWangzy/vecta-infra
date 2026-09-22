@@ -26,6 +26,8 @@ def main() -> None:
     for prefix in ("/agent/", "/chat/"):
         block = content.split(f"location ^~ {prefix} {{", 1)[1].split("\n    }", 1)[0]
         assert EXPECTED_OVERRIDE in block, prefix
+        assert "proxy_set_header Accept-Encoding" not in block, prefix
+        assert "sub_filter" not in block, prefix
     workflow = (ROOT / ".github/workflows/build-mypc-images.yml").read_text()
     assert "python3 scripts/test_open_webui_csp_contract.py" in workflow
     print("open webui csp contract: ok")
