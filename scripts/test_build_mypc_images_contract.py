@@ -221,6 +221,15 @@ def assert_static_contract(workflow: str) -> None:
     assert "refusing invalid Docker cache retention" in prune_script
     assert 'until=${DOCKER_CACHE_PRUNE_UNTIL}' in prune_script
     image_build_script = extract_step_script(workflow, "Build and push production images")
+    docker_build_lock = "/run/lock/vecta-docker-build.lock"
+    assert f"exec 9>{docker_build_lock}" in image_build_script
+    assert "flock 9" in image_build_script
+    assert image_build_script.index("flock 9") < image_build_script.index(
+        "node scripts/build-push-production-images.mjs"
+    )
+    assert f"exec 9>{docker_build_lock}" in prune_script
+    assert "if ! flock -n 9; then" in prune_script
+    assert "production image build holds Docker lock; skipping cache prune" in prune_script
     assert (
         'docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin'
         in image_build_script

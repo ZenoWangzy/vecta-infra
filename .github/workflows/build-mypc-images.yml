@@ -663,6 +663,8 @@ jobs:
         working-directory: infra/vecta
         run: |
           set -euo pipefail
+          exec 9>/run/lock/vecta-docker-build.lock
+          flock 9
           : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
           docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-docker-config.XXXXXX")"
           trap 'rm -rf "$docker_config"' EXIT
@@ -699,6 +701,11 @@ jobs:
         if: always() && inputs.docker_cache_prune_until != 'never'
         run: |
           set -euo pipefail
+          exec 9>/run/lock/vecta-docker-build.lock
+          if ! flock -n 9; then
+            echo "production image build holds Docker lock; skipping cache prune"
+            exit 0
+          fi
           if ! printf '%s' "$DOCKER_CACHE_PRUNE_UNTIL" \
             | grep -Eq '^[1-9][0-9]*[smhd]$'; then
             echo "refusing invalid Docker cache retention" >&2
