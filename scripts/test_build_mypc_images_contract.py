@@ -221,7 +221,7 @@ def assert_static_contract(workflow: str) -> None:
     assert "refusing invalid Docker cache retention" in prune_script
     assert 'until=${DOCKER_CACHE_PRUNE_UNTIL}' in prune_script
     image_build_script = extract_step_script(workflow, "Build and push production images")
-    docker_build_lock = "/run/lock/vecta-docker-build.lock"
+    docker_build_lock = "/var/lib/vecta-docker-lock/build.lock"
     assert f"exec 9>{docker_build_lock}" in image_build_script
     assert "flock 9" in image_build_script
     assert image_build_script.index("flock 9") < image_build_script.index(
@@ -401,8 +401,14 @@ def run_fake_build(
         temporary_path = Path(temporary)
         fake_bin = temporary_path / "bin"
         runner_temp = temporary_path / "runner"
+        docker_lock = temporary_path / "vecta-docker-lock" / "build.lock"
         fake_bin.mkdir()
         runner_temp.mkdir()
+        docker_lock.parent.mkdir()
+        docker_lock.touch()
+        build_script = build_script.replace(
+            "/var/lib/vecta-docker-lock/build.lock", str(docker_lock)
+        )
         log_path = temporary_path / "calls.log"
         plugin_path = temporary_path / "system" / "docker-buildx"
         if plugin_present:
