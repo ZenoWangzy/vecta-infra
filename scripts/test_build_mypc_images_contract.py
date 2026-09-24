@@ -109,9 +109,10 @@ def assert_static_contract(workflow: str) -> None:
         "only main is accepted.",
         'main) ;;',
         '*) echo "source_branch must be main: $SOURCE_BRANCH"',
-        '"https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/main"',
-        'echo "source_sha must be the current VectA main HEAD"',
-        'if [ "$branch_sha" != "$SOURCE_SHA" ]; then',
+        '"https://api.github.com/repos/ZenoWangzy/vecta/compare/$SOURCE_SHA...$SOURCE_BRANCH?per_page=1"',
+        'if [ "$merge_base_sha" != "$SOURCE_SHA" ]; then',
+        'echo "source_sha must be an ancestor of the current VectA main HEAD"',
+        'merge_base_commit?.sha ?? ""',
         'askpass="$(mktemp)"',
         "trap 'rm -f \"$curl_config\" \"$askpass\"' EXIT",
         'chmod 700 "$askpass"',
@@ -127,6 +128,7 @@ def assert_static_contract(workflow: str) -> None:
         'remote="https://github.com/ZenoWangzy/vecta.git"',
         '"$1" vecta',
         "--depth=1 --branch main --single-branch",
+        'git -C vecta fetch --depth=1 origin "$SOURCE_SHA"',
         'git -C vecta switch --detach "$SOURCE_SHA"',
         'checkout_sha="$(git -C vecta rev-parse HEAD)"',
         'git -C vecta status --porcelain --untracked-files=all',
@@ -174,9 +176,14 @@ def assert_static_contract(workflow: str) -> None:
     fruit_contract_step = "- name: Validate Fruit V4 isolated Compose contract"
     hermes_seed_step = "- name: Seed verified Hermes base image"
     image_build_step = "- name: Build and push production images"
+    postsubmit_step = "- name: Require green VectA Postsubmit evidence"
+    nexus_step = "- name: Ensure production Nexus is running"
     assert workflow.count(checkout_step) == 1
+    assert workflow.count(postsubmit_step) == 1
     assert workflow.count(fruit_contract_step) == 1
     assert workflow.index(checkout_step) < workflow.index(fruit_contract_step)
+    assert workflow.index(postsubmit_step) < workflow.index(image_build_step)
+    assert workflow.index(postsubmit_step) < workflow.index(nexus_step)
     assert workflow.index(hermes_seed_step) < workflow.index(image_build_step)
     assert "uses: actions/checkout@" not in workflow
     proxy_step = "- name: Configure git proxy"
@@ -280,12 +287,11 @@ def assert_static_contract(workflow: str) -> None:
     assert "HTTPS_PROXY" not in download_script
     assert "https_proxy" not in download_script
     assert 'git --git-dir="$cache" cat-file -e "$SOURCE_SHA^{commit}"' in download_script
-    assert 'git --git-dir="$cache" rev-parse refs/heads/main' in download_script
     assert 'git --git-dir="$cache" fsck --connectivity-only "$SOURCE_SHA"' in download_script
     assert 'if clone_source "$cache"; then' in download_script
     assert 'clone_source "$remote"' in download_script
     assert "Cached VectA source unusable; falling back to GitHub" in download_script
-    assert download_script.count("GIT_HTTP_LOW_SPEED_LIMIT") == 1
+    assert download_script.count("GIT_HTTP_LOW_SPEED_LIMIT") == 2
     assert "GIT_HTTP_LOW_SPEED_TIME" not in workflow
     assert not re.search(r"\bgh\b", download_script)
     assert not re.search(r"\bgit\b[^\n]*\bconfig\b", download_script)

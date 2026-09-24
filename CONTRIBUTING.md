@@ -32,9 +32,11 @@ contract changes.
 - Normal VectA work starts from current `main` on a topic branch and opens a PR
   to `main`. A production repair uses a `hotfix/<name>` topic branch from VectA
   `main` and also merges to `main`.
-- After a topic PR merges to `main`, the merged `main` commit must complete the
-  existing `Postsubmit validate` job before it is eligible for a production image
-  build. The manual image workflow still uses the current VectA `main` at dispatch time.
+- The selected VectA `main` commit must have successful `Postsubmit validate`
+  evidence before it is eligible for a production image build. `[skip ci]`
+  commits inherit evidence only under the existing image-input comparison.
+  The manual build may select an older commit still on current `main`; it never
+  builds an unverified or off-branch commit.
 - VectA `main` is the production release lane. It runs the protected mypc
   release checks. A production deploy remains a separately approved action.
 - Infrastructure workflows must preserve those branch and runner boundaries,
@@ -50,9 +52,10 @@ The production image build is manually dispatched from `vecta-infra` main and
 is authorized by the dispatching repository writer. The `production`
 environment is an audit label; it currently has no required reviewers or
 protection rules. Existing workflow secrets remain repository-level and are not
-migrated by this contract. The operator supplies a full `source_sha`,
-`source_branch=main`, and an optional `image_names` subset. The workflow rejects
-any SHA that is not the current VectA main HEAD.
+migrated by this contract. The operator supplies a full `source_sha` from
+current VectA `main`, `source_branch=main`, and an optional `image_names`
+subset. The workflow rejects commits outside current `main` history and
+requires green Postsubmit evidence for the selected SHA before building.
 
 A successful run is independent exact-SHA image-build evidence. It is not a
 VectA postsubmit result, merge result, production deployment, or production

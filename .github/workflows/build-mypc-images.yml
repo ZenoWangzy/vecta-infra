@@ -1,6 +1,6 @@
 ---
-# Repository-writer-initiated production build evidence. It builds the current
-# VectA main HEAD into the production-local Nexus on the mypc runner only.
+# Repository-writer-initiated production build evidence. It builds a selected
+# VectA main commit with valid Postsubmit evidence into production-local Nexus.
 name: Build mypc production images
 
 "on":
@@ -10,13 +10,13 @@ name: Build mypc production images
         type: string
         required: true
         description: >-
-          Full 40-character current VectA main HEAD SHA
+          Full 40-character VectA main commit SHA
       source_branch:
         type: choice
         required: true
         default: main
         description: >-
-          VectA branch whose current HEAD is built; only main is accepted.
+          VectA branch containing the selected commit; only main is accepted.
         options:
           - main
       docker_cache_prune_until:
@@ -231,19 +231,19 @@ jobs:
             printf 'retry = 5\nretry-delay = 5\nconnect-timeout = 30\n'
             printf 'speed-limit = 10240\nspeed-time = 60\n'
           } > "$curl_config"
-          branch_json="$(curl -fsSL --config "$curl_config" \
-            "https://api.github.com/repos/ZenoWangzy/vecta/git/ref/heads/main")"
-          branch_sha="$(printf '%s' "$branch_json" | node -e '
+          comparison_json="$(curl -fsSL --config "$curl_config" \
+            "https://api.github.com/repos/ZenoWangzy/vecta/compare/$SOURCE_SHA...$SOURCE_BRANCH?per_page=1")"
+          merge_base_sha="$(printf '%s' "$comparison_json" | node -e '
             let input = "";
             process.stdin.on("data", chunk => input += chunk);
             process.stdin.on("end", () => {
-              const ref = JSON.parse(input);
-              process.stdout.write(ref.object.sha);
+              const comparison = JSON.parse(input);
+              process.stdout.write(comparison.merge_base_commit?.sha ?? "");
             });
           ')"
-          if [ "$branch_sha" != "$SOURCE_SHA" ]; then
-            echo "source_sha must be the current VectA main HEAD" >&2
-            echo "expected=$SOURCE_SHA actual=$branch_sha" >&2
+          if [ "$merge_base_sha" != "$SOURCE_SHA" ]; then
+            echo "source_sha must be an ancestor of the current VectA main HEAD" >&2
+            echo "source_sha=$SOURCE_SHA merge_base=$merge_base_sha" >&2
             exit 1
           fi
           [ ! -e vecta ] || {
@@ -268,12 +268,18 @@ jobs:
               GIT_TERMINAL_PROMPT=0 \
               timeout 30m git clone --depth=1 --branch main --single-branch \
                 "$1" vecta
+            if ! git -C vecta cat-file -e "$SOURCE_SHA^{commit}" 2>/dev/null; then
+              GIT_HTTP_LOW_SPEED_LIMIT=0 \
+                LC_ALL=C \
+                GIT_ASKPASS="$askpass" \
+                GIT_ASKPASS_REQUIRE=force \
+                GIT_TERMINAL_PROMPT=0 \
+                timeout 10m git -C vecta fetch --depth=1 origin "$SOURCE_SHA"
+            fi
           }
           cloned=false
           if [ -d "$cache" ] \
             && git --git-dir="$cache" cat-file -e "$SOURCE_SHA^{commit}" \
-            && [ "$(git --git-dir="$cache" rev-parse refs/heads/main)" \
-              = "$SOURCE_SHA" ] \
             && git --git-dir="$cache" fsck --connectivity-only "$SOURCE_SHA" \
               >/dev/null 2>&1; then
             if clone_source "$cache"; then
@@ -355,7 +361,7 @@ jobs:
             exit 1
           fi
 
-      - name: Require exact-SHA VectA Postsubmit evidence
+      - name: Require green VectA Postsubmit evidence
         run: >-
           python3 scripts/verify-vecta-postsubmit.py
           --repo ZenoWangzy/vecta
