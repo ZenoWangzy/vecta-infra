@@ -119,8 +119,8 @@ def main() -> None:
     agents = (ROOT / "AGENTS.md").read_text()
     assert "vtest is permanently retired." in agents
     assert "caller-removal hotfix must merge first" in agents
-    assert "repository-writer-initiated, exact-SHA evidence" in agents
-    assert "current VectA main HEAD" in agents
+    assert "repository-writer-initiated evidence" in agents
+    assert "current VectA main history" in agents
     assert "audit\nlabel without reviewer or protection gates" in agents
     contributing = (ROOT / "CONTRIBUTING.md").read_text()
     assert "The VectA caller-removal hotfix must merge first" in contributing
@@ -184,7 +184,7 @@ def main() -> None:
     assert "SOURCE_BRANCH: ${{ inputs.source_branch }}" in workflow
     assert 'main) ;;' in workflow
     assert "main|develop" not in workflow
-    assert "source_sha must be the current VectA main HEAD" in workflow
+    assert "source_sha must be an ancestor of the current VectA main HEAD" in workflow
     assert "NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082" in workflow
     assert "DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082" in workflow
     assert "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083" in workflow
