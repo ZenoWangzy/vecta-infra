@@ -4,40 +4,48 @@ model_list:
   - model_name: glm-5.3-flash
     litellm_params:
       model: openai/glm-5.3-flash
+      # #1937 founder ruling: thinking on at high (not max) by default, streamed to the chat.
+      # A request-level extra_body replaces this one, e.g. Hermes' photo pre-analysis
+      # sends thinking disabled to stay fast.
+      extra_body: &glm_thinking_high
+        thinking:
+          type: enabled
+        reasoning_effort: high
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: glm-5
     litellm_params:
       model: openai/glm-5.3-flash
+      extra_body: *glm_thinking_high
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: glm-5.1
     litellm_params:
       model: openai/glm-5.3-flash
+      extra_body: *glm_thinking_high
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: deepseek-chat
     litellm_params:
       model: openai/glm-5.3-flash
-      # Hot-fix #1923: GLM thinking made one photo turn take 327s and trip the 120s gateway cap.
-      extra_body:
-        thinking:
-          type: disabled
+      extra_body: *glm_thinking_high
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: deepseek-v4-flash-vision-exp
     litellm_params:
       model: openai/glm-5.3-flash
+      extra_body: *glm_thinking_high
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: multimodal-vision
     litellm_params:
       model: openai/glm-5.3-flash
+      extra_body: *glm_thinking_high
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
