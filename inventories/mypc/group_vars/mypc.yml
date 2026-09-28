@@ -79,8 +79,10 @@ minio_healthcheck:
   retries: 6
 minio_webhook_enabled: "on"
 minio_webhook_endpoint: "http://fleet-gateway:3000/api/webhooks/minio"
+# #1941: loopback only. Containers use litellm-proxy:4000 on the docker network;
+# the only host caller is scripts/mypc-data-layer-regression.sh (127.0.0.1:4000).
 litellm_published_ports:
-  - "4000:4000"
+  - "127.0.0.1:4000:4000"
 litellm_config_host_path: /data/ocee/infra/litellm/config.yaml
 litellm_restart_policy: always
 litellm_network_aliases:

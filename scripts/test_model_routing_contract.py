@@ -19,12 +19,13 @@ class ModelRoutingContract(unittest.TestCase):
         self.assertNotIn('deepseek-flash', fallbacks)
         self.assertEqual(config['router_settings']['num_retries'], 1)
 
-    def test_deepseek_chat_disables_glm_thinking(self):
-        # Hot-fix #1923: GLM thinking made one photo turn take 327s and trip the 120s gateway cap.
+    def test_glm_aliases_think_at_high_by_default(self):
+        # #1937 founder ruling: thinking high by default, not max, and not disabled (#1923 was a stopgap).
         config = yaml.safe_load((Path(__file__).resolve().parents[1] / 'roles/infra-bootstrap/templates/litellm-config.yaml.j2').read_text())
         models = {item['model_name']: item['litellm_params'] for item in config['model_list']}
-        self.assertEqual(models['deepseek-chat']['extra_body'], {'thinking': {'type': 'disabled'}})
-
+        for alias in ['glm-5.3-flash', 'glm-5', 'glm-5.1', 'deepseek-chat', 'deepseek-v4-flash-vision-exp', 'multimodal-vision']:
+            self.assertEqual(models[alias]['extra_body'], {'thinking': {'type': 'enabled'}, 'reasoning_effort': 'high'})
+        self.assertNotIn('extra_body', models['deepseek-flash'])
 
 if __name__ == '__main__':
     unittest.main()
