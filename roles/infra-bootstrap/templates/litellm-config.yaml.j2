@@ -22,6 +22,10 @@ model_list:
   - model_name: deepseek-chat
     litellm_params:
       model: openai/glm-5.3-flash
+      # Hot-fix #1923: GLM thinking made one photo turn take 327s and trip the 120s gateway cap.
+      extra_body:
+        thinking:
+          type: disabled
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
