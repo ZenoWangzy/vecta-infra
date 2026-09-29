@@ -58,7 +58,11 @@ model_list:
 router_settings:
   routing: "simple-shuffle"
   num_retries: 1
-  timeout: 60
+  # 2026-09-29: founder asked for 10-minute timeouts; a total budget alone let a
+  # hung GLM stream hold 「确认撤单」 for 21 min (2x600 s + retry). stream_timeout
+  # bounds silence, timeout bounds the whole call (VectA lesson llm-timeout-without-stall-bound).
+  timeout: 600
+  stream_timeout: 120
   retry_after: 1
   allowed_fails: 2
   cooldown_time: 30

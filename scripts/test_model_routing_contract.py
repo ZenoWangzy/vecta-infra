@@ -27,5 +27,13 @@ class ModelRoutingContract(unittest.TestCase):
             self.assertEqual(models[alias]['extra_body'], {'thinking': {'type': 'enabled'}, 'reasoning_effort': 'high'})
         self.assertNotIn('extra_body', models['deepseek-flash'])
 
+    def test_silence_is_bounded_separately_from_the_total_budget(self):
+        # 2026-09-29: timeout 600 alone let a hung GLM stream hold a turn for 21 minutes.
+        config = yaml.safe_load((Path(__file__).resolve().parents[1] / 'roles/infra-bootstrap/templates/litellm-config.yaml.j2').read_text())
+        router = config['router_settings']
+        self.assertEqual(router['timeout'], 600)
+        self.assertLessEqual(router['stream_timeout'], 120)
+        self.assertLess(router['stream_timeout'], router['timeout'])
+
 if __name__ == '__main__':
     unittest.main()
