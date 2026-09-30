@@ -19,13 +19,13 @@ class ModelRoutingContract(unittest.TestCase):
         self.assertNotIn('deepseek-flash', fallbacks)
         self.assertEqual(config['router_settings']['num_retries'], 1)
 
-    def test_glm_aliases_think_at_high_by_default(self):
-        # #1937 founder ruling: thinking high by default, not max, and not disabled (#1923 was a stopgap).
+    def test_employee_aliases_think_at_low_by_default(self):
+        # issue 2152 supersedes the effort default; thinking remains enabled.
         config = yaml.safe_load((Path(__file__).resolve().parents[1] / 'roles/infra-bootstrap/templates/litellm-config.yaml.j2').read_text())
         models = {item['model_name']: item['litellm_params'] for item in config['model_list']}
         for alias in ['glm-5.3-flash', 'glm-5', 'glm-5.1', 'deepseek-chat', 'deepseek-v4-flash-vision-exp', 'multimodal-vision']:
-            self.assertEqual(models[alias]['extra_body'], {'thinking': {'type': 'enabled'}, 'reasoning_effort': 'high'})
-        self.assertNotIn('extra_body', models['deepseek-flash'])
+            self.assertEqual(models[alias]['extra_body'], {'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low'})
+        self.assertEqual(models['deepseek-flash']['extra_body'], {'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low'})
 
     def test_silence_is_bounded_separately_from_the_total_budget(self):
         # 2026-09-29: timeout 600 alone let a hung GLM stream hold a turn for 21 minutes.
