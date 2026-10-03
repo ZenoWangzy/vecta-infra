@@ -1,0 +1,14 @@
+# VectA two-end upstream timing; no query strings, cookies or auth headers.
+map $host $vecta_timing_enabled {
+    default 0;
+    vecta.matrix-ai.com.cn 1;
+}
+log_format vecta_upstream_timing escape=json
+    '{"ts":"$msec","method":"$request_method","uri":"$uri",'
+    '"status":"$status","rt":"$request_time",'
+    '"upstream_addr":"$upstream_addr","upstream_status":"$upstream_status",'
+    '"upstream_connect_time":"$upstream_connect_time",'
+    '"upstream_header_time":"$upstream_header_time",'
+    '"upstream_response_time":"$upstream_response_time",'
+    '"connection":"$connection","connection_requests":"$connection_requests"}';
+access_log /var/log/nginx/vecta-upstream-timing.log vecta_upstream_timing if=$vecta_timing_enabled;
