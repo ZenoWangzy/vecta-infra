@@ -1,0 +1,23 @@
+---
+# Deliberately standalone: never render routing or recreate the proxy.
+- name: Bound mypc Open WebUI upstream timing logs
+  hosts: mypc
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Require explicit production deployment opt-in
+      ansible.builtin.assert:
+        that: mypc_deploy_enabled | default(false) | bool
+    - name: Install timing log rotator
+      ansible.builtin.copy:
+        src: ../scripts/vecta-upstream-timing-rotate.sh
+        dest: /usr/local/sbin/vecta-upstream-timing-rotate
+        owner: root
+        group: root
+        mode: "0755"
+    - name: Check timing log size every minute
+      ansible.builtin.cron:
+        name: VectA upstream timing retention
+        cron_file: vecta-upstream-timing
+        user: root
+        job: /usr/local/sbin/vecta-upstream-timing-rotate

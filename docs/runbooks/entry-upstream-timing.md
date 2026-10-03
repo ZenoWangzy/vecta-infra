@@ -26,3 +26,32 @@ and include idle gaps longer than the proxy's client keepalive timeout.
 No reproduced failure means instrumentation is armed, not root cause fixed.
 
 Offline guard: `python3 scripts/test_upstream_timing_contract.py`.
+
+## mypc retention (issue 2326)
+
+Install only `playbooks/mypc-upstream-timing-retention.yml` against the real
+`mypc` inventory with `-e mypc_deploy_enabled=true`. It copies the rotator to `/usr/local/sbin/` and installs
+`/etc/cron.d/vecta-upstream-timing`; host cron must be running. It never renders
+nginx routes or manages container lifecycle.
+
+Every minute, the host script checks the running `openclaw-webui-proxy` log.
+At 32 MiB it renames the current log and retains five numbered archives, then
+uses `nginx -s reopen`, without reload/restart or `copytruncate` loss.
+The default budget is about 192 MiB (current plus five archives), with one
+check interval of growth above each threshold. At the observed 0.5 MB/minute,
+this covers about six hours. A stopped proxy is skipped; cron resumes on its
+next start. Existing archives survive container restarts, but recreating this
+container loses its unmounted log directory; copy evidence before any recreate.
+
+For one controlled rotation on mypc:
+
+```bash
+sudo /usr/local/sbin/vecta-upstream-timing-rotate --force
+```
+
+Check the new file receives real immutable chunk requests, inspect the 390px
+chat screenshot, and record config backups/md5 on issue 2173. Logs and browser
+evidence stay private. This narrower ~200 MiB budget follows the supervisor's
+resume instruction, rather than the automated issue brief's ~896 MiB proposal.
+
+Offline guard: `python3 scripts/test_upstream_timing_retention.py`.
