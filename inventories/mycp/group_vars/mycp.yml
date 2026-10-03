@@ -17,7 +17,6 @@ kk_file_view_image: "{{ nexus_docker_registry }}/keking/kkfileview:latest"
 onlyoffice_image: "{{ nexus_docker_registry }}/onlyoffice/documentserver:8.2"
 openclaw_image: "{{ nexus_docker_registry }}/alpine/openclaw:2026.5.18"
 baidu_search_image: "{{ nexus_docker_registry }}/baidu-search-service:{{ deploy_sha }}"
-hermes_runtime_image_version: "{{ nexus_docker_registry }}/vecta-hermes-withopenclaw:v2026.5.16"
 
 # Docker network
 docker_network: "openclaw-enterprise_openclaw-net"

@@ -27,7 +27,6 @@ open_webui_nginx_image: "{{ nexus_docker_registry }}/library/nginx:alpine"
 kk_file_view_image: "{{ nexus_docker_registry }}/keking/kkfileview:latest"
 onlyoffice_image: "{{ nexus_docker_registry }}/onlyoffice/documentserver:8.2"
 openclaw_image: "{{ nexus_docker_registry }}/alpine/openclaw:2026.5.18"
-hermes_runtime_image_version: "{{ nexus_docker_registry }}/vecta-hermes-withopenclaw:v2026.5.16"
 
 # Stateful adoption remains disabled for the first production increments. Do not
 # let Ansible create, mount, or replace database/cache/document-service volumes
