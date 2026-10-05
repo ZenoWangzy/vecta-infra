@@ -55,6 +55,22 @@ require_cmd() {
   }
 }
 
+load_postgres_env() {
+  local env_file="${MYPC_DATA_LAYER_ENV_FILE:-/data/ocee/.env}"
+  local line key value
+
+  [ -f "$env_file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      POSTGRES_CONTAINER|POSTGRES_DB|POSTGRES_USER) export "$key=$value" ;;
+    esac
+  done < "$env_file"
+}
+
 check_http() {
   local name="$1"
   local url="$2"
@@ -173,11 +189,8 @@ check_app_health() {
 require_cmd docker
 require_cmd curl
 
-if [ -f /data/ocee/.env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . /data/ocee/.env
-  set +a
+if [ "$service" = postgres ] || [ "$service" = all ]; then
+  load_postgres_env
 fi
 
 echo "mypc data-layer regression: phase=$phase service=$service"
