@@ -72,3 +72,11 @@ jobs:
             "${CONTRACT_PYTHON}" "${contract}"
             echo "::endgroup::"
           done
+
+      # Same glob rule for node contracts. chat-entry-assets-cache needs nginx,
+      # which the ubuntu-latest image ships at /usr/sbin/nginx (issue 2573).
+      - name: Run scripts/*.test.mjs
+        run: |
+          set -euo pipefail
+          shopt -s failglob
+          node --test scripts/*.test.mjs
