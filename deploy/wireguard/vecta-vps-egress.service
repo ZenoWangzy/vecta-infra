@@ -1,0 +1,18 @@
+[Unit]
+Description=Pace VectA VPS egress below the measured underlay rate knee
+Wants=network-online.target
+After=network-online.target
+Before=wg-quick@wg1.service
+ConditionPathExists=/sys/class/net/eth0
+
+[Service]
+# ponytail: global VPS cap; measure per-peer shaping if other egress needs full rate.
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/tc qdisc replace dev eth0 root cake bandwidth 4250kbit
+ExecStop=/usr/sbin/tc qdisc del dev eth0 root
+TimeoutStartSec=15
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
