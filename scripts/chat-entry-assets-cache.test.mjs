@@ -35,7 +35,7 @@ test('cached first-paint script stays under 250ms when origin stalls; API and no
   const root = new URL('../deploy/open-webui/', import.meta.url);
   const httpConfig = readFileSync(new URL('vps-chat-assets-cache.conf', root), 'utf8').replace('/var/cache/nginx/vecta-chat-assets', `${dir}/cache`);
   const location = readFileSync(new URL('vps-chat-assets-location.conf', root), 'utf8').replace('proxy_cache_valid 200 5m;', 'proxy_cache_valid 200 1s;');
-  const config = `${process.getuid() === 0 ? 'user root;' : ''}\npid ${dir}/nginx.pid;\nerror_log ${dir}/error.log;\nevents {}\nhttp {\n${httpConfig}\nupstream vecta_webui_upstream { server 127.0.0.1:${origin.address().port}; }\nserver { listen 127.0.0.1:${port}; ${location}\nlocation / { proxy_pass http://vecta_webui_upstream; }\n}\n}\n`;
+  const config = `${process.getuid() === 0 ? 'user root;' : ''}\npid ${dir}/nginx.pid;\nerror_log ${dir}/error.log;\nevents {}\nhttp {\naccess_log ${dir}/access.log;\n${httpConfig}\nupstream vecta_webui_upstream { server 127.0.0.1:${origin.address().port}; }\nserver { listen 127.0.0.1:${port}; ${location}\nlocation / { proxy_pass http://vecta_webui_upstream; }\n}\n}\n`;
   writeFileSync(`${dir}/nginx.conf`, config);
   const run = (...args) => spawnSync(process.env.NGINX_BIN || '/usr/sbin/nginx', ['-p', dir, '-c', `${dir}/nginx.conf`, ...args], { encoding: 'utf8' });
   let running = false;
