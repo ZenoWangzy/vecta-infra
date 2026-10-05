@@ -5,6 +5,15 @@ import yaml
 
 
 class ModelRoutingContract(unittest.TestCase):
+    def test_mypc_uses_an_immutable_image_and_effective_drop_params(self):
+        root = Path(__file__).resolve().parents[1]
+        inventory = yaml.safe_load((root / 'inventories/mypc/group_vars/mypc.yml').read_text())
+        self.assertRegex(inventory['litellm_image'], r'/berriai/litellm@sha256:[a-f0-9]{64}$')
+        self.assertEqual(inventory['litellm_published_ports'], ['127.0.0.1:4000:4000'])
+        config = yaml.safe_load((root / 'roles/infra-bootstrap/templates/litellm-config.yaml.j2').read_text())
+        self.assertIs(config['litellm_settings']['drop_params'], True)
+        self.assertNotIn('drop_params', config.get('general_settings', {}))
+
     def test_subscription_first_and_paid_terminal(self):
         config = yaml.safe_load((Path(__file__).resolve().parents[1] / 'roles/infra-bootstrap/templates/litellm-config.yaml.j2').read_text())
         models = {item['model_name']: item['litellm_params'] for item in config['model_list']}
