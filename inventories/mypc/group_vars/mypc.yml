@@ -18,7 +18,9 @@ redis_image: "{{ nexus_docker_registry }}/library/redis:7-alpine"
 minio_image: "{{ nexus_docker_registry }}/minio/minio:RELEASE.2024-01-31T20-20-33Z"
 minio_mc_image: "{{ nexus_docker_registry }}/minio/mc:latest"
 clickhouse_image: "{{ nexus_docker_registry }}/clickhouse/clickhouse-server:24.3.4.147"
-litellm_image: "{{ nexus_docker_registry }}/berriai/litellm:main-latest"
+# issue ZenoWangzy/vecta#1941: preserve verified 1.75.8 until the fixed-version
+# canary passes. This pin prevents a Nexus main-latest re-sync changing runtime.
+litellm_image: "{{ nexus_docker_registry }}/berriai/litellm@sha256:bbb422d4c47ff21a73513740f7d3e5dbf1aba9a4adbfcaf2ac2e66bcf4dd6798"
 searxng_image: "{{ nexus_docker_registry }}/searxng/searxng:latest"
 wren_engine_image: "{{ nexus_docker_registry }}/canner/wren-engine-ibis:0.24.6"
 wren_engine_enabled: false
