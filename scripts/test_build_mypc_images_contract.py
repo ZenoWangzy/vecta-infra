@@ -165,6 +165,37 @@ def assert_static_contract(workflow: str) -> None:
     for literal in required:
         assert literal in workflow, literal
 
+    nexus_script = extract_step_script(workflow, "Ensure production Nexus is running")
+    secret_check = (
+        'if curl -fsS \\\n'
+        '    -u "admin:${NEXUS_ADMIN_PASSWORD}" \\\n'
+        '    http://127.0.0.1:8081/service/rest/v1/status >/dev/null 2>&1; then'
+    )
+    password_read = 'initial_password="$(docker exec vecta-nexus \\\n'
+    stale_path = (
+        'stale_password_path="/nexus-data/admin.password.stale-'
+        '${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}"'
+    )
+    file_password_check = '-u "admin:${initial_password}"'
+    stale_rename = (
+        'docker exec vecta-nexus mv /nexus-data/admin.password '
+        '"$stale_password_path"'
+    )
+    assert secret_check in nexus_script
+    secret_check_at = nexus_script.index(secret_check)
+    password_read_at = nexus_script.index(password_read)
+    assert secret_check_at < password_read_at
+    assert (
+        "else"
+        in nexus_script[secret_check_at + len(secret_check) : password_read_at]
+    )
+    assert password_read_at < nexus_script.index(file_password_check)
+    assert stale_path in nexus_script
+    assert nexus_script.count(stale_rename) == 2
+    assert "admin secret status check failed" in nexus_script
+    assert "admin.password change-password check failed" in nexus_script
+    assert "rm -f /nexus-data/admin.password" not in nexus_script
+
     assert (
         'docker_config="$(mktemp -d '
         '"${RUNNER_TEMP}/vecta-docker-config.XXXXXX")"\n'

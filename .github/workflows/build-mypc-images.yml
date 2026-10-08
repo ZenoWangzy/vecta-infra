@@ -410,16 +410,28 @@ jobs:
             docker logs --tail 100 vecta-nexus >&2 || true
             exit 1
           fi
-          if docker exec vecta-nexus test -s /nexus-data/admin.password; then
-            initial_password="$(docker exec vecta-nexus \
-              cat /nexus-data/admin.password | tr -d '\r\n')"
-            curl -fsS \
-              -u "admin:${initial_password}" \
-              -X PUT \
-              -H 'Content-Type: text/plain' \
-              --data-binary "$NEXUS_ADMIN_PASSWORD" \
-              http://127.0.0.1:8081/service/rest/v1/security/users/admin/change-password
-            docker exec vecta-nexus rm -f /nexus-data/admin.password || true
+          if docker exec vecta-nexus test -f /nexus-data/admin.password; then
+            stale_password_path="/nexus-data/admin.password.stale-${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}"
+            if curl -fsS \
+              -u "admin:${NEXUS_ADMIN_PASSWORD}" \
+              http://127.0.0.1:8081/service/rest/v1/status >/dev/null 2>&1; then
+              echo "Nexus admin secret is valid; moving stale admin.password aside"
+              docker exec vecta-nexus mv /nexus-data/admin.password "$stale_password_path"
+            else
+              initial_password="$(docker exec vecta-nexus \
+                cat /nexus-data/admin.password | tr -d '\r\n')"
+              if ! curl -fsS \
+                -u "admin:${initial_password}" \
+                -X PUT \
+                -H 'Content-Type: text/plain' \
+                --data-binary "$NEXUS_ADMIN_PASSWORD" \
+                http://127.0.0.1:8081/service/rest/v1/security/users/admin/change-password \
+                >/dev/null 2>&1; then
+                echo "Nexus admin secret status check failed and admin.password change-password check failed" >&2
+                exit 1
+              fi
+              docker exec vecta-nexus mv /nexus-data/admin.password "$stale_password_path"
+            fi
           fi
           curl -fsS \
             -u "admin:${NEXUS_ADMIN_PASSWORD}" \
