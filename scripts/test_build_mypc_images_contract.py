@@ -338,10 +338,10 @@ def assert_static_contract(workflow: str) -> None:
 
     hermes_seed_script = extract_step_script(workflow, "Seed verified Hermes base image")
     for literal in (
-        "expected_group_tag_ref='127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19-3811ed13'",
-        "expected_manifest_digest='sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09'",
+        "expected_group_tag_ref='127.0.0.1:8083/nousresearch/hermes-agent:v0.21.6-9774f4f3'",
+        "expected_manifest_digest='sha256:9774f4f39a9bb8c2f68ce728ed5e99ddbad282163be56764afacf88ed952b784'",
         'expected_group_ref="${expected_group_tag_ref}@${expected_manifest_digest}"',
-        "expected_target='nousresearch/hermes-agent:v2026.8.19-3811ed13'",
+        "expected_target='nousresearch/hermes-agent:v0.21.6-9774f4f3'",
         'if [ -z "${PRODUCTION_IMAGE_NAMES:-}" ]; then',
         'if [ "$requested_image" = \'employee-runtime\' ]; then',
         "Hermes base sync skipped; employee-runtime is not selected",
