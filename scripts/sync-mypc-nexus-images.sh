@@ -136,6 +136,14 @@ sync_manifest_index() {
     return 1
   fi
 
+  if [ "$mode" = "execute" ] \
+    && current_digest="$(skopeo inspect --no-tags --tls-verify=false \
+      --format '{{.Digest}}' "docker://${target}" 2>/dev/null)" \
+    && [ "$current_digest" = "$source_digest" ]; then
+    log "skip ${target}; already has ${source_digest}"
+    return 0
+  fi
+
   log "target ${target}"
   # Keep the reviewed tag in the audit line, but feed skopeo a digest-only
   # source reference: skopeo rejects Docker references that include both.

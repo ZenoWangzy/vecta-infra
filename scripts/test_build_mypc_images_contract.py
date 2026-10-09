@@ -358,6 +358,9 @@ def assert_static_contract(workflow: str) -> None:
         "trap 'rm -rf \"$docker_config\"' EXIT",
     ):
         assert literal in hermes_seed_script, literal
+    assert hermes_seed_script.index(
+        "scripts/sync-mypc-nexus-images.sh --execute"
+    ) < hermes_seed_script.index("scripts/verify-nexus-image-digest.sh")
     assert "set -x" not in hermes_seed_script
 
 
