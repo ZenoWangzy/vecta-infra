@@ -159,14 +159,14 @@ sync_image 'open-webui/open-webui:v0.9.2' 'swr.cn-north-4.myhuaweicloud.com/ddn-
 sync_image 'library/nginx:alpine' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/nginx:alpine;nginx:alpine'
 sync_image 'keking/kkfileview:latest' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/keking/kkfileview:latest;keking/kkfileview:latest'
 sync_image 'onlyoffice/documentserver:8.2' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/onlyoffice/documentserver:8.2;onlyoffice/documentserver:8.2'
-# Hermes v2026.8.19 is a reviewed OCI index. Copy it through the Nexus group
+# Hermes v0.21.6 is a reviewed OCI index. Copy it through the Nexus group
 # with its original descriptor intact: a Docker pull/tag/push would reduce the
 # index to the runner platform manifest and invalidate the digest-pinned build
 # contract. The hosted tag remains audit-friendly; the workflow verifies the
 # group-resolved digest before it builds from that contract.
-sync_manifest_index 'nousresearch/hermes-agent:v2026.8.19-3811ed13' \
+sync_manifest_index 'nousresearch/hermes-agent:v0.21.6-9774f4f3' \
   "${group_registry}/nousresearch/hermes-agent" \
-  'v2026.8.19' \
-  'sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09'
+  'v0.21.6' \
+  'sha256:9774f4f39a9bb8c2f68ce728ed5e99ddbad282163be56764afacf88ed952b784'
 sync_image 'vecta-hermes-withopenclaw:v2026.5.16' 'vecta-hermes-withopenclaw:v2026.5.16' true
 sync_image 'alpine/openclaw:2026.5.18' 'alpine/openclaw:2026.5.18'

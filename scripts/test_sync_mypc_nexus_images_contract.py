@@ -11,9 +11,9 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "sync-mypc-nexus-images.sh"
-HERMES_TARGET = "nousresearch/hermes-agent:v2026.8.19-3811ed13"
-HERMES_SOURCE_TAG = "127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19"
-HERMES_DIGEST = "sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09"
+HERMES_TARGET = "nousresearch/hermes-agent:v0.21.6-9774f4f3"
+HERMES_SOURCE_TAG = "127.0.0.1:8083/nousresearch/hermes-agent:v0.21.6"
+HERMES_DIGEST = "sha256:9774f4f39a9bb8c2f68ce728ed5e99ddbad282163be56764afacf88ed952b784"
 HERMES_SOURCE_AUDIT_REF = f"{HERMES_SOURCE_TAG}@{HERMES_DIGEST}"
 HERMES_SOURCE_DIGEST_REF = (
     f"127.0.0.1:8083/nousresearch/hermes-agent@{HERMES_DIGEST}"

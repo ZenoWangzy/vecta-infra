@@ -11,9 +11,9 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 VERIFY = ROOT / "scripts" / "verify-nexus-image-digest.sh"
-GROUP_TAG = "127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19-3811ed13"
+GROUP_TAG = "127.0.0.1:8083/nousresearch/hermes-agent:v0.21.6-9774f4f3"
 EXPECTED_DIGEST = (
-    "sha256:3811ed13da874fba2ac99b6d492db9a203d34cb6dccf90d886948c00d0ccec09"
+    "sha256:9774f4f39a9bb8c2f68ce728ed5e99ddbad282163be56764afacf88ed952b784"
 )
 
 
@@ -25,7 +25,7 @@ def run_verifier(resolved_digest: str | None) -> subprocess.CompletedProcess[str
         payload = resolved_digest if resolved_digest is not None else "not-a-digest"
         skopeo.write_text(
             "#!/bin/sh\n"
-            "if [ \"$1\" = inspect ] && [ \"$2\" = --no-tags ] && [ \"$3\" = --tls-verify=false ] && [ \"$4\" = --format ] && [ \"$5\" = '{{.Digest}}' ] && [ \"$6\" = 'docker://127.0.0.1:8083/nousresearch/hermes-agent:v2026.8.19-3811ed13' ]; then\n"
+            "if [ \"$1\" = inspect ] && [ \"$2\" = --no-tags ] && [ \"$3\" = --tls-verify=false ] && [ \"$4\" = --format ] && [ \"$5\" = '{{.Digest}}' ] && [ \"$6\" = 'docker://127.0.0.1:8083/nousresearch/hermes-agent:v0.21.6-9774f4f3' ]; then\n"
             f"  printf '%s\\n' '{payload}'\n"
             "  exit 0\n"
             "fi\n"
