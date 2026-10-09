@@ -20,6 +20,8 @@
       {{ litellm_zai_api_base | default((litellm_existing_env.stdout_lines | default([]) | select('match', '^ZAI_API_BASE=') | map('regex_replace', '^ZAI_API_BASE=', '') | list | first | default(lookup('env', 'ZAI_API_BASE'), true)), true) }}
     litellm_zai_api_key_effective: >-
       {{ litellm_zai_api_key | default((litellm_existing_env.stdout_lines | default([]) | select('match', '^ZAI_API_KEY=') | map('regex_replace', '^ZAI_API_KEY=', '') | list | first | default(lookup('env', 'ZAI_API_KEY'), true)), true) }}
+    litellm_deepseek_api_key_effective: >-
+      {{ litellm_deepseek_api_key | default((litellm_existing_env.stdout_lines | default([]) | select('match', '^DEEPSEEK_API_KEY=') | map('regex_replace', '^DEEPSEEK_API_KEY=', '') | list | first | default(lookup('env', 'DEEPSEEK_API_KEY'), true)), true) }}
     litellm_moonshot_api_base_effective: >-
       {{ litellm_moonshot_api_base | default((litellm_existing_env.stdout_lines | default([]) | select('match', '^MOONSHOT_API_BASE=') | map('regex_replace', '^MOONSHOT_API_BASE=', '') | list | first | default(lookup('env', 'MOONSHOT_API_BASE'), true)), true) }}
     litellm_moonshot_api_key_effective: >-
@@ -44,6 +46,7 @@
       TZ: Asia/Shanghai
       ZAI_API_KEY: "{{ litellm_zai_api_key_effective }}"
       ZAI_API_BASE: "{{ litellm_zai_api_base_effective }}"
+      DEEPSEEK_API_KEY: "{{ litellm_deepseek_api_key_effective }}"
       MOONSHOT_API_BASE: "{{ litellm_moonshot_api_base_effective }}"
       MOONSHOT_API_KEY: "{{ litellm_moonshot_api_key_effective }}"
     healthcheck: >-

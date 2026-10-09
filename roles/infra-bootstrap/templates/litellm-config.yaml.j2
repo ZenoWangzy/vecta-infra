@@ -49,14 +49,23 @@ model_list:
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
-  # 2026-10-09 founder: all VectA tokens go through the GLM coding plan. The paid
-  # DeepSeek API is no longer reachable; this legacy name is one more GLM alias.
+  # 2026-10-09 founder: all VectA tokens go through the GLM coding plan; this legacy
+  # name is one more GLM alias. Paid DeepSeek is reachable only as the fallback below.
   - model_name: deepseek-flash
     litellm_params:
       model: openai/glm-5.3-flash
       extra_body: *glm_thinking_high
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
+
+  # 2026-10-09 founder: 「vecta生产环境的llm还是都用glm的coding plan cn.用尽就fullback到dpsk flash」.
+  # Never a caller-facing name: reached only through router_settings.fallbacks.
+  - model_name: dpsk-flash-fallback
+    litellm_params:
+      model: openai/deepseek-flash
+      extra_body: *glm_thinking_high
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com
 
 router_settings:
   routing: "simple-shuffle"
@@ -73,6 +82,16 @@ router_settings:
   disable_cooldowns: true
   retry_policy:
     RateLimitErrorRetries: 5
+  # A GLM call that still fails after its retries (plan used up) goes to paid DeepSeek
+  # flash, one way; the fallback never returns to the subscription.
+  fallbacks:
+    - glm-5.3-flash: [dpsk-flash-fallback]
+    - glm-5: [dpsk-flash-fallback]
+    - glm-5.1: [dpsk-flash-fallback]
+    - deepseek-chat: [dpsk-flash-fallback]
+    - deepseek-v4-flash-vision-exp: [dpsk-flash-fallback]
+    - multimodal-vision: [dpsk-flash-fallback]
+    - deepseek-flash: [dpsk-flash-fallback]
 
 litellm_settings:
   drop_params: true

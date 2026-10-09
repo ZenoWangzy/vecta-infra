@@ -1,4 +1,4 @@
-"""Every production model name routes to the GLM coding plan; no paid API is reachable."""
+"""Every caller-facing model name routes to the GLM coding plan; paid DeepSeek flash is only the fallback."""
 import unittest
 from pathlib import Path
 import yaml
@@ -14,9 +14,9 @@ class ModelRoutingContract(unittest.TestCase):
         self.assertIs(config['litellm_settings']['drop_params'], True)
         self.assertNotIn('drop_params', config.get('general_settings', {}))
 
-    def test_every_alias_uses_the_glm_subscription_only(self):
-        # 2026-10-09 founder: all VectA tokens go through the GLM coding plan; the paid
-        # DeepSeek fallback had billed every call made during a GLM rate-limit cooldown.
+    def test_every_alias_uses_glm_first_and_deepseek_flash_only_as_fallback(self):
+        # 2026-10-09 founder: GLM coding plan first, paid DeepSeek flash once GLM is used up.
+        # Cooldowns stay off: the old 30 s cooldown had billed every call in a 429 burst.
         root = Path(__file__).resolve().parents[1]
         text = (root / 'roles/infra-bootstrap/templates/litellm-config.yaml.j2').read_text()
         config = yaml.safe_load(text)
@@ -25,10 +25,12 @@ class ModelRoutingContract(unittest.TestCase):
             self.assertEqual(models[alias]['model'], 'openai/glm-5.3-flash')
             self.assertEqual(models[alias]['api_base'], 'https://open.bigmodel.cn/api/coding/paas/v4')
             self.assertEqual(models[alias]['api_key'], 'os.environ/ZAI_API_KEY')
-        self.assertNotIn('api.deepseek.com', text)
-        self.assertNotIn('DEEPSEEK_API_KEY', text)
+        self.assertEqual(models['dpsk-flash-fallback']['api_base'], 'https://api.deepseek.com')
+        self.assertEqual(models['dpsk-flash-fallback']['api_key'], 'os.environ/DEEPSEEK_API_KEY')
+        self.assertEqual(text.count('api.deepseek.com'), 1)
         router = config['router_settings']
-        self.assertNotIn('fallbacks', router)
+        callers = [name for name in models if name != 'dpsk-flash-fallback']
+        self.assertEqual(router['fallbacks'], [{name: ['dpsk-flash-fallback']} for name in callers])
         self.assertIs(router['disable_cooldowns'], True)
         self.assertEqual(router['retry_policy'], {'RateLimitErrorRetries': 5})
         self.assertEqual(router['num_retries'], 1)
@@ -37,7 +39,7 @@ class ModelRoutingContract(unittest.TestCase):
         # #1937 founder ruling: thinking high by default, not max, and not disabled (#1923 was a stopgap).
         config = yaml.safe_load((Path(__file__).resolve().parents[1] / 'roles/infra-bootstrap/templates/litellm-config.yaml.j2').read_text())
         models = {item['model_name']: item['litellm_params'] for item in config['model_list']}
-        for alias in ['glm-5.3-flash', 'glm-5', 'glm-5.1', 'deepseek-chat', 'deepseek-v4-flash-vision-exp', 'multimodal-vision', 'deepseek-flash']:
+        for alias in ['glm-5.3-flash', 'glm-5', 'glm-5.1', 'deepseek-chat', 'deepseek-v4-flash-vision-exp', 'multimodal-vision', 'deepseek-flash', 'dpsk-flash-fallback']:
             self.assertEqual(models[alias]['extra_body'], {'thinking': {'type': 'enabled'}, 'reasoning_effort': 'high'})
 
     def test_silence_is_bounded_separately_from_the_total_budget(self):
