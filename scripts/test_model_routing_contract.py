@@ -1,4 +1,4 @@
-"""Production text and vision routes share a one-way GLM -> DeepSeek chain."""
+"""Every production model name routes to the GLM coding plan; no paid API is reachable."""
 import unittest
 from pathlib import Path
 import yaml
@@ -14,27 +14,31 @@ class ModelRoutingContract(unittest.TestCase):
         self.assertIs(config['litellm_settings']['drop_params'], True)
         self.assertNotIn('drop_params', config.get('general_settings', {}))
 
-    def test_subscription_first_and_paid_terminal(self):
-        config = yaml.safe_load((Path(__file__).resolve().parents[1] / 'roles/infra-bootstrap/templates/litellm-config.yaml.j2').read_text())
+    def test_every_alias_uses_the_glm_subscription_only(self):
+        # 2026-10-09 founder: all VectA tokens go through the GLM coding plan; the paid
+        # DeepSeek fallback had billed every call made during a GLM rate-limit cooldown.
+        root = Path(__file__).resolve().parents[1]
+        text = (root / 'roles/infra-bootstrap/templates/litellm-config.yaml.j2').read_text()
+        config = yaml.safe_load(text)
         models = {item['model_name']: item['litellm_params'] for item in config['model_list']}
-        fallbacks = {key: value for item in config['router_settings']['fallbacks'] for key, value in item.items()}
-        for alias in ['glm-5.3-flash', 'glm-5', 'glm-5.1', 'deepseek-chat', 'deepseek-v4-flash-vision-exp', 'multimodal-vision']:
+        for alias in ['glm-5.3-flash', 'glm-5', 'glm-5.1', 'deepseek-chat', 'deepseek-v4-flash-vision-exp', 'multimodal-vision', 'deepseek-flash']:
             self.assertEqual(models[alias]['model'], 'openai/glm-5.3-flash')
             self.assertEqual(models[alias]['api_base'], 'https://open.bigmodel.cn/api/coding/paas/v4')
             self.assertEqual(models[alias]['api_key'], 'os.environ/ZAI_API_KEY')
-            self.assertEqual(fallbacks[alias], ['deepseek-flash'])
-        self.assertEqual(models['deepseek-flash']['model'], 'openai/deepseek-flash')
-        self.assertEqual(models['deepseek-flash']['api_key'], 'os.environ/DEEPSEEK_API_KEY')
-        self.assertNotIn('deepseek-flash', fallbacks)
-        self.assertEqual(config['router_settings']['num_retries'], 1)
+        self.assertNotIn('api.deepseek.com', text)
+        self.assertNotIn('DEEPSEEK_API_KEY', text)
+        router = config['router_settings']
+        self.assertNotIn('fallbacks', router)
+        self.assertIs(router['disable_cooldowns'], True)
+        self.assertEqual(router['retry_policy'], {'RateLimitErrorRetries': 5})
+        self.assertEqual(router['num_retries'], 1)
 
     def test_glm_aliases_think_at_high_by_default(self):
         # #1937 founder ruling: thinking high by default, not max, and not disabled (#1923 was a stopgap).
         config = yaml.safe_load((Path(__file__).resolve().parents[1] / 'roles/infra-bootstrap/templates/litellm-config.yaml.j2').read_text())
         models = {item['model_name']: item['litellm_params'] for item in config['model_list']}
-        for alias in ['glm-5.3-flash', 'glm-5', 'glm-5.1', 'deepseek-chat', 'deepseek-v4-flash-vision-exp', 'multimodal-vision']:
+        for alias in ['glm-5.3-flash', 'glm-5', 'glm-5.1', 'deepseek-chat', 'deepseek-v4-flash-vision-exp', 'multimodal-vision', 'deepseek-flash']:
             self.assertEqual(models[alias]['extra_body'], {'thinking': {'type': 'enabled'}, 'reasoning_effort': 'high'})
-        self.assertNotIn('extra_body', models['deepseek-flash'])
 
     def test_silence_is_bounded_separately_from_the_total_budget(self):
         # 2026-09-29: timeout 600 alone let a hung GLM stream hold a turn for 21 minutes.
