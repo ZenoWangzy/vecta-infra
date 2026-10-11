@@ -43,21 +43,60 @@ def run_selected_dry_run() -> str:
     return result.stdout
 
 
-def run_selected_execute() -> list[str]:
+def run_selected_execute(
+    *,
+    first_digest: str = HERMES_DIGEST,
+    first_exit: int = 0,
+    second_digest: str = HERMES_DIGEST,
+    second_exit: int = 0,
+    copy_exit: int = 0,
+) -> tuple[subprocess.CompletedProcess[str], list[str], list[str]]:
     with tempfile.TemporaryDirectory() as temporary:
         fake_bin = Path(temporary) / "bin"
         fake_bin.mkdir()
-        call_log = Path(temporary) / "skopeo-args.txt"
+        call_log = Path(temporary) / "skopeo-calls.txt"
+        copy_args = Path(temporary) / "skopeo-copy-args.txt"
+        inspect_count = Path(temporary) / "skopeo-inspect-count.txt"
         skopeo = fake_bin / "skopeo"
         skopeo.write_text(
             "#!/bin/sh\n"
-            "printf '%s\\n' \"$@\" > \"$FAKE_SKOPEO_ARGS\"\n"
+            "set -eu\n"
+            "case \"${1:-}\" in\n"
+            "  inspect)\n"
+            "    count=\"$(cat \"$FAKE_INSPECT_COUNT\" 2>/dev/null || printf '0')\"\n"
+            "    count=$((count + 1))\n"
+            "    printf '%s\\n' \"$count\" > \"$FAKE_INSPECT_COUNT\"\n"
+            "    printf 'inspect %s\\n' \"$*\" >> \"$FAKE_SKOPEO_CALLS\"\n"
+            "    if [ \"$count\" -eq 1 ]; then\n"
+            "      exit_code=\"$FAKE_FIRST_EXIT\"\n"
+            "      digest=\"$FAKE_FIRST_DIGEST\"\n"
+            "    else\n"
+            "      exit_code=\"$FAKE_SECOND_EXIT\"\n"
+            "      digest=\"$FAKE_SECOND_DIGEST\"\n"
+            "    fi\n"
+            "    if [ \"$exit_code\" -ne 0 ]; then exit \"$exit_code\"; fi\n"
+            "    printf '%s\\n' \"$digest\"\n"
+            "    ;;\n"
+            "  copy)\n"
+            "    printf 'copy\\n' >> \"$FAKE_SKOPEO_CALLS\"\n"
+            "    printf '%s\\n' \"$@\" > \"$FAKE_SKOPEO_COPY_ARGS\"\n"
+            "    exit \"$FAKE_COPY_EXIT\"\n"
+            "    ;;\n"
+            "  *) exit 2 ;;\n"
+            "esac\n"
         )
         skopeo.chmod(0o755)
         environment = os.environ | {
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "NEXUS_SYNC_ONLY": HERMES_TARGET,
-            "FAKE_SKOPEO_ARGS": str(call_log),
+            "FAKE_SKOPEO_CALLS": str(call_log),
+            "FAKE_SKOPEO_COPY_ARGS": str(copy_args),
+            "FAKE_INSPECT_COUNT": str(inspect_count),
+            "FAKE_FIRST_DIGEST": first_digest,
+            "FAKE_FIRST_EXIT": str(first_exit),
+            "FAKE_SECOND_DIGEST": second_digest,
+            "FAKE_SECOND_EXIT": str(second_exit),
+            "FAKE_COPY_EXIT": str(copy_exit),
         }
         result = subprocess.run(
             ["bash", str(SCRIPT), "--execute"],
@@ -67,8 +106,9 @@ def run_selected_execute() -> list[str]:
             capture_output=True,
             check=False,
         )
-        assert result.returncode == 0, result.stderr
-        return call_log.read_text().splitlines()
+        calls = call_log.read_text().splitlines() if call_log.exists() else []
+        args = copy_args.read_text().splitlines() if copy_args.exists() else []
+        return result, calls, args
 
 
 def main() -> None:
@@ -99,7 +139,7 @@ def main() -> None:
     assert "+ docker pull redis:7-alpine " not in output
     assert "+ docker pull vecta-hermes-withopenclaw:v2026.5.16 " not in output
 
-    assert run_selected_execute() == [
+    expected_copy_args = [
         "copy",
         "--all",
         "--preserve-digests",
@@ -108,6 +148,55 @@ def main() -> None:
         f"docker://{HERMES_SOURCE_DIGEST_REF}",
         f"docker://127.0.0.1:8082/{HERMES_TARGET}",
     ]
+    expected_inspect = (
+        "inspect inspect --no-tags --tls-verify=false "
+        "--format {{.Digest}} docker://127.0.0.1:8082/"
+        f"{HERMES_TARGET}"
+    )
+
+    matched, matched_calls, matched_copy_args = run_selected_execute()
+    assert matched.returncode == 0, matched.stderr
+    assert matched_calls == [expected_inspect]
+    assert matched_copy_args == []
+    assert "already matches" in matched.stdout
+
+    missing, missing_calls, missing_copy_args = run_selected_execute(first_exit=1)
+    assert missing.returncode == 0, missing.stderr
+    assert missing_calls == [expected_inspect, "copy", expected_inspect]
+    assert missing_copy_args == expected_copy_args
+    assert "target digest query failed" in missing.stdout
+
+    different_digest = "sha256:" + ("a" * 64)
+    different, different_calls, different_copy_args = run_selected_execute(
+        first_digest=different_digest
+    )
+    assert different.returncode == 0, different.stderr
+    assert different_calls == [expected_inspect, "copy", expected_inspect]
+    assert different_copy_args == expected_copy_args
+    assert "target digest mismatch" in different.stdout
+
+    invalid_after_copy, invalid_calls, invalid_copy_args = run_selected_execute(
+        first_exit=1, second_digest=different_digest
+    )
+    assert invalid_after_copy.returncode != 0
+    assert "target digest mismatch after copy" in invalid_after_copy.stderr
+    assert invalid_calls == [expected_inspect, "copy", expected_inspect]
+    assert invalid_copy_args == expected_copy_args
+
+    unreadable_after_copy, unreadable_calls, unreadable_copy_args = run_selected_execute(
+        first_exit=1, second_exit=1
+    )
+    assert unreadable_after_copy.returncode != 0
+    assert "could not inspect target digest after copy" in unreadable_after_copy.stderr
+    assert unreadable_calls == [expected_inspect, "copy", expected_inspect]
+    assert unreadable_copy_args == expected_copy_args
+
+    failed_copy, failed_copy_calls, failed_copy_args = run_selected_execute(
+        first_exit=1, copy_exit=47
+    )
+    assert failed_copy.returncode == 47
+    assert failed_copy_calls == [expected_inspect, "copy"]
+    assert failed_copy_args == expected_copy_args
 
 
 if __name__ == "__main__":

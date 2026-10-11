@@ -111,6 +111,7 @@ sync_image() {
 }
 
 sync_manifest_index() {
+  local target_digest
   target_path="$1"
   source_repository="$2"
   source_tag="$3"
@@ -140,9 +141,35 @@ sync_manifest_index() {
   # Keep the reviewed tag in the audit line, but feed skopeo a digest-only
   # source reference: skopeo rejects Docker references that include both.
   log "manifest index ${source_audit_ref} -> ${target}"
+  if [ "$mode" = "execute" ]; then
+    if target_digest="$(skopeo inspect --no-tags --tls-verify=false \
+      --format '{{.Digest}}' "docker://${target}" 2>/dev/null)"; then
+      if [ "$target_digest" = "$source_digest" ]; then
+        log "skip ${target}; manifest digest already matches ${target_digest}"
+        return 0
+      fi
+      log "target digest mismatch; expected ${source_digest}, found ${target_digest}; copying"
+    else
+      log "target digest query failed; copying ${target}"
+    fi
+  fi
+
   run skopeo copy --all --preserve-digests \
     --src-tls-verify=false --dest-tls-verify=false \
     "docker://${source_digest_ref}" "docker://${target}"
+
+  if [ "$mode" = "execute" ]; then
+    if ! target_digest="$(skopeo inspect --no-tags --tls-verify=false \
+      --format '{{.Digest}}' "docker://${target}" 2>/dev/null)"; then
+      echo "could not inspect target digest after copy: ${target}" >&2
+      return 1
+    fi
+    if [ "$target_digest" != "$source_digest" ]; then
+      echo "target digest mismatch after copy for ${target}: expected=${source_digest} actual=${target_digest}" >&2
+      return 1
+    fi
+    log "verified ${target} manifest digest ${target_digest}"
+  fi
 }
 
 log "mode ${mode}; registry ${registry}"
