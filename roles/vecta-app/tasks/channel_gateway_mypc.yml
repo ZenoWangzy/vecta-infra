@@ -82,6 +82,17 @@
   changed_when: false
   check_mode: false
 
+- name: Audit requested container operation
+  ansible.builtin.include_role:
+    name: container-audit
+    tasks_from: record.yml
+  vars:
+    container_audit_actor: "ansible:roles/vecta-app/tasks/channel_gateway_mypc.yml"
+    container_audit_reason: "Recreate mypc Channel Gateway from the identical Nexus image"
+    container_audit_operation: "recreate"
+    container_audit_name: '{{ channel_gateway_container_name }}'
+  when: not ansible_check_mode
+
 - name: Recreate mypc Channel Gateway from the identical Nexus image
   community.docker.docker_container:
     name: "{{ channel_gateway_container_name }}"

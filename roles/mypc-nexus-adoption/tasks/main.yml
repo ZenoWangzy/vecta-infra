@@ -33,6 +33,19 @@
   check_mode: false
   no_log: true
 
+- name: Audit requested container operation
+  ansible.builtin.include_role:
+    name: container-audit
+    tasks_from: record.yml
+  vars:
+    container_audit_actor: "ansible:roles/mypc-nexus-adoption/tasks/main.yml"
+    container_audit_reason: "Quiesce a stateful adoption source before its backup"
+    container_audit_operation: "stop"
+    container_audit_name: '{{ mypc_adoption_container }}'
+  when:
+    - not ansible_check_mode
+    - mypc_adoption_quiesce | default(false) | bool
+
 - name: Quiesce a stateful adoption source before its backup
   community.docker.docker_container:
     name: "{{ mypc_adoption_container }}"
@@ -70,6 +83,17 @@
   changed_when: true
   when: not ansible_check_mode
   no_log: true
+
+- name: Audit requested container operation
+  ansible.builtin.include_role:
+    name: container-audit
+    tasks_from: record.yml
+  vars:
+    container_audit_actor: "ansible:roles/mypc-nexus-adoption/tasks/main.yml"
+    container_audit_reason: "Recreate container from Nexus retaining live contract"
+    container_audit_operation: "recreate"
+    container_audit_name: '{{ mypc_adoption_container }}'
+  when: not ansible_check_mode
 
 - name: Recreate container from Nexus retaining live contract
   community.docker.docker_container:

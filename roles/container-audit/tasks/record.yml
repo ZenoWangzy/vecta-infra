@@ -1,0 +1,16 @@
+---
+- name: Record requested container operation
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/vecta-container-audit
+      - record
+      - --actor
+      - "{{ container_audit_actor }}"
+      - --reason
+      - "{{ container_audit_reason }}"
+      - --operation
+      - "{{ container_audit_operation }}"
+      - --container
+      - "{{ container_audit_name }}"
+  changed_when: false
+  no_log: true

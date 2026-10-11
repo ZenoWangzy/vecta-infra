@@ -29,6 +29,17 @@
   changed_when: false
   no_log: true
 
+- name: Audit requested container operation
+  ansible.builtin.include_role:
+    name: container-audit
+    tasks_from: record.yml
+  vars:
+    container_audit_actor: "ansible:roles/infra-services/tasks/litellm.yml"
+    container_audit_reason: "Start LiteLLM proxy"
+    container_audit_operation: "ensure-started"
+    container_audit_name: "openclaw-litellm"
+  when: not ansible_check_mode
+
 - name: Start LiteLLM proxy
   community.docker.docker_container:
     name: openclaw-litellm

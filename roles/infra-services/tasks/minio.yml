@@ -37,6 +37,17 @@
   changed_when: false
   no_log: true
 
+- name: Audit requested container operation
+  ansible.builtin.include_role:
+    name: container-audit
+    tasks_from: record.yml
+  vars:
+    container_audit_actor: "ansible:roles/infra-services/tasks/minio.yml"
+    container_audit_reason: "Start MinIO"
+    container_audit_operation: "ensure-started"
+    container_audit_name: "openclaw-minio"
+  when: not ansible_check_mode
+
 - name: Start MinIO
   community.docker.docker_container:
     name: openclaw-minio
@@ -81,6 +92,20 @@
   failed_when: false
   check_mode: false
   when: "'mypc' in group_names"
+
+- name: Audit requested container operation
+  ansible.builtin.include_role:
+    name: container-audit
+    tasks_from: record.yml
+  vars:
+    container_audit_actor: "ansible:roles/infra-services/tasks/minio.yml"
+    container_audit_reason: "Run minio-init to create buckets"
+    container_audit_operation: "ensure-started"
+    container_audit_name: "openclaw-minio-init"
+  when:
+    - not ansible_check_mode
+    - not minio_init_marker.stat.exists
+    - "'mypc' not in group_names or minio_existing_storage.rc != 0"
 
 - name: Run minio-init to create buckets
   community.docker.docker_container:
