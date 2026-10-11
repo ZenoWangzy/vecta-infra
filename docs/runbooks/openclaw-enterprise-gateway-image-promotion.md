@@ -405,7 +405,7 @@ If empty, build first via `vecta-infra`'s `.github/workflows/build-mypc-images.y
 
 - `source_sha`: the full 40-char SHA selected in §1.
 - `source_branch`: `main` (only accepted value).
-- `docker_cache_prune_until`: default `48h` unless told otherwise.
+- Docker BuildKit cache prunes to a 60 GB maximum after each build.
 - `image_names`: empty (builds all contract images).
 
 Dispatch: `gh workflow run build-mypc-images.yml -R ZenoWangzy/vecta-infra -f source_sha=<sha> -f source_branch=main`.

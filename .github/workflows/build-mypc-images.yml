@@ -19,12 +19,6 @@ name: Build mypc production images
           VectA branch containing the selected commit; only main is accepted.
         options:
           - main
-      docker_cache_prune_until:
-        type: string
-        default: 48h
-        description: >-
-          Docker build-cache retention on the mypc runner; set to 'never'
-          to skip
       image_names:
         type: string
         required: false
@@ -72,7 +66,6 @@ jobs:
       BUILDX_VERSION: v0.34.1
       BUILDX_PLUGIN_PATH: /usr/local/lib/docker/cli-plugins/docker-buildx
       PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}
-      DOCKER_CACHE_PRUNE_UNTIL: ${{ inputs.docker_cache_prune_until }}
       NEXUS_ADMIN_PASSWORD_SECRET_NAME: MYPC_NEXUS_ADMIN_PASSWORD
     steps:
       - name: Configure git proxy
@@ -189,15 +182,6 @@ jobs:
         run: |
           if ! printf '%s' "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "source_sha must be a full 40-character lowercase Git SHA" >&2
-            exit 1
-          fi
-
-      - name: Validate Docker cache retention
-        run: |
-          set -euo pipefail
-          if ! printf '%s' "$DOCKER_CACHE_PRUNE_UNTIL" \
-            | grep -Eq '^(never|[1-9][0-9]*[smhd])$'; then
-            echo "docker_cache_prune_until must be never or a positive duration" >&2
             exit 1
           fi
 
@@ -715,8 +699,8 @@ jobs:
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 
-      - name: Prune mypc Docker build cache
-        if: always() && inputs.docker_cache_prune_until != 'never'
+      - name: Keep mypc Docker build cache under 60 GB
+        if: always()
         run: |
           set -euo pipefail
           exec 9>/var/lib/vecta-docker-lock/build.lock
@@ -724,10 +708,4 @@ jobs:
             echo "production image build holds Docker lock; skipping cache prune"
             exit 0
           fi
-          if ! printf '%s' "$DOCKER_CACHE_PRUNE_UNTIL" \
-            | grep -Eq '^[1-9][0-9]*[smhd]$'; then
-            echo "refusing invalid Docker cache retention" >&2
-            exit 1
-          fi
-          docker builder prune --force \
-            --filter "until=${DOCKER_CACHE_PRUNE_UNTIL}"
+          docker buildx prune --builder default --force --max-used-space 60gb

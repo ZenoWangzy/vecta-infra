@@ -136,8 +136,6 @@ def assert_static_contract(workflow: str) -> None:
         "DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082",
         "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083",
         "PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}",
-        "DOCKER_CACHE_PRUNE_UNTIL: ${{ inputs.docker_cache_prune_until }}",
-        "docker_cache_prune_until must be never or a positive duration",
         "scripts/verify-vecta-postsubmit.py",
         "--repo ZenoWangzy/vecta",
         '--sha "$SOURCE_SHA"',
@@ -253,11 +251,16 @@ def assert_static_contract(workflow: str) -> None:
     assert "ddns.net" not in workflow
     assert "PROXY_USERNAME" not in workflow
     assert "PROXY_PASSWORD" not in workflow
-    prune_script = extract_step_script(workflow, "Prune mypc Docker build cache")
-    assert '${{ inputs.docker_cache_prune_until }}' not in prune_script
-    assert "grep -Eq '^[1-9][0-9]*[smhd]$'" in prune_script
-    assert "refusing invalid Docker cache retention" in prune_script
-    assert 'until=${DOCKER_CACHE_PRUNE_UNTIL}' in prune_script
+    prune_script = extract_step_script(
+        workflow, "Keep mypc Docker build cache under 60 GB"
+    )
+    assert "if: always()" in workflow
+    assert (
+        "docker buildx prune --builder default --force --max-used-space 60gb"
+        in prune_script
+    )
+    assert "docker builder prune" not in prune_script
+    assert "DOCKER_CACHE_PRUNE_UNTIL" not in workflow
     image_build_script = extract_step_script(workflow, "Build and push production images")
     docker_build_lock = "/var/lib/vecta-docker-lock/build.lock"
     assert f"exec 9>{docker_build_lock}" in image_build_script
