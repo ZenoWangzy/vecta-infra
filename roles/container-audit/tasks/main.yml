@@ -1,0 +1,60 @@
+---
+- name: Ensure container audit directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /usr/local/bin, mode: "0755" }
+    - { path: /root/.config/systemd/user, mode: "0700" }
+    - { path: /root/.vecta-agent, mode: "0700" }
+  when: "'mypc' in group_names"
+
+- name: Install container audit recorder
+  ansible.builtin.copy:
+    src: vecta-container-audit.py
+    dest: /usr/local/bin/vecta-container-audit
+    owner: root
+    group: root
+    mode: "0755"
+  when: "'mypc' in group_names"
+
+- name: Install passive Docker event recorder user unit
+  ansible.builtin.copy:
+    dest: /root/.config/systemd/user/vecta-container-events-audit.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Record Docker container operations
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/vecta-container-audit events
+      Restart=always
+      RestartSec=3
+
+      [Install]
+      WantedBy=default.target
+  when: "'mypc' in group_names"
+
+- name: Keep root user manager running for passive Docker event recorder
+  ansible.builtin.command: loginctl enable-linger root
+  changed_when: false
+  when: "'mypc' in group_names"
+
+- name: Enable passive Docker event recorder
+  ansible.builtin.systemd_service:
+    name: vecta-container-events-audit.service
+    scope: user
+    daemon_reload: true
+    enabled: true
+    state: started
+  environment:
+    XDG_RUNTIME_DIR: /run/user/0
+    DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/0/bus
+  when: "'mypc' in group_names"
+

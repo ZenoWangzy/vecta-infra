@@ -14,6 +14,17 @@
       a tag built from a reviewed commit.
   tags: [always]
 
+- name: Audit requested container operation
+  ansible.builtin.include_role:
+    name: container-audit
+    tasks_from: record.yml
+  vars:
+    container_audit_actor: "ansible:roles/vecta-app/tasks/directory_service.yml"
+    container_audit_reason: "Deploy directory-service"
+    container_audit_operation: "ensure-started"
+    container_audit_name: "openclaw-directory-service"
+  when: not ansible_check_mode
+
 - name: Deploy directory-service
   community.docker.docker_container:
     name: openclaw-directory-service

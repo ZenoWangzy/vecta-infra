@@ -1,3 +1,14 @@
+- name: Audit requested container operation
+  ansible.builtin.include_role:
+    name: container-audit
+    tasks_from: record.yml
+  vars:
+    container_audit_actor: "ansible:roles/infra-services/tasks/redis.yml"
+    container_audit_reason: "Start Redis"
+    container_audit_operation: "ensure-started"
+    container_audit_name: "openclaw-redis"
+  when: not ansible_check_mode
+
 - name: Start Redis
   community.docker.docker_container:
     name: openclaw-redis

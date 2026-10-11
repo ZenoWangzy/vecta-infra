@@ -245,6 +245,19 @@
     - not ansible_check_mode
     - mypc_fleet_gateway_recreate_required
 
+- name: Audit requested container operation
+  ansible.builtin.include_role:
+    name: container-audit
+    tasks_from: record.yml
+  vars:
+    container_audit_actor: "ansible:roles/vecta-app/tasks/fleet_gateway_mypc.yml"
+    container_audit_reason: "Stop Fleet gateway before preparing its audit volume"
+    container_audit_operation: "stop"
+    container_audit_name: '{{ fleet_gateway_container_name }}'
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_audit_repair_required
+
 - name: Stop Fleet gateway before preparing its audit volume
   ansible.builtin.command:
     argv: [docker, stop, "{{ fleet_gateway_container_name }}"]
@@ -368,6 +381,19 @@
     - mypc_fleet_gateway_audit_repair_required
     - mypc_fleet_gateway_audit_empty.rc == 0
   no_log: true
+
+- name: Audit requested container operation
+  ansible.builtin.include_role:
+    name: container-audit
+    tasks_from: record.yml
+  vars:
+    container_audit_actor: "ansible:roles/vecta-app/tasks/fleet_gateway_mypc.yml"
+    container_audit_reason: "Recreate mypc Fleet gateway from the selected Nexus image"
+    container_audit_operation: "recreate"
+    container_audit_name: '{{ fleet_gateway_container_name }}'
+  when:
+    - not ansible_check_mode
+    - mypc_fleet_gateway_recreate_required
 
 - name: Recreate mypc Fleet gateway from the selected Nexus image
   community.docker.docker_container:

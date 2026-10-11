@@ -1,8 +1,22 @@
+- name: Record LiteLLM restart intent
+  ansible.builtin.command:
+    argv: [/usr/local/bin/vecta-container-audit, record, --actor, ansible:roles/infra-bootstrap/handlers/main.yml, --reason, restart litellm, --operation, restart, --container, openclaw-litellm]
+  listen: restart litellm
+  changed_when: false
+  no_log: true
+
 - name: restart litellm
   community.docker.docker_container:
     name: openclaw-litellm
     state: started
     restart: true
+
+- name: Record SearxNG restart intent
+  ansible.builtin.command:
+    argv: [/usr/local/bin/vecta-container-audit, record, --actor, ansible:roles/infra-bootstrap/handlers/main.yml, --reason, restart searxng, --operation, restart, --container, openclaw-searxng]
+  listen: restart searxng
+  changed_when: false
+  no_log: true
 
 - name: restart searxng
   community.docker.docker_container:

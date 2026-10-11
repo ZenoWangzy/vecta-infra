@@ -1,0 +1,6 @@
+---
+- name: Install container operation audit on mypc
+  hosts: mypc
+  become: true
+  roles:
+    - role: container-audit
