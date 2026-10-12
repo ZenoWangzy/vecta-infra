@@ -4,54 +4,55 @@ model_list:
   - model_name: glm-5.3-flash
     litellm_params:
       model: openai/glm-5.3-flash
-      # #1937 founder ruling: thinking on at high (not max) by default, streamed to the chat.
+      # issue 2152 founder ruling (2026-09-30): thinking stays on and streamed; default effort is low.
       # A request-level extra_body replaces this one, e.g. Hermes' photo pre-analysis
       # sends thinking disabled to stay fast.
-      extra_body: &glm_thinking_high
+      extra_body: &glm_thinking_default
         thinking:
           type: enabled
-        reasoning_effort: high
+        reasoning_effort: low
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: glm-5
     litellm_params:
       model: openai/glm-5.3-flash
-      extra_body: *glm_thinking_high
+      extra_body: *glm_thinking_default
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: glm-5.1
     litellm_params:
       model: openai/glm-5.3-flash
-      extra_body: *glm_thinking_high
+      extra_body: *glm_thinking_default
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: deepseek-chat
     litellm_params:
       model: openai/glm-5.3-flash
-      extra_body: *glm_thinking_high
+      extra_body: *glm_thinking_default
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: deepseek-v4-flash-vision-exp
     litellm_params:
       model: openai/glm-5.3-flash
-      extra_body: *glm_thinking_high
+      extra_body: *glm_thinking_default
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: multimodal-vision
     litellm_params:
       model: openai/glm-5.3-flash
-      extra_body: *glm_thinking_high
+      extra_body: *glm_thinking_default
       api_key: os.environ/ZAI_API_KEY
       api_base: https://open.bigmodel.cn/api/coding/paas/v4
 
   - model_name: deepseek-flash
     litellm_params:
       model: openai/deepseek-flash
+      extra_body: *glm_thinking_default
       api_key: os.environ/DEEPSEEK_API_KEY
       api_base: https://api.deepseek.com
 
