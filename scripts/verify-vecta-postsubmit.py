@@ -38,6 +38,7 @@ from urllib.request import Request, urlopen
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 POSTSUBMIT_JOB_NAME = "Postsubmit validate"
+POSTSUBMIT_WORKFLOW_PATH = ".github/workflows/ci.yml"
 IMAGE_CONTRACT_PATH = "scripts/production-image-contract.json"
 # ponytail: one page of ancestor history covers every deadlock actually
 # seen (the tip is one or two non-code commits past real evidence).
@@ -73,7 +74,8 @@ def find_evidence(
             for run in runs
             if run.get("head_sha") == sha
             and run.get("head_branch") == branch
-            and run.get("event") == "push"
+            and run.get("event") in {"push", "workflow_dispatch"}
+            and run.get("path") == POSTSUBMIT_WORKFLOW_PATH
             and run.get("status") == "completed"
         ),
         key=lambda run: str(run.get("created_at", "")),
@@ -248,16 +250,16 @@ def verify(
 
     def runs_for(candidate_sha: str) -> list[dict[str, Any]]:
         # head_sha filters server-side to the runs for this exact commit. Without
-        # it GitHub returns the last 100 completed push runs in full — about 1.2 MB
+        # it GitHub returns the last 100 completed runs in full — about 1.2 MB
         # — to find the one or two that matter, and on a slow link that response
         # arrives truncated (http.client.IncompleteRead), failing the gate for a
-        # commit whose Postsubmit is green. find_evidence still re-checks head_sha
-        # and head_branch, so this narrows the candidate set and never widens it.
+        # commit whose Postsubmit is green. Scope to CI, retaining exact-SHA,
+        # branch and completed filters; leave event unfiltered so manual
+        # revalidations are included. find_evidence re-checks identity/event/job.
         payload = client.get_json(
-            f"/repos/{repo}/actions/runs",
+            f"/repos/{repo}/actions/workflows/ci.yml/runs",
             {
                 "branch": branch,
-                "event": "push",
                 "status": "completed",
                 "head_sha": candidate_sha,
                 "per_page": "100",
