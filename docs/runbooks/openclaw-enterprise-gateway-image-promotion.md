@@ -95,6 +95,13 @@ section: the workflow's gate only answers "is it safe to build the image
 contents," not "does the pack-identity or migration-gap situation for *this*
 deploy require the four-step ceremony" (§1e) — keep doing all of it.
 
+Exact evidence may come from either a `push` run or a manual
+`workflow_dispatch` revalidation of VectA's CI workflow. The gate queries only
+that workflow for the full SHA/main/completed identity and requires the
+completed successful `Postsubmit validate` job; PR or other-workflow runs do
+not qualify. This evidence check grants no image-build dispatch, publishing,
+deployment, or production-write authorization.
+
 **Why job-level, not run-level.** `NUL bytes & lone negative assertions`
 (ticket 122's false-green-guards job) is a *test-quality* gate: it fails when a
 test in the diff is written so loosely it would pass whether the underlying
