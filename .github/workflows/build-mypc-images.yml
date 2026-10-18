@@ -14,6 +14,13 @@ name: Build mypc production images
       source_branch:
         type: choice
         required: true
+      affected_since_sha:
+        type: string
+        required: false
+        description: >-
+          Optional ancestor VectA main SHA; when set, only images affected
+          by changes since this SHA are built (falls back to full set on
+          unmapped paths)
         default: main
         description: >-
           VectA branch containing the selected commit; only main is accepted.
@@ -51,6 +58,7 @@ jobs:
       GIT_NO_REPLACE_OBJECTS: "1"
       SOURCE_SHA: ${{ inputs.source_sha }}
       SOURCE_BRANCH: ${{ inputs.source_branch }}
+      AFFECTED_SINCE_SHA: ${{ inputs.affected_since_sha }}
       NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082
       DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082
       DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083
