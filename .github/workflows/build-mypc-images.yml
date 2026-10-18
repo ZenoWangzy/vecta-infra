@@ -14,18 +14,18 @@ name: Build mypc production images
       source_branch:
         type: choice
         required: true
-      affected_since_sha:
-        type: string
-        required: false
-        description: >-
-          Optional ancestor VectA main SHA; when set, only images affected
-          by changes since this SHA are built (falls back to full set on
-          unmapped paths)
         default: main
         description: >-
           VectA branch containing the selected commit; only main is accepted.
         options:
           - main
+      affected_since_sha:
+        type: string
+        required: false
+        description: >-
+          Optional ancestor VectA main commit SHA; when set, only images affected
+          by changes since this SHA are built (falls back to full set on
+          unmapped paths)
       image_names:
         type: string
         required: false
