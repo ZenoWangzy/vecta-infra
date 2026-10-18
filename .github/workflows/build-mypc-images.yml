@@ -673,8 +673,6 @@ jobs:
         working-directory: infra/vecta
         run: |
           set -euo pipefail
-          exec 9>/var/lib/vecta-docker-lock/build.lock
-          flock 9
           : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
           docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-docker-config.XXXXXX")"
           trap 'rm -rf "$docker_config"' EXIT
