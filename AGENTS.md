@@ -9,10 +9,11 @@ runner, deployment role, fallback, or compatibility wrapper. The VectA
 caller-removal hotfix must merge first; only then may the matching `vecta-infra`
 removal merge. `CONTRIBUTING.md` owns the detailed cross-repository sequence.
 
-Production image builds are repository-writer-initiated evidence generated
-only by manual dispatch from `vecta-infra` main. The requested SHA must be on
-the current VectA main history and pass the Postsubmit evidence gate. The
-`production` environment is an audit
+Production image builds are repository-writer-initiated evidence for the exact
+selected SHA, generated only by manual dispatch from `vecta-infra` main. The
+requested SHA must remain in current VectA main history and carry the existing
+exact-SHA or identical-image-input Postsubmit evidence; newer main commits do
+not replace a retained candidate. The `production` environment is an audit
 label without reviewer or protection gates. This evidence is independent of
 VectA workflow execution and is not a production deployment or health claim.
 

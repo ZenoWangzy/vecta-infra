@@ -382,7 +382,7 @@
     - mypc_fleet_gateway_audit_empty.rc == 0
   no_log: true
 
-- name: Audit requested container operation
+- name: Audit requested Fleet gateway recreate
   ansible.builtin.include_role:
     name: container-audit
     tasks_from: record.yml

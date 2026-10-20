@@ -1,6 +1,6 @@
 ---
-# Repository-writer-initiated production build evidence. It builds a selected
-# VectA main commit with valid Postsubmit evidence into production-local Nexus.
+# Repository-writer-initiated production build evidence. It builds a fixed,
+# evidenced VectA main candidate into Nexus on the mypc runner only.
 name: Build mypc production images
 
 "on":
@@ -10,7 +10,7 @@ name: Build mypc production images
         type: string
         required: true
         description: >-
-          Full 40-character VectA main commit SHA
+          Full 40-character VectA main candidate SHA with Postsubmit evidence
       source_branch:
         type: choice
         required: true
@@ -31,7 +31,8 @@ name: Build mypc production images
         required: false
         default: ""
         description: >-
-          Comma-separated subset of contract images to build; empty builds all.
+          Comma-separated subset of contract images to build; empty uses
+          affected_since_sha when supplied, otherwise builds the full contract.
 
 permissions:
   contents: read
@@ -230,6 +231,11 @@ jobs:
             process.stdin.on("data", chunk => input += chunk);
             process.stdin.on("end", () => {
               const comparison = JSON.parse(input);
+              if (!["ahead", "identical"].includes(comparison.status)
+                  || comparison.base_commit?.sha !== process.env.SOURCE_SHA) {
+                console.error("source_sha must remain on VectA main ancestry");
+                process.exit(1);
+              }
               process.stdout.write(comparison.merge_base_commit?.sha ?? "");
             });
           ')"
@@ -252,22 +258,33 @@ jobs:
           # use a resumable source transport only if all three still fail.
           remote="https://github.com/ZenoWangzy/vecta.git"
           cache="/home/github-runner/.cache/vecta-main.git"
+          # Automatic selection needs both trees locally. Explicit image names
+          # take precedence, so an unused baseline must not trigger a fetch.
+          affected_baseline="$(node -e '
+            if (!(process.env.PRODUCTION_IMAGE_NAMES || "").trim()) {
+              process.stdout.write((process.env.AFFECTED_SINCE_SHA || "").trim());
+            }
+          ')"
+          baseline_refs=()
+          if [ -n "$affected_baseline" ]; then
+            if ! printf '%s' "$affected_baseline" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "affected_since_sha must be a full 40-character lowercase Git SHA" >&2
+              exit 1
+            fi
+            if [ "$affected_baseline" != "$SOURCE_SHA" ]; then
+              baseline_refs=("$affected_baseline")
+            fi
+          fi
           clone_source() {
+            git init vecta >/dev/null || return 1
             GIT_HTTP_LOW_SPEED_LIMIT=0 \
               LC_ALL=C \
               GIT_ASKPASS="$askpass" \
               GIT_ASKPASS_REQUIRE=force \
               GIT_TERMINAL_PROMPT=0 \
-              timeout 30m git clone --depth=1 --branch main --single-branch \
-                "$1" vecta
-            if ! git -C vecta cat-file -e "$SOURCE_SHA^{commit}" 2>/dev/null; then
-              GIT_HTTP_LOW_SPEED_LIMIT=0 \
-                LC_ALL=C \
-                GIT_ASKPASS="$askpass" \
-                GIT_ASKPASS_REQUIRE=force \
-                GIT_TERMINAL_PROMPT=0 \
-                timeout 10m git -C vecta fetch --depth=1 origin "$SOURCE_SHA"
-            fi
+              timeout 30m git -C vecta fetch --depth=1 "$1" "$SOURCE_SHA" "${baseline_refs[@]}" \
+              || return 1
+            git -C vecta fsck --connectivity-only "$SOURCE_SHA" "${baseline_refs[@]}"
           }
           cloned=false
           if [ -d "$cache" ] \
@@ -341,12 +358,6 @@ jobs:
           command -v pnpm >/dev/null || {
             echo "pnpm is required" >&2; exit 1;
           }
-          command -v nice >/dev/null || {
-            echo "nice is required" >&2; exit 1;
-          }
-          command -v ionice >/dev/null || {
-            echo "ionice is required" >&2; exit 1;
-          }
           available_kb="$(df -Pk . | awk 'NR==2 {print $4}')"
           if [ "$available_kb" -lt 62914560 ]; then
             echo "at least 60GiB free disk is required" >&2
@@ -362,6 +373,31 @@ jobs:
           --vecta-checkout vecta
         env:
           VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
+
+      - name: Validate requested production images
+        working-directory: infra/vecta
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const contract = JSON.parse(fs.readFileSync('scripts/production-image-contract.json', 'utf8'));
+          const available = contract.images.map(image => image.name);
+          if (!available.length || available.some(name => !/^[a-z0-9]+(?:[._-][a-z0-9]+)*$/.test(name))) {
+            throw new Error('Invalid production image names in the selected source contract');
+          }
+          const raw = process.env.PRODUCTION_IMAGE_NAMES || '';
+          const requested = raw.split(',').map(name => name.trim()).filter(Boolean);
+          if (raw.trim() && !requested.length) throw new Error('image_names must contain a contract image name');
+          const unknown = requested.filter(name => !available.includes(name));
+          if (unknown.length) throw new Error(`Unknown production images: ${unknown.join(', ')}`);
+          const selected = [...new Set(available.filter(name => !requested.length || requested.includes(name)))];
+          // Preserve the upstream affected-baseline lane. Writing the full
+          // list here would silently override its automatic image selection.
+          const automatic = !requested.length && Boolean(process.env.AFFECTED_SINCE_SHA?.trim());
+          const imageNames = automatic ? '' : selected.join(',');
+          fs.appendFileSync(process.env.GITHUB_ENV, `PRODUCTION_IMAGE_NAMES=${imageNames}\n`);
+          console.log(`Selected production images: ${automatic ? '(affected baseline)' : imageNames}`);
+          NODE
 
       - name: Validate Fruit V4 isolated Compose contract
         run: python3 scripts/test_fruit_v4_isolated_compose_contract.py
@@ -627,11 +663,9 @@ jobs:
             echo 'Hermes base sync skipped; employee-runtime is not selected'
             exit 0
           fi
-          expected_group_tag_ref='127.0.0.1:8083/nousresearch/hermes-agent:v0.21.6-9774f4f3'
-          expected_manifest_digest='sha256:9774f4f39a9bb8c2f68ce728ed5e99ddbad282163be56764afacf88ed952b784'
-          expected_group_ref="${expected_group_tag_ref}@${expected_manifest_digest}"
-          expected_target='nousresearch/hermes-agent:v0.21.6-9774f4f3'
-          actual_group_ref="$(node -e '
+          # The evidenced source contract owns the immutable pin. A second
+          # workflow-local pin drifts whenever a new candidate upgrades Hermes.
+          hermes_pin="$(node -e '
             const fs = require("fs");
             const contract = JSON.parse(fs.readFileSync(
               "vecta/scripts/production-image-contract.json", "utf8",
@@ -642,13 +676,11 @@ jobs:
             const hermesBase = employeeRuntime?.baseImages?.find(
               (baseImage) => baseImage.arg === "HERMES_BASE",
             );
-            if (!hermesBase?.groupRef) process.exit(1);
-            process.stdout.write(hermesBase.groupRef);
+            const match = /^127\.0\.0\.1:8083\/(nousresearch\/hermes-agent:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})@(sha256:[0-9a-f]{64})$/.exec(hermesBase?.groupRef || "");
+            if (!match) throw new Error("Hermes base must use a digest-pinned production proxy reference");
+            process.stdout.write([`127.0.0.1:8083/${match[1]}`, match[2], match[1]].join("|"));
           ')"
-          if [ "$actual_group_ref" != "$expected_group_ref" ]; then
-            echo "unexpected Hermes base contract: $actual_group_ref" >&2
-            exit 1
-          fi
+          IFS='|' read -r expected_group_tag_ref expected_manifest_digest expected_target <<< "$hermes_pin"
           : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
           docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-hermes-sync.XXXXXX")"
           trap 'rm -rf "$docker_config"' EXIT
@@ -662,6 +694,7 @@ jobs:
             exit 1
           }
           NEXUS_DOCKER_GROUP_REGISTRY="$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" \
+            NEXUS_SYNC_HERMES_REF="${expected_group_tag_ref}@${expected_manifest_digest}" \
             NEXUS_SYNC_ONLY="$expected_target" \
             scripts/sync-mypc-nexus-images.sh --execute
           bash scripts/verify-nexus-image-digest.sh \
@@ -700,8 +733,7 @@ jobs:
             docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
           printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
             docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin
-          nice -n 10 ionice -c2 -n7 \
-            node scripts/build-push-production-images.mjs
+          node scripts/build-push-production-images.mjs
         env:
           NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
 

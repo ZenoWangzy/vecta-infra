@@ -193,7 +193,8 @@ def main() -> None:
     assert 'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin' in workflow
     assert "run: pnpm check:production-images" in workflow
     assert "node scripts/build-push-production-images.mjs" in workflow
-    assert "nice -n 10 ionice -c2 -n7" in workflow
+    # The production builder keeps its own Docker lock without starvation priorities.
+    assert "nice -n 10 ionice -c2 -n7" not in workflow
     assert f"check:{retired_environment}-images" not in workflow
     assert f"build-push-{retired_environment}-images.mjs" not in workflow
     assert f"{retired_environment.upper()}_IMAGE_NAMES" not in workflow

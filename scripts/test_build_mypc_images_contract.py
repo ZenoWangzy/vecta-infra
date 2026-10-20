@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import re
 import shutil
@@ -124,11 +125,8 @@ def assert_static_contract(workflow: str) -> None:
         "command -v timeout >/dev/null",
         "GIT_HTTP_LOW_SPEED_LIMIT=0",
         "LC_ALL=C",
-        "git clone --depth=1 --branch main --single-branch",
+        'git -C vecta fetch --depth=1 "$1" "$SOURCE_SHA"',
         'remote="https://github.com/ZenoWangzy/vecta.git"',
-        '"$1" vecta',
-        "--depth=1 --branch main --single-branch",
-        'git -C vecta fetch --depth=1 origin "$SOURCE_SHA"',
         'git -C vecta switch --detach "$SOURCE_SHA"',
         'checkout_sha="$(git -C vecta rev-parse HEAD)"',
         'git -C vecta status --porcelain --untracked-files=all',
@@ -142,8 +140,6 @@ def assert_static_contract(workflow: str) -> None:
         '--branch "$SOURCE_BRANCH"',
         f"BUILDX_VERSION: {BUILDX_VERSION}",
         f"BUILDX_PLUGIN_PATH: {BUILDX_PLUGIN_PATH}",
-        "command -v nice >/dev/null",
-        "command -v ionice >/dev/null",
         'docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-docker-config.XXXXXX")"',
         'trap \'rm -rf "$docker_config"\' EXIT',
         'export DOCKER_CONFIG="$docker_config"',
@@ -156,12 +152,16 @@ def assert_static_contract(workflow: str) -> None:
         "'^Driver:[[:space:]]+docker$'",
         'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin',
         "run: pnpm check:production-images",
-        "nice -n 10 ionice -c2 -n7 \\\n"
-        "            node scripts/build-push-production-images.mjs",
+        "          node scripts/build-push-production-images.mjs",
         "NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}",
     )
     for literal in required:
         assert literal in workflow, literal
+    assert 'AFFECTED_SINCE_SHA: ${{ inputs.affected_since_sha }}' in workflow
+    assert 'default: never' not in workflow
+    assert 'command -v nice' not in workflow
+    assert 'command -v ionice' not in workflow
+    assert workflow.index('- name: Validate requested production images') < workflow.index('- name: Ensure production Nexus is running')
 
     nexus_script = extract_step_script(workflow, "Ensure production Nexus is running")
     secret_check = (
@@ -263,11 +263,9 @@ def assert_static_contract(workflow: str) -> None:
     assert "DOCKER_CACHE_PRUNE_UNTIL" not in workflow
     image_build_script = extract_step_script(workflow, "Build and push production images")
     docker_build_lock = "/var/lib/vecta-docker-lock/build.lock"
-    assert f"exec 9>{docker_build_lock}" in image_build_script
-    assert "flock 9" in image_build_script
-    assert image_build_script.index("flock 9") < image_build_script.index(
-        "node scripts/build-push-production-images.mjs"
-    )
+    # The source builder holds this lock around its worker pool. An outer
+    # workflow flock would deadlock its second open of the same lock file.
+    assert "flock 9" not in image_build_script
     assert f"exec 9>{docker_build_lock}" in prune_script
     assert "if ! flock -n 9; then" in prune_script
     assert "production image build holds Docker lock; skipping cache prune" in prune_script
@@ -309,7 +307,7 @@ def assert_static_contract(workflow: str) -> None:
         '    GIT_ASKPASS="$askpass" \\\n'
         "    GIT_ASKPASS_REQUIRE=force \\\n"
         "    GIT_TERMINAL_PROMPT=0 \\\n"
-        "    timeout 30m git clone --depth=1 --branch main --single-branch"
+        '    timeout 30m git -C vecta fetch --depth=1 "$1" "$SOURCE_SHA" "${baseline_refs[@]}"'
     )
     assert clone_prefix in download_script
     assert "for attempt in 1 2 3; do" in download_script
@@ -325,7 +323,7 @@ def assert_static_contract(workflow: str) -> None:
     assert 'if clone_source "$cache"; then' in download_script
     assert 'clone_source "$remote"' in download_script
     assert "Cached VectA source unusable; falling back to GitHub" in download_script
-    assert download_script.count("GIT_HTTP_LOW_SPEED_LIMIT") == 2
+    assert download_script.count("GIT_HTTP_LOW_SPEED_LIMIT") == 1
     assert "GIT_HTTP_LOW_SPEED_TIME" not in workflow
     assert not re.search(r"\bgh\b", download_script)
     assert not re.search(r"\bgit\b[^\n]*\bconfig\b", download_script)
@@ -335,21 +333,20 @@ def assert_static_contract(workflow: str) -> None:
         r"\becho\b[^\n]*\$(?:VECTA_READ_TOKEN|\{VECTA_READ_TOKEN[^}]*\})",
         download_script,
     )
-    assert download_script.count("git clone ") == 1
+    assert download_script.count('git -C vecta fetch --depth=1') == 1
     assert download_script.count("https://github.com/ZenoWangzy/vecta.git") == 1
     assert not re.search(r"https://[^\s/]*@github\.com", download_script)
 
     hermes_seed_script = extract_step_script(workflow, "Seed verified Hermes base image")
     for literal in (
-        "expected_group_tag_ref='127.0.0.1:8083/nousresearch/hermes-agent:v0.21.6-9774f4f3'",
-        "expected_manifest_digest='sha256:9774f4f39a9bb8c2f68ce728ed5e99ddbad282163be56764afacf88ed952b784'",
-        'expected_group_ref="${expected_group_tag_ref}@${expected_manifest_digest}"',
-        "expected_target='nousresearch/hermes-agent:v0.21.6-9774f4f3'",
+        'Hermes base must use a digest-pinned production proxy reference',
+        'read -r expected_group_tag_ref expected_manifest_digest expected_target <<< "$hermes_pin"',
         'if [ -z "${PRODUCTION_IMAGE_NAMES:-}" ]; then',
         'if [ "$requested_image" = \'employee-runtime\' ]; then',
         "Hermes base sync skipped; employee-runtime is not selected",
         "vecta/scripts/production-image-contract.json",
         'NEXUS_SYNC_ONLY="$expected_target"',
+        'NEXUS_SYNC_HERMES_REF="${expected_group_tag_ref}@${expected_manifest_digest}"',
         'NEXUS_DOCKER_GROUP_REGISTRY="$DOCKER_BASE_IMAGE_SOURCE_REGISTRY"',
         "scripts/sync-mypc-nexus-images.sh --execute",
         'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin',
@@ -560,13 +557,8 @@ def assert_fake_contract(workflow: str) -> None:
     assert "docker buildx inspect default" in success_log
     assert "docker login 127.0.0.1:8082 -u admin --password-stdin" in success_log
     assert "docker login 127.0.0.1:8083 -u admin --password-stdin" in success_log
-    assert (
-        "nice -n 10 ionice -c2 -n7 "
-        "node scripts/build-push-production-images.mjs"
-    ) in success_log
-    assert (
-        "ionice -c2 -n7 node scripts/build-push-production-images.mjs"
-    ) in success_log
+    assert 'nice ' not in success_log
+    assert 'ionice ' not in success_log
     assert "node scripts/build-push-production-images.mjs" in success_log
     assert not success_leftovers
 
@@ -710,11 +702,253 @@ def assert_incomplete_cache_rejected() -> None:
         assert result.returncode != 0
 
 
+def assert_image_selection(workflow: str) -> None:
+    script = extract_step_script(workflow, 'Validate requested production images')
+    for raw, baseline, expected in (
+        ('', '', 'app,employee-runtime'),
+        (' employee-runtime,app,employee-runtime ', '', 'app,employee-runtime'),
+        ('employee-runtime', '', 'employee-runtime'),
+        ('', 'candidate-base', ''),
+        ('employee-runtime', 'candidate-base', 'employee-runtime'),
+        ('container-alias', '', None),
+        (',,', '', None),
+        (',,', 'candidate-base', None),
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'scripts').mkdir()
+            (root / 'scripts/production-image-contract.json').write_text(json.dumps({
+                'images': [{'name': 'app'}, {'name': 'employee-runtime'}],
+            }))
+            environment_file = root / 'environment'
+            result = subprocess.run(['bash', '-c', script], cwd=root, env={
+                **os.environ, 'PRODUCTION_IMAGE_NAMES': raw, 'AFFECTED_SINCE_SHA': baseline,
+                'GITHUB_ENV': str(environment_file),
+            }, text=True, capture_output=True, check=False, timeout=15)
+            if expected is None:
+                assert result.returncode != 0, raw
+                assert not environment_file.exists(), raw
+            else:
+                assert result.returncode == 0, result.stderr
+                assert environment_file.read_text() == f'PRODUCTION_IMAGE_NAMES={expected}\n'
+
+
+def assert_fixed_source_checkout(workflow: str) -> None:
+    script = extract_step_script(workflow, 'Download selected VectA source')
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        source = root / 'source'
+        source.mkdir()
+        environment = {**os.environ, 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_SYSTEM': '/dev/null', 'GIT_NO_REPLACE_OBJECTS': '1'}
+
+        def git(*args: str) -> str:
+            return subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', '-C', str(source), *args], env=environment,
+                                  text=True, capture_output=True, check=True).stdout.strip()
+
+        git('init', '-b', 'main')
+        git('config', 'user.name', 'Contract Test')
+        git('config', 'user.email', 'contract@example.invalid')
+        (source / 'candidate').write_text('selected\n')
+        changed_path = 'packages/web/src/app.ts'
+        (source / changed_path).parent.mkdir(parents=True)
+        (source / changed_path).write_text('baseline\n')
+        git('add', '.')
+        git('commit', '-m', 'baseline')
+        baseline = git('rev-parse', 'HEAD')
+        (source / changed_path).write_text('selected\n')
+        git('add', '.')
+        git('commit', '-m', 'candidate')
+        selected = git('rev-parse', 'HEAD')
+        (source / 'candidate').write_text('newer main\n')
+        git('commit', '-am', 'later main')
+        tip = git('rev-parse', 'HEAD')
+        fake_bin = root / 'bin'
+        fake_bin.mkdir()
+        # The enclosing subprocess has a 15-second deadline. Keep this fixture
+        # portable to the Mac supervisor without requiring GNU timeout there.
+        write_executable(fake_bin / 'timeout', '#!/bin/sh\nshift\nexec "$@"\n')
+        write_executable(fake_bin / 'curl', '''#!/bin/sh
+set -eu
+case "$*" in
+  */git/ref/heads/main*) printf '%s\n' "$FAKE_BRANCH_JSON" ;;
+  */compare/*) printf '%s\n' "$FAKE_COMPARE_JSON" ;;
+  *) exit 89 ;;
+esac
+''')
+        cache = root / 'cache.git'
+        subprocess.run(['git', 'clone', '--bare', str(source), str(cache)], env=environment, check=True, capture_output=True)
+        candidate_cache = root / 'candidate-cache.git'
+        subprocess.run(['git', 'init', '--bare', str(candidate_cache)], env=environment, check=True, capture_output=True)
+        subprocess.run([
+            'git', '--git-dir', str(candidate_cache), 'fetch', '--depth=1',
+            f'file://{source}', f'{selected}:refs/heads/main',
+        ], env=environment, check=True, capture_output=True)
+        assert subprocess.run([
+            'git', '--git-dir', str(candidate_cache), 'cat-file', '-e', f'{baseline}^{{commit}}',
+        ], env=environment, capture_output=True).returncode != 0
+        for label, requested, status, base, selected_cache, affected, names, error in (
+            ('head', tip, 'identical', tip, None, '', '', None),
+            ('retained-cold', selected, 'ahead', selected, None, '', '', None),
+            ('retained-warm', selected, 'ahead', selected, cache, '', '', None),
+            ('divergent', selected, 'diverged', selected, None, '', '', 'main ancestry'),
+            ('wrong-merge-base', selected, 'ahead', tip, None, '', '', 'ancestor of the current VectA main'),
+            ('unknown-proof', selected, 'unknown', selected, None, '', '', 'main ancestry'),
+            ('affected-cold', selected, 'ahead', selected, None, baseline, '', None),
+            ('affected-fetch-head-baseline', selected, 'ahead', selected, None, baseline, '', None),
+            ('affected-warm', selected, 'ahead', selected, cache, baseline, '', None),
+            ('affected-cache-missing-baseline', selected, 'ahead', selected, candidate_cache, baseline, '', None),
+            ('affected-whitespace', selected, 'ahead', selected, None, f' {baseline} ', ' \t ', None),
+            ('affected-empty-diff', selected, 'ahead', selected, None, selected, '', None),
+            ('explicit-subset', selected, 'ahead', selected, None, 'f' * 40, ' vecta-web , vecta-web ', None),
+            ('explicit-subset-invalid-baseline', selected, 'ahead', selected, None, 'main', ' vecta-web ', None),
+            ('unused-whitespace-baseline', selected, 'ahead', selected, None, ' \t ', '', None),
+            ('invalid-baseline', selected, 'ahead', selected, None, 'main', '', 'affected_since_sha must be a full'),
+            ('missing-baseline', selected, 'ahead', selected, None, 'f' * 40, '', 'VectA clone failed after 3 attempts'),
+        ):
+            workspace = root / label
+            workspace.mkdir()
+            adapted = script.replace('https://github.com/ZenoWangzy/vecta.git', f'file://{source}')
+            adapted = adapted.replace('/home/github-runner/.cache/vecta-main.git', str(selected_cache or root / 'absent-cache'))
+            if label == 'affected-fetch-head-baseline':
+                # A baseline fetch may become the last FETCH_HEAD entry. Inject
+                # that real Git state before the workflow chooses its checkout.
+                checkout = 'git -C vecta switch --detach "$SOURCE_SHA"'
+                adapted = adapted.replace(checkout, f'git -C vecta fetch --depth=1 "file://{source}" "$AFFECTED_SINCE_SHA"\n' + checkout)
+            # Capture the SHA exposed to the following build step, independently
+            # of the additional baseline entry written by Git to FETCH_HEAD.
+            adapted += '\nprintf "%s\\n" "$SOURCE_SHA" > downstream-source-sha\n'
+            result = subprocess.run(['bash', '-c', adapted], cwd=workspace, env={
+                **environment, 'PATH': f'{fake_bin}:{environment["PATH"]}',
+                'VECTA_READ_TOKEN': 'fixture', 'SOURCE_BRANCH': 'main', 'SOURCE_SHA': requested,
+                'AFFECTED_SINCE_SHA': affected, 'PRODUCTION_IMAGE_NAMES': names,
+                'FAKE_BRANCH_JSON': json.dumps({'object': {'sha': tip}}),
+                'FAKE_COMPARE_JSON': json.dumps({'status': status, 'base_commit': {'sha': requested}, 'merge_base_commit': {'sha': base}}),
+            }, text=True, capture_output=True, check=False, timeout=15)
+            if error is None:
+                assert result.returncode == 0, (label, result.stderr)
+                expected = 'newer main\n' if requested == tip else 'selected\n'
+                assert (workspace / 'vecta/candidate').read_text() == expected, label
+                assert (workspace / 'downstream-source-sha').read_text().strip() == requested, label
+                assert subprocess.run([
+                    'git', '-C', str(workspace / 'vecta'), 'rev-parse', 'HEAD',
+                ], env=environment, text=True, capture_output=True, check=True).stdout.strip() == requested, label
+                if selected_cache == cache:
+                    assert 'Using cached exact VectA source' in result.stdout
+                if selected_cache == candidate_cache:
+                    assert 'Cached VectA source unusable; falling back to GitHub' in result.stdout
+                    assert 'Using cached exact VectA source' not in result.stdout
+                if affected.strip() and not names.strip():
+                    # This is the real diff command used by the VectA builder;
+                    # a shallow candidate-only checkout used to fail here (128).
+                    diff = subprocess.run([
+                        'git', '-C', str(workspace / 'vecta'), 'diff', '--name-only', f'{affected.strip()}..HEAD',
+                    ], env=environment, text=True, capture_output=True, check=True)
+                    assert diff.stdout.splitlines() == ([] if affected.strip() == requested else [changed_path]), label
+                    fetched = (workspace / 'vecta/.git/FETCH_HEAD').read_text().splitlines()
+                    expected_fetch = {affected.strip()} if label == 'affected-fetch-head-baseline' else {requested, affected.strip()}
+                    assert {line.split()[0] for line in fetched} == expected_fetch, label
+                else:
+                    fetched = (workspace / 'vecta/.git/FETCH_HEAD').read_text().splitlines()
+                    assert {line.split()[0] for line in fetched} == {requested}, label
+            else:
+                assert result.returncode != 0, label
+                assert error in result.stderr, (label, result.stderr)
+                assert not (workspace / 'vecta').exists(), label
+                assert not (workspace / 'downstream-source-sha').exists(), label
+
+
+def assert_candidate_hermes_pin(workflow: str) -> None:
+    script = extract_step_script(workflow, 'Seed verified Hermes base image')
+    valid_ref = f'127.0.0.1:8083/nousresearch/hermes-agent:fixture-v1@sha256:{"a" * 64}'
+    for group_ref, selected, allowed in (
+        (valid_ref, 'employee-runtime', True),
+        (valid_ref.replace('fixture-v1', 'fixture-v2').replace('a' * 64, 'b' * 64), 'employee-runtime', True),
+        (valid_ref.split('@')[0], 'employee-runtime', False),
+        (valid_ref.replace('nousresearch/hermes-agent', 'unknown/repository'), 'employee-runtime', False),
+        (valid_ref.replace('127.0.0.1:8083', 'unapproved.invalid'), 'employee-runtime', False),
+        (valid_ref.split('@')[0], 'app', True),
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'vecta/scripts').mkdir(parents=True)
+            (root / 'scripts').mkdir()
+            (root / 'runner').mkdir()
+            (root / 'bin').mkdir()
+            (root / 'vecta/scripts/production-image-contract.json').write_text(json.dumps({
+                'images': [{'name': 'employee-runtime', 'baseImages': [{'arg': 'HERMES_BASE', 'groupRef': group_ref}]}],
+            }))
+            log = root / 'calls'
+            write_executable(root / 'bin/docker', '''#!/usr/bin/env python3
+import json, os, sys
+if sys.argv[1] != 'login': raise SystemExit(89)
+sys.stdin.read()
+with open(os.environ['FAKE_LOG'], 'a') as output:
+    output.write(json.dumps(['docker', *sys.argv[1:]]) + '\\n')
+''')
+            write_executable(root / 'bin/skopeo', '''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ['FAKE_LOG'], 'a') as output:
+    output.write(json.dumps(['skopeo', *args]) + '\\n')
+state_file = Path(os.environ['FAKE_REGISTRY'])
+state = json.loads(state_file.read_text()) if state_file.exists() else {}
+if args[0] == 'copy':
+    source, target = args[-2:]
+    if '--all' not in args or '--preserve-digests' not in args: raise SystemExit(88)
+    if '@sha256:' not in source: raise SystemExit(87)
+    state[target] = source.split('@', 1)[1]
+    state_file.write_text(json.dumps(state))
+elif args[0] == 'inspect':
+    # The Nexus group resolves the same hosted image after the real helper copy.
+    target = args[-1].replace('127.0.0.1:8083/', '127.0.0.1:8082/')
+    if target not in state: raise SystemExit(1)
+    print(state[target])
+else:
+    raise SystemExit(89)
+''')
+            # Execute both real helpers. The only fakes are external registry
+            # tools; a skipped sync cannot manufacture a successful digest.
+            for helper in ('sync-mypc-nexus-images.sh', 'verify-nexus-image-digest.sh'):
+                target = root / 'scripts' / helper
+                shutil.copyfile(ROOT / 'scripts' / helper, target)
+                target.chmod(0o755)
+            result = subprocess.run(['bash', '-c', script], cwd=root, env={
+                **os.environ, 'PATH': f'{root / "bin"}:{os.environ["PATH"]}',
+                'PRODUCTION_IMAGE_NAMES': selected, 'RUNNER_TEMP': str(root / 'runner'),
+                'NEXUS_ADMIN_PASSWORD': 'fixture', 'FAKE_LOG': str(log),
+                'FAKE_REGISTRY': str(root / 'registry'),
+                'NEXUS_DOCKER_REGISTRY': '127.0.0.1:8082', 'DOCKER_BASE_IMAGE_SOURCE_REGISTRY': '127.0.0.1:8083',
+            }, text=True, capture_output=True, check=False, timeout=15)
+            assert (result.returncode == 0) == allowed, result.stderr
+            if allowed and selected == 'employee-runtime':
+                calls = [json.loads(line) for line in log.read_text().splitlines()]
+                tag_ref, digest = group_ref.split('@', 1)
+                target = tag_ref.split('/', 1)[1]
+                expected_copy = [
+                    'skopeo', 'copy', '--all', '--preserve-digests',
+                    '--src-tls-verify=false', '--dest-tls-verify=false',
+                    f'docker://127.0.0.1:8083/nousresearch/hermes-agent@{digest}',
+                    f'docker://127.0.0.1:8082/{target}',
+                ]
+                assert [call for call in calls if call[:2] == ['skopeo', 'copy']] == [expected_copy]
+                assert len([call for call in calls if call[:2] == ['docker', 'login']]) == 2
+                assert len([call for call in calls if call[:2] == ['skopeo', 'inspect']]) == 3
+                assert calls[-1][-1] == f'docker://{tag_ref}'
+                assert json.loads((root / 'registry').read_text()) == {f'docker://127.0.0.1:8082/{target}': digest}
+            else:
+                assert not log.exists()
+            assert not list((root / 'runner').iterdir())
+
+
 def main() -> None:
     workflow = WORKFLOW_PATH.read_text()
     assert_static_contract(workflow)
     assert_provisioning_contract()
     assert_fake_contract(workflow)
+    assert_image_selection(workflow)
+    assert_fixed_source_checkout(workflow)
+    assert_candidate_hermes_pin(workflow)
     assert_local_checkout_isolation(workflow)
     assert_incomplete_cache_rejected()
     print("build-mypc images contract: ok")
