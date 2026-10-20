@@ -307,7 +307,7 @@ def assert_static_contract(workflow: str) -> None:
         '    GIT_ASKPASS="$askpass" \\\n'
         "    GIT_ASKPASS_REQUIRE=force \\\n"
         "    GIT_TERMINAL_PROMPT=0 \\\n"
-        '    timeout 30m git -C vecta fetch --depth=1 "$1" "$SOURCE_SHA"'
+        '    timeout 30m git -C vecta fetch --depth=1 "$1" "$SOURCE_SHA" "${baseline_refs[@]}"'
     )
     assert clone_prefix in download_script
     assert "for attempt in 1 2 3; do" in download_script
@@ -749,6 +749,13 @@ def assert_fixed_source_checkout(workflow: str) -> None:
         git('config', 'user.name', 'Contract Test')
         git('config', 'user.email', 'contract@example.invalid')
         (source / 'candidate').write_text('selected\n')
+        changed_path = 'packages/web/src/app.ts'
+        (source / changed_path).parent.mkdir(parents=True)
+        (source / changed_path).write_text('baseline\n')
+        git('add', '.')
+        git('commit', '-m', 'baseline')
+        baseline = git('rev-parse', 'HEAD')
+        (source / changed_path).write_text('selected\n')
         git('add', '.')
         git('commit', '-m', 'candidate')
         selected = git('rev-parse', 'HEAD')
@@ -770,33 +777,84 @@ esac
 ''')
         cache = root / 'cache.git'
         subprocess.run(['git', 'clone', '--bare', str(source), str(cache)], env=environment, check=True, capture_output=True)
-        for label, requested, status, base, use_cache, allowed in (
-            ('head', tip, 'identical', tip, False, True),
-            ('retained-cold', selected, 'ahead', selected, False, True),
-            ('retained-warm', selected, 'ahead', selected, True, True),
-            ('divergent', selected, 'diverged', selected, False, False),
-            ('wrong-merge-base', selected, 'ahead', tip, False, False),
-            ('unknown-proof', selected, 'unknown', selected, False, False),
+        candidate_cache = root / 'candidate-cache.git'
+        subprocess.run(['git', 'init', '--bare', str(candidate_cache)], env=environment, check=True, capture_output=True)
+        subprocess.run([
+            'git', '--git-dir', str(candidate_cache), 'fetch', '--depth=1',
+            f'file://{source}', f'{selected}:refs/heads/main',
+        ], env=environment, check=True, capture_output=True)
+        assert subprocess.run([
+            'git', '--git-dir', str(candidate_cache), 'cat-file', '-e', f'{baseline}^{{commit}}',
+        ], env=environment, capture_output=True).returncode != 0
+        for label, requested, status, base, selected_cache, affected, names, error in (
+            ('head', tip, 'identical', tip, None, '', '', None),
+            ('retained-cold', selected, 'ahead', selected, None, '', '', None),
+            ('retained-warm', selected, 'ahead', selected, cache, '', '', None),
+            ('divergent', selected, 'diverged', selected, None, '', '', 'main ancestry'),
+            ('wrong-merge-base', selected, 'ahead', tip, None, '', '', 'ancestor of the current VectA main'),
+            ('unknown-proof', selected, 'unknown', selected, None, '', '', 'main ancestry'),
+            ('affected-cold', selected, 'ahead', selected, None, baseline, '', None),
+            ('affected-fetch-head-baseline', selected, 'ahead', selected, None, baseline, '', None),
+            ('affected-warm', selected, 'ahead', selected, cache, baseline, '', None),
+            ('affected-cache-missing-baseline', selected, 'ahead', selected, candidate_cache, baseline, '', None),
+            ('affected-whitespace', selected, 'ahead', selected, None, f' {baseline} ', ' \t ', None),
+            ('affected-empty-diff', selected, 'ahead', selected, None, selected, '', None),
+            ('explicit-subset', selected, 'ahead', selected, None, 'f' * 40, ' vecta-web , vecta-web ', None),
+            ('explicit-subset-invalid-baseline', selected, 'ahead', selected, None, 'main', ' vecta-web ', None),
+            ('unused-whitespace-baseline', selected, 'ahead', selected, None, ' \t ', '', None),
+            ('invalid-baseline', selected, 'ahead', selected, None, 'main', '', 'affected_since_sha must be a full'),
+            ('missing-baseline', selected, 'ahead', selected, None, 'f' * 40, '', 'VectA clone failed after 3 attempts'),
         ):
             workspace = root / label
             workspace.mkdir()
             adapted = script.replace('https://github.com/ZenoWangzy/vecta.git', f'file://{source}')
-            adapted = adapted.replace('/home/github-runner/.cache/vecta-main.git', str(cache if use_cache else root / 'absent-cache'))
+            adapted = adapted.replace('/home/github-runner/.cache/vecta-main.git', str(selected_cache or root / 'absent-cache'))
+            if label == 'affected-fetch-head-baseline':
+                # A baseline fetch may become the last FETCH_HEAD entry. Inject
+                # that real Git state before the workflow chooses its checkout.
+                checkout = 'git -C vecta switch --detach "$SOURCE_SHA"'
+                adapted = adapted.replace(checkout, f'git -C vecta fetch --depth=1 "file://{source}" "$AFFECTED_SINCE_SHA"\n' + checkout)
+            # Capture the SHA exposed to the following build step, independently
+            # of the additional baseline entry written by Git to FETCH_HEAD.
+            adapted += '\nprintf "%s\\n" "$SOURCE_SHA" > downstream-source-sha\n'
             result = subprocess.run(['bash', '-c', adapted], cwd=workspace, env={
                 **environment, 'PATH': f'{fake_bin}:{environment["PATH"]}',
                 'VECTA_READ_TOKEN': 'fixture', 'SOURCE_BRANCH': 'main', 'SOURCE_SHA': requested,
+                'AFFECTED_SINCE_SHA': affected, 'PRODUCTION_IMAGE_NAMES': names,
                 'FAKE_BRANCH_JSON': json.dumps({'object': {'sha': tip}}),
                 'FAKE_COMPARE_JSON': json.dumps({'status': status, 'base_commit': {'sha': requested}, 'merge_base_commit': {'sha': base}}),
             }, text=True, capture_output=True, check=False, timeout=15)
-            if allowed:
+            if error is None:
                 assert result.returncode == 0, (label, result.stderr)
                 expected = 'newer main\n' if requested == tip else 'selected\n'
                 assert (workspace / 'vecta/candidate').read_text() == expected, label
-                if use_cache:
+                assert (workspace / 'downstream-source-sha').read_text().strip() == requested, label
+                assert subprocess.run([
+                    'git', '-C', str(workspace / 'vecta'), 'rev-parse', 'HEAD',
+                ], env=environment, text=True, capture_output=True, check=True).stdout.strip() == requested, label
+                if selected_cache == cache:
                     assert 'Using cached exact VectA source' in result.stdout
+                if selected_cache == candidate_cache:
+                    assert 'Cached VectA source unusable; falling back to GitHub' in result.stdout
+                    assert 'Using cached exact VectA source' not in result.stdout
+                if affected.strip() and not names.strip():
+                    # This is the real diff command used by the VectA builder;
+                    # a shallow candidate-only checkout used to fail here (128).
+                    diff = subprocess.run([
+                        'git', '-C', str(workspace / 'vecta'), 'diff', '--name-only', f'{affected.strip()}..HEAD',
+                    ], env=environment, text=True, capture_output=True, check=True)
+                    assert diff.stdout.splitlines() == ([] if affected.strip() == requested else [changed_path]), label
+                    fetched = (workspace / 'vecta/.git/FETCH_HEAD').read_text().splitlines()
+                    expected_fetch = {affected.strip()} if label == 'affected-fetch-head-baseline' else {requested, affected.strip()}
+                    assert {line.split()[0] for line in fetched} == expected_fetch, label
+                else:
+                    fetched = (workspace / 'vecta/.git/FETCH_HEAD').read_text().splitlines()
+                    assert {line.split()[0] for line in fetched} == {requested}, label
             else:
                 assert result.returncode != 0, label
+                assert error in result.stderr, (label, result.stderr)
                 assert not (workspace / 'vecta').exists(), label
+                assert not (workspace / 'downstream-source-sha').exists(), label
 
 
 def assert_candidate_hermes_pin(workflow: str) -> None:

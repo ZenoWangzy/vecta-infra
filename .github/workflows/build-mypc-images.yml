@@ -258,6 +258,23 @@ jobs:
           # use a resumable source transport only if all three still fail.
           remote="https://github.com/ZenoWangzy/vecta.git"
           cache="/home/github-runner/.cache/vecta-main.git"
+          # Automatic selection needs both trees locally. Explicit image names
+          # take precedence, so an unused baseline must not trigger a fetch.
+          affected_baseline="$(node -e '
+            if (!(process.env.PRODUCTION_IMAGE_NAMES || "").trim()) {
+              process.stdout.write((process.env.AFFECTED_SINCE_SHA || "").trim());
+            }
+          ')"
+          baseline_refs=()
+          if [ -n "$affected_baseline" ]; then
+            if ! printf '%s' "$affected_baseline" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "affected_since_sha must be a full 40-character lowercase Git SHA" >&2
+              exit 1
+            fi
+            if [ "$affected_baseline" != "$SOURCE_SHA" ]; then
+              baseline_refs=("$affected_baseline")
+            fi
+          fi
           clone_source() {
             git init vecta >/dev/null || return 1
             GIT_HTTP_LOW_SPEED_LIMIT=0 \
@@ -265,9 +282,9 @@ jobs:
               GIT_ASKPASS="$askpass" \
               GIT_ASKPASS_REQUIRE=force \
               GIT_TERMINAL_PROMPT=0 \
-              timeout 30m git -C vecta fetch --depth=1 "$1" "$SOURCE_SHA" \
+              timeout 30m git -C vecta fetch --depth=1 "$1" "$SOURCE_SHA" "${baseline_refs[@]}" \
               || return 1
-            git -C vecta fsck --connectivity-only "$SOURCE_SHA"
+            git -C vecta fsck --connectivity-only "$SOURCE_SHA" "${baseline_refs[@]}"
           }
           cloned=false
           if [ -d "$cache" ] \
