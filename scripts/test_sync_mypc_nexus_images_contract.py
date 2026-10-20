@@ -27,9 +27,13 @@ def run_selected_dry_run() -> str:
         docker = fake_bin / "docker"
         docker.write_text("#!/bin/sh\nexit 1\n")
         docker.chmod(0o755)
-        environment = os.environ | {
+        environment = {key: value for key, value in os.environ.items() if key not in {
+            "NEXUS_SYNC_HERMES_REF", "NEXUS_SYNC_ONLY", "NEXUS_DOCKER_REGISTRY", "NEXUS_DOCKER_GROUP_REGISTRY",
+        }} | {
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "NEXUS_SYNC_ONLY": HERMES_TARGET,
+            "NEXUS_DOCKER_REGISTRY": "127.0.0.1:8082",
+            "NEXUS_DOCKER_GROUP_REGISTRY": "127.0.0.1:8083",
         }
         result = subprocess.run(
             ["bash", str(SCRIPT), "--dry-run"],
@@ -50,6 +54,10 @@ def run_selected_execute(
     second_digest: str = HERMES_DIGEST,
     second_exit: int = 0,
     copy_exit: int = 0,
+    candidate_ref: str | None = None,
+    selection: str = HERMES_TARGET,
+    registry: str = "127.0.0.1:8082",
+    group_registry: str = "127.0.0.1:8083",
 ) -> tuple[subprocess.CompletedProcess[str], list[str], list[str]]:
     with tempfile.TemporaryDirectory() as temporary:
         fake_bin = Path(temporary) / "bin"
@@ -57,6 +65,18 @@ def run_selected_execute(
         call_log = Path(temporary) / "skopeo-calls.txt"
         copy_args = Path(temporary) / "skopeo-copy-args.txt"
         inspect_count = Path(temporary) / "skopeo-inspect-count.txt"
+        docker = fake_bin / "docker"
+        docker.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "printf 'docker %s\\n' \"$*\" >> \"$FAKE_SKOPEO_CALLS\"\n"
+            "case \"$1\" in\n"
+            "  image) [ \"$2\" = inspect ]; exit 1 ;;\n"
+            "  pull|tag|push) exit 0 ;;\n"
+            "  *) exit 89 ;;\n"
+            "esac\n"
+        )
+        docker.chmod(0o755)
         skopeo = fake_bin / "skopeo"
         skopeo.write_text(
             "#!/bin/sh\n"
@@ -86,9 +106,13 @@ def run_selected_execute(
             "esac\n"
         )
         skopeo.chmod(0o755)
-        environment = os.environ | {
+        environment = {key: value for key, value in os.environ.items() if key not in {
+            "NEXUS_SYNC_HERMES_REF", "NEXUS_SYNC_ONLY", "NEXUS_DOCKER_REGISTRY", "NEXUS_DOCKER_GROUP_REGISTRY",
+        }} | {
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "NEXUS_SYNC_ONLY": HERMES_TARGET,
+            "NEXUS_SYNC_ONLY": selection,
+            "NEXUS_DOCKER_REGISTRY": registry,
+            "NEXUS_DOCKER_GROUP_REGISTRY": group_registry,
             "FAKE_SKOPEO_CALLS": str(call_log),
             "FAKE_SKOPEO_COPY_ARGS": str(copy_args),
             "FAKE_INSPECT_COUNT": str(inspect_count),
@@ -98,6 +122,8 @@ def run_selected_execute(
             "FAKE_SECOND_EXIT": str(second_exit),
             "FAKE_COPY_EXIT": str(copy_exit),
         }
+        if candidate_ref is not None:
+            environment["NEXUS_SYNC_HERMES_REF"] = candidate_ref
         result = subprocess.run(
             ["bash", str(SCRIPT), "--execute"],
             cwd=ROOT,
@@ -105,6 +131,7 @@ def run_selected_execute(
             text=True,
             capture_output=True,
             check=False,
+            timeout=15,
         )
         calls = call_log.read_text().splitlines() if call_log.exists() else []
         args = copy_args.read_text().splitlines() if copy_args.exists() else []
@@ -197,6 +224,56 @@ def main() -> None:
     assert failed_copy.returncode == 47
     assert failed_copy_calls == [expected_inspect, "copy"]
     assert failed_copy_args == expected_copy_args
+
+    for tag, digest in (("fixture-v1", "a" * 64), ("fixture-v2", "b" * 64)):
+        target = f"nousresearch/hermes-agent:{tag}"
+        digest = f"sha256:{digest}"
+        candidate, calls, copied = run_selected_execute(
+            candidate_ref=f"127.0.0.1:8083/{target}@{digest}",
+            selection=target,
+            first_exit=1,
+            second_digest=digest,
+        )
+        assert candidate.returncode == 0, candidate.stderr
+        assert copied == [
+            "copy", "--all", "--preserve-digests", "--src-tls-verify=false", "--dest-tls-verify=false",
+            f"docker://127.0.0.1:8083/nousresearch/hermes-agent@{digest}",
+            f"docker://127.0.0.1:8082/{target}",
+        ]
+        assert len(calls) == 3 and calls[1] == "copy", calls
+        assert all(target in call for call in (calls[0], calls[2]))
+        assert "verified" in candidate.stdout
+
+    candidate_target = "nousresearch/hermes-agent:fixture-v1"
+    candidate_ref = f"127.0.0.1:8083/{candidate_target}@sha256:{'a' * 64}"
+    for overrides in (
+        {"candidate_ref": ""},
+        {"candidate_ref": f"127.0.0.1:8083/{candidate_target}"},
+        {"candidate_ref": candidate_ref.replace("nousresearch/hermes-agent", "unknown/repository")},
+        {"candidate_ref": candidate_ref.replace("127.0.0.1:8083", "unapproved.invalid")},
+        {"candidate_ref": candidate_ref.replace("sha256:", "sha512:")},
+        {"registry": "unapproved.invalid"},
+        {"group_registry": "unapproved.invalid"},
+        {"selection": "unknown-image:fixture"},
+    ):
+        arguments = {"candidate_ref": candidate_ref, "selection": candidate_target} | overrides
+        rejected, calls, copied = run_selected_execute(**arguments)
+        assert rejected.returncode == 2, (arguments, rejected.stderr)
+        assert calls == [] and copied == [], arguments
+
+    unknown, calls, copied = run_selected_execute(selection="nousresearch/hermes-agent:unregistered")
+    assert unknown.returncode == 2
+    assert "unknown Nexus sync target" in unknown.stderr
+    assert calls == [] and copied == []
+
+    # Existing non-Hermes entries retain their pull/tag/push behavior.
+    redis, calls, copied = run_selected_execute(selection="library/redis:7-alpine")
+    assert redis.returncode == 0, redis.stderr
+    assert calls[-1] == "docker push 127.0.0.1:8082/library/redis:7-alpine"
+    assert any(call.startswith("docker pull ") for call in calls)
+    assert any(call.startswith("docker tag ") for call in calls)
+    assert copied == []
+    print("sync-mypc Nexus images contract: ok (default digest safety, two candidate copies, invalid inputs, existing image sync)")
 
 
 if __name__ == "__main__":

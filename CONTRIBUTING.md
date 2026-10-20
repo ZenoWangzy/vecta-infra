@@ -37,6 +37,8 @@ contract changes.
   commits inherit evidence only under the existing image-input comparison.
   The manual build may select an older commit still on current `main`; it never
   builds an unverified or off-branch commit.
+  The workflow preserves the selected candidate SHA through checkout, evidence
+  verification, and immutable image tags.
 - VectA `main` is the production release lane. It runs the protected mypc
   release checks. A production deploy remains a separately approved action.
 - Infrastructure workflows must preserve those branch and runner boundaries,
@@ -52,10 +54,22 @@ The production image build is manually dispatched from `vecta-infra` main and
 is authorized by the dispatching repository writer. The `production`
 environment is an audit label; it currently has no required reviewers or
 protection rules. Existing workflow secrets remain repository-level and are not
-migrated by this contract. The operator supplies a full `source_sha` from
-current VectA `main`, `source_branch=main`, and an optional `image_names`
-subset. The workflow rejects commits outside current `main` history and
-requires green Postsubmit evidence for the selected SHA before building.
+migrated by this contract. The operator supplies a full `source_sha`,
+`source_branch=main`, and an optional `image_names` subset. The workflow rejects
+any SHA that cannot be proved to remain on VectA main ancestry. A newer main tip
+does not invalidate a retained candidate. The existing Postsubmit check still
+requires evidence for that exact SHA or an evidenced ancestor with identical
+production image inputs.
+
+`image_names` contains production contract image names, not container or Compose
+aliases. With no affected baseline, an omitted manual subset builds the full
+contract; a release whose affected set is empty must skip dispatch. Supplied
+names are validated and deduplicated before image or registry work. An explicit image subset takes
+precedence over `affected_since_sha`; without either selection input, a manual
+build selects the full contract. An affected baseline retains the builder's
+existing automatic selection and empty-diff behavior. Cache maintenance keeps
+the upstream 60 GB Buildx bound and skips pruning while the shared Docker build
+lock is held, preserving the warm cache between normal release waves.
 
 A successful run is independent exact-SHA image-build evidence. It is not a
 VectA postsubmit result, merge result, production deployment, or production

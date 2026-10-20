@@ -7,6 +7,7 @@ set -euo pipefail
 registry="${NEXUS_DOCKER_REGISTRY:-127.0.0.1:8082}"
 group_registry="${NEXUS_DOCKER_GROUP_REGISTRY:-127.0.0.1:8083}"
 sync_only="${NEXUS_SYNC_ONLY:-}"
+matched_target_paths=","
 mode="dry-run"
 
 if [ "${1:-}" = "--execute" ]; then
@@ -61,6 +62,7 @@ target_selected() {
   IFS=',' read -r -a selected_targets <<< "$sync_only"
   for selected in "${selected_targets[@]}"; do
     if [ "$selected" = "$1" ]; then
+      matched_target_paths+="$1,"
       return 0
     fi
   done
@@ -172,6 +174,32 @@ sync_manifest_index() {
   fi
 }
 
+# Preserve the reviewed bootstrap default for existing unscoped manual syncs.
+# A production workflow always supplies its verified candidate's complete ref.
+hermes_target='nousresearch/hermes-agent:v0.21.6-9774f4f3'
+hermes_source_tag='v0.21.6'
+hermes_digest='sha256:9774f4f39a9bb8c2f68ce728ed5e99ddbad282163be56764afacf88ed952b784'
+if [ "${NEXUS_SYNC_HERMES_REF+x}" = x ]; then
+  if [ "$registry" != '127.0.0.1:8082' ] || [ "$group_registry" != '127.0.0.1:8083' ]; then
+    echo 'candidate Hermes sync requires the production local Nexus registries' >&2
+    exit 2
+  fi
+  hermes_ref_pattern='^127\.0\.0\.1:8083/nousresearch/hermes-agent:([A-Za-z0-9_][A-Za-z0-9_.-]{0,127})@(sha256:[a-f0-9]{64})$'
+  if ! [[ "$NEXUS_SYNC_HERMES_REF" =~ $hermes_ref_pattern ]]; then
+    echo 'candidate Hermes ref must use the production repository with a pinned sha256 digest' >&2
+    exit 2
+  fi
+  hermes_source_tag="${BASH_REMATCH[1]}"
+  hermes_digest="${BASH_REMATCH[2]}"
+  hermes_target="nousresearch/hermes-agent:${hermes_source_tag}"
+  if [ -n "$sync_only" ]; then
+    case ",$sync_only," in
+      *,"$hermes_target",*) ;;
+      *) echo 'NEXUS_SYNC_ONLY must select the supplied candidate Hermes target' >&2; exit 2 ;;
+    esac
+  fi
+fi
+
 log "mode ${mode}; registry ${registry}"
 
 sync_image 'pgvector/pgvector:pg16' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/pgvector/pgvector:pg16;pgvector/pgvector:pg16'
@@ -186,14 +214,28 @@ sync_image 'open-webui/open-webui:v0.9.2' 'swr.cn-north-4.myhuaweicloud.com/ddn-
 sync_image 'library/nginx:alpine' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/nginx:alpine;nginx:alpine'
 sync_image 'keking/kkfileview:latest' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/keking/kkfileview:latest;keking/kkfileview:latest'
 sync_image 'onlyoffice/documentserver:8.2' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/onlyoffice/documentserver:8.2;onlyoffice/documentserver:8.2'
-# Hermes v0.21.6 is a reviewed OCI index. Copy it through the Nexus group
+# Hermes is a reviewed OCI index. Copy it through the Nexus group
 # with its original descriptor intact: a Docker pull/tag/push would reduce the
 # index to the runner platform manifest and invalidate the digest-pinned build
 # contract. The hosted tag remains audit-friendly; the workflow verifies the
 # group-resolved digest before it builds from that contract.
-sync_manifest_index 'nousresearch/hermes-agent:v0.21.6-9774f4f3' \
+sync_manifest_index "$hermes_target" \
   "${group_registry}/nousresearch/hermes-agent" \
-  'v0.21.6' \
-  'sha256:9774f4f39a9bb8c2f68ce728ed5e99ddbad282163be56764afacf88ed952b784'
+  "$hermes_source_tag" \
+  "$hermes_digest"
 sync_image 'vecta-hermes-withopenclaw:v2026.5.16' 'vecta-hermes-withopenclaw:v2026.5.16' true
 sync_image 'alpine/openclaw:2026.5.18' 'alpine/openclaw:2026.5.18'
+
+
+# An unregistered target used to skip every entry and report success. Report
+# unknown selections explicitly; every registered sync still retains its own
+# copy/inspection failure status and its existing per-image behavior.
+if [ -n "$sync_only" ]; then
+  IFS=',' read -r -a requested_targets <<< "$sync_only"
+  for requested_target in "${requested_targets[@]}"; do
+    case "$matched_target_paths" in
+      *,"$requested_target",*) ;;
+      *) echo "unknown Nexus sync target: $requested_target" >&2; exit 2 ;;
+    esac
+  done
+fi
