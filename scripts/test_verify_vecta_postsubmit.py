@@ -71,11 +71,15 @@ class PostsubmitEvidenceTests(unittest.TestCase):
             run(sha="f" * 40),
             run(branch="develop"),
             run(event="pull_request"),
+            run(event="schedule"),
             run(status="in_progress"),
         ]
         for candidate in cases:
             with self.subTest(candidate=candidate):
                 self.assertIsNone(self.find([candidate], {10: [job()]}))
+
+    def test_accepts_a_main_workflow_dispatch_run(self) -> None:
+        self.assertEqual(self.find([run(event="workflow_dispatch")], {10: [job()]}), (10, 20))
 
     def test_rejects_skipped_cancelled_failed_or_incomplete_job(self) -> None:
         cases = [
