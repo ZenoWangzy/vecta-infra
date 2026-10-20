@@ -26,6 +26,7 @@ def run(
     sha: str = SHA,
     branch: str = "main",
     event: str = "push",
+    workflow_path: str = ".github/workflows/ci.yml",
     status: str = "completed",
     created_at: str = "2026-08-25T00:00:00Z",
 ) -> dict[str, object]:
@@ -34,6 +35,7 @@ def run(
         "head_sha": sha,
         "head_branch": branch,
         "event": event,
+        "path": workflow_path,
         "status": status,
         "created_at": created_at,
     }
@@ -66,11 +68,16 @@ class PostsubmitEvidenceTests(unittest.TestCase):
     def test_accepts_only_completed_successful_exact_job(self) -> None:
         self.assertEqual(self.find([run()], {10: [job()]}), (10, 20))
 
+    def test_accepts_manual_postsubmit_revalidation(self) -> None:
+        self.assertEqual(self.find([run(event="workflow_dispatch")], {10: [job()]}), (10, 20))
+
     def test_rejects_wrong_sha_branch_event_or_status(self) -> None:
         cases = [
             run(sha="f" * 40),
             run(branch="develop"),
             run(event="pull_request"),
+            run(event="schedule"),
+            run(workflow_path=".github/workflows/pipeline-suites.yml"),
             run(status="in_progress"),
         ]
         for candidate in cases:
@@ -85,9 +92,10 @@ class PostsubmitEvidenceTests(unittest.TestCase):
             job(status="in_progress", conclusion="success"),
             job(name="Build declared packages"),
         ]
-        for candidate in cases:
-            with self.subTest(candidate=candidate):
-                self.assertIsNone(self.find([run()], {10: [candidate]}))
+        for event in ('push', 'workflow_dispatch'):
+            for candidate in cases:
+                with self.subTest(event=event, candidate=candidate):
+                    self.assertIsNone(self.find([run(event=event)], {10: [candidate]}))
 
     def test_uses_an_older_exact_run_when_newest_lacks_the_job(self) -> None:
         newest = run(run_id=11, created_at="2026-08-25T02:00:00Z")
@@ -133,8 +141,54 @@ class EvidenceQueryTests(unittest.TestCase):
             MODULE.GitHubClient = original
 
         self.assertEqual(evidence, MODULE.EvidenceResult(10, 20, SHA))
-        runs_query = next(q for path, q in recorded if path.endswith("/actions/runs"))
+        runs_query = next(q for path, q in recorded if path.endswith("/actions/workflows/ci.yml/runs"))
         self.assertEqual(runs_query.get("head_sha"), SHA)
+
+    def test_manual_evidence_query_uses_ci_workflow_without_push_filter(self) -> None:
+        recorded: list[tuple[str, dict[str, str]]] = []
+
+        class FakeClient:
+            def __init__(self, **kwargs) -> None:
+                pass
+
+            def get_json(self, path, query):
+                recorded.append((path, query))
+                if path.endswith('/jobs'):
+                    return {'jobs': [job()]}
+                if path.endswith('/actions/workflows/ci.yml/runs') and 'event' not in query:
+                    return {'workflow_runs': [run(event='workflow_dispatch')]}
+                return {'workflow_runs': []}
+
+        original = MODULE.GitHubClient
+        MODULE.GitHubClient = FakeClient
+        try:
+            result = MODULE.verify(repo='ZenoWangzy/vecta', sha=SHA, branch='main', token='fixture', api_url='https://api.github.com')
+        finally:
+            MODULE.GitHubClient = original
+        self.assertEqual(result, MODULE.EvidenceResult(10, 20, SHA))
+        query = next(query for path, query in recorded if path.endswith('/runs'))
+        self.assertEqual(query, {'branch': 'main', 'status': 'completed', 'head_sha': SHA, 'per_page': '100'})
+
+    def test_unreadable_evidence_and_invalid_requested_identity_fail_closed(self) -> None:
+        reads = []
+        class UnreadableClient:
+            def __init__(self, **kwargs) -> None:
+                pass
+
+            def get_json(self, path, query):
+                reads.append(path)
+                raise MODULE.EvidenceError('fixture unreadable')
+
+        original = MODULE.GitHubClient
+        MODULE.GitHubClient = UnreadableClient
+        try:
+            for sha, branch in [(SHA, 'main'), (SHA[:12], 'main'), (SHA, 'develop')]:
+                before = len(reads)
+                with self.subTest(sha=sha, branch=branch), self.assertRaises(MODULE.EvidenceError):
+                    MODULE.verify(repo='ZenoWangzy/vecta', sha=sha, branch=branch, token='fixture', api_url='https://api.github.com')
+                self.assertEqual(len(reads), before + (sha == SHA and branch == 'main'))
+        finally:
+            MODULE.GitHubClient = original
 
 
 class LastStageCopyPrefixTests(unittest.TestCase):
@@ -253,7 +307,7 @@ class AncestorFallbackVerifyTests(unittest.TestCase):
                 return [{"sha": tip}, {"sha": ancestor}]
 
             def get_json(self, path: str, query: dict[str, str]):
-                if path.endswith("/actions/runs"):
+                if path.endswith("/actions/workflows/ci.yml/runs"):
                     if query["head_sha"] == ancestor:
                         return {"workflow_runs": [run(sha=ancestor)]}
                     return {"workflow_runs": []}
