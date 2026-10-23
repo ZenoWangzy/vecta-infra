@@ -734,10 +734,16 @@ jobs:
             const nodeRuntimeBase = employeeRuntime?.baseImages?.find(
               (baseImage) => baseImage.arg === "NODE_RUNTIME_BASE",
             );
-            const match = /^127\.0\.0\.1:8083\/(node:22\.16\.0-bookworm-slim)@(sha256:[0-9a-f]{64})$/.exec(nodeRuntimeBase?.groupRef || "");
+            // A source that predates the Node base pin has nothing to seed.
+            if (!nodeRuntimeBase) process.exit(0);
+            const match = /^127\.0\.0\.1:8083\/(node:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})@(sha256:[0-9a-f]{64})$/.exec(nodeRuntimeBase.groupRef || "");
             if (!match) throw new Error("Node runtime base must use a digest-pinned production proxy reference");
             process.stdout.write([`127.0.0.1:8083/${match[1]}`, match[2], match[1]].join("|"));
           ')"
+          if [ -z "$node_runtime_pin" ]; then
+            echo 'Node runtime base sync skipped; the selected source declares no NODE_RUNTIME_BASE'
+            exit 0
+          fi
           IFS='|' read -r expected_group_tag_ref expected_manifest_digest expected_target <<< "$node_runtime_pin"
           : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
           docker_config="$(mktemp -d "${RUNNER_TEMP}/vecta-node-runtime-sync.XXXXXX")"
@@ -747,10 +753,6 @@ jobs:
             docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin
           printf '%s\n' "$NEXUS_ADMIN_PASSWORD" |
             docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin
-          command -v skopeo >/dev/null || {
-            echo 'skopeo is required to preserve the Node runtime manifest' >&2
-            exit 1
-          }
           NEXUS_DOCKER_GROUP_REGISTRY="$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" \
             NEXUS_SYNC_NODE_RUNTIME_REF="${expected_group_tag_ref}@${expected_manifest_digest}" \
             NEXUS_SYNC_ONLY="$expected_target" \

@@ -951,7 +951,8 @@ def assert_candidate_node_runtime_pin(workflow: str) -> None:
     group_ref = f'127.0.0.1:8083/{target}@{digest}'
     for selected, selected_ref, allowed in (
         ('employee-runtime', group_ref, True),
-        ('employee-runtime', group_ref.replace(target, 'node:22.16.0-alpine'), False),
+        ('employee-runtime', group_ref.replace(target, 'node:-bad/tag'), False),
+        ('employee-runtime', None, True),
         ('employee-runtime', group_ref.replace('@sha256:', '@sha512:'), False),
         ('employee-runtime', group_ref.replace('127.0.0.1:8083', 'unapproved.invalid'), False),
         ('app', 'not-a-pinned-node-reference', True),
@@ -963,7 +964,9 @@ def assert_candidate_node_runtime_pin(workflow: str) -> None:
             (root / 'runner').mkdir()
             (root / 'bin').mkdir()
             (root / 'vecta/scripts/production-image-contract.json').write_text(json.dumps({
-                'images': [{'name': 'employee-runtime', 'baseImages': [{'arg': 'NODE_RUNTIME_BASE', 'groupRef': selected_ref}]}],
+                'images': [{'name': 'employee-runtime', 'baseImages': (
+                    [] if selected_ref is None else [{'arg': 'NODE_RUNTIME_BASE', 'groupRef': selected_ref}]
+                )}],
             }))
             log = root / 'calls'
             write_executable(root / 'bin/docker', '''#!/usr/bin/env python3
@@ -1006,7 +1009,7 @@ else:
                 'NEXUS_DOCKER_REGISTRY': '127.0.0.1:8082', 'DOCKER_BASE_IMAGE_SOURCE_REGISTRY': '127.0.0.1:8083',
             }, text=True, capture_output=True, check=False, timeout=15)
             assert (result.returncode == 0) == allowed, result.stderr
-            if allowed and selected == 'employee-runtime':
+            if allowed and selected == 'employee-runtime' and selected_ref is not None:
                 calls = [json.loads(line) for line in log.read_text().splitlines()]
                 expected_copy = [
                     'skopeo', 'copy', '--all', '--preserve-digests',

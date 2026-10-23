@@ -28,7 +28,7 @@ def run_selected_dry_run() -> str:
         docker.write_text("#!/bin/sh\nexit 1\n")
         docker.chmod(0o755)
         environment = {key: value for key, value in os.environ.items() if key not in {
-            "NEXUS_SYNC_HERMES_REF", "NEXUS_SYNC_ONLY", "NEXUS_DOCKER_REGISTRY", "NEXUS_DOCKER_GROUP_REGISTRY",
+            "NEXUS_SYNC_HERMES_REF", "NEXUS_SYNC_NODE_RUNTIME_REF", "NEXUS_SYNC_ONLY", "NEXUS_DOCKER_REGISTRY", "NEXUS_DOCKER_GROUP_REGISTRY",
         }} | {
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "NEXUS_SYNC_ONLY": HERMES_TARGET,
@@ -55,6 +55,7 @@ def run_selected_execute(
     second_exit: int = 0,
     copy_exit: int = 0,
     candidate_ref: str | None = None,
+    node_runtime_ref: str | None = None,
     selection: str = HERMES_TARGET,
     registry: str = "127.0.0.1:8082",
     group_registry: str = "127.0.0.1:8083",
@@ -107,7 +108,7 @@ def run_selected_execute(
         )
         skopeo.chmod(0o755)
         environment = {key: value for key, value in os.environ.items() if key not in {
-            "NEXUS_SYNC_HERMES_REF", "NEXUS_SYNC_ONLY", "NEXUS_DOCKER_REGISTRY", "NEXUS_DOCKER_GROUP_REGISTRY",
+            "NEXUS_SYNC_HERMES_REF", "NEXUS_SYNC_NODE_RUNTIME_REF", "NEXUS_SYNC_ONLY", "NEXUS_DOCKER_REGISTRY", "NEXUS_DOCKER_GROUP_REGISTRY",
         }} | {
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "NEXUS_SYNC_ONLY": selection,
@@ -124,6 +125,8 @@ def run_selected_execute(
         }
         if candidate_ref is not None:
             environment["NEXUS_SYNC_HERMES_REF"] = candidate_ref
+        if node_runtime_ref is not None:
+            environment["NEXUS_SYNC_NODE_RUNTIME_REF"] = node_runtime_ref
         result = subprocess.run(
             ["bash", str(SCRIPT), "--execute"],
             cwd=ROOT,
@@ -257,6 +260,22 @@ def main() -> None:
         {"selection": "unknown-image:fixture"},
     ):
         arguments = {"candidate_ref": candidate_ref, "selection": candidate_target} | overrides
+        rejected, calls, copied = run_selected_execute(**arguments)
+        assert rejected.returncode == 2, (arguments, rejected.stderr)
+        assert calls == [] and copied == [], arguments
+
+    node_target = "node:22.16.0-bookworm-slim"
+    node_ref = f"127.0.0.1:8083/{node_target}@sha256:{'c' * 64}"
+    for overrides in (
+        {"node_runtime_ref": ""},
+        {"node_runtime_ref": node_ref.split("@")[0]},
+        {"node_runtime_ref": node_ref.replace("/node:", "/unknown:")},
+        {"node_runtime_ref": node_ref.replace("sha256:", "sha512:")},
+        {"registry": "unapproved.invalid"},
+        {"group_registry": "unapproved.invalid"},
+        {"selection": "node:other"},
+    ):
+        arguments = {"node_runtime_ref": node_ref, "selection": node_target} | overrides
         rejected, calls, copied = run_selected_execute(**arguments)
         assert rejected.returncode == 2, (arguments, rejected.stderr)
         assert calls == [] and copied == [], arguments
