@@ -200,6 +200,32 @@ if [ "${NEXUS_SYNC_HERMES_REF+x}" = x ]; then
   fi
 fi
 
+node_runtime_enabled=false
+node_runtime_target='node:22.16.0-bookworm-slim'
+node_runtime_source_tag='22.16.0-bookworm-slim'
+node_runtime_digest=''
+if [ "${NEXUS_SYNC_NODE_RUNTIME_REF+x}" = x ]; then
+  if [ "$registry" != '127.0.0.1:8082' ] || [ "$group_registry" != '127.0.0.1:8083' ]; then
+    echo 'candidate Node runtime sync requires the production local Nexus registries' >&2
+    exit 2
+  fi
+  node_runtime_ref_pattern='^127\.0\.0\.1:8083/(node:22\.16\.0-bookworm-slim)@(sha256:[a-f0-9]{64})$'
+  if ! [[ "$NEXUS_SYNC_NODE_RUNTIME_REF" =~ $node_runtime_ref_pattern ]]; then
+    echo 'candidate Node runtime ref must use the production repository with a pinned sha256 digest' >&2
+    exit 2
+  fi
+  node_runtime_target="${BASH_REMATCH[1]}"
+  node_runtime_source_tag="${node_runtime_target#node:}"
+  node_runtime_digest="${BASH_REMATCH[2]}"
+  node_runtime_enabled=true
+  if [ -n "$sync_only" ]; then
+    case ",$sync_only," in
+      *,"$node_runtime_target",*) ;;
+      *) echo 'NEXUS_SYNC_ONLY must select the supplied candidate Node runtime target' >&2; exit 2 ;;
+    esac
+  fi
+fi
+
 log "mode ${mode}; registry ${registry}"
 
 sync_image 'pgvector/pgvector:pg16' 'swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/pgvector/pgvector:pg16;pgvector/pgvector:pg16'
@@ -223,6 +249,12 @@ sync_manifest_index "$hermes_target" \
   "${group_registry}/nousresearch/hermes-agent" \
   "$hermes_source_tag" \
   "$hermes_digest"
+if [ "$node_runtime_enabled" = true ]; then
+  sync_manifest_index "$node_runtime_target" \
+    "${group_registry}/node" \
+    "$node_runtime_source_tag" \
+    "$node_runtime_digest"
+fi
 sync_image 'vecta-hermes-withopenclaw:v2026.5.16' 'vecta-hermes-withopenclaw:v2026.5.16' true
 sync_image 'alpine/openclaw:2026.5.18' 'alpine/openclaw:2026.5.18'
 
