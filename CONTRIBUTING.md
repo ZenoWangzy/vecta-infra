@@ -62,14 +62,10 @@ requires evidence for that exact SHA or an evidenced ancestor with identical
 production image inputs.
 
 `image_names` contains production contract image names, not container or Compose
-aliases. With no affected baseline, an omitted manual subset builds the full
-contract; a release whose affected set is empty must skip dispatch. Supplied
-names are validated and deduplicated before image or registry work. An explicit image subset takes
-precedence over `affected_since_sha`; without either selection input, a manual
-build selects the full contract. An affected baseline retains the builder's
-existing automatic selection and empty-diff behavior. Cache maintenance keeps
-the upstream 60 GB Buildx bound and skips pruning while the shared Docker build
-lock is held, preserving the warm cache between normal release waves.
+aliases. An omitted manual subset builds the full contract. Supplied names are
+validated and deduplicated before image or registry work. Cache maintenance
+keeps the upstream 60 GB Buildx bound and skips pruning while the shared Docker
+build lock is held, preserving the warm cache between normal release waves.
 
 A successful run is independent exact-SHA image-build evidence. It is not a
 VectA postsubmit result, merge result, production deployment, or production
