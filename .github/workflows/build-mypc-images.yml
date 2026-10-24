@@ -19,20 +19,13 @@ name: Build mypc production images
           VectA branch containing the selected commit; only main is accepted.
         options:
           - main
-      affected_since_sha:
-        type: string
-        required: false
-        description: >-
-          Optional ancestor VectA main commit SHA; when set, only images affected
-          by changes since this SHA are built (falls back to full set on
-          unmapped paths)
       image_names:
         type: string
         required: false
         default: ""
         description: >-
-          Comma-separated subset of contract images to build; empty uses
-          affected_since_sha when supplied, otherwise builds the full contract.
+          Comma-separated subset of contract images to build; empty builds the
+          full contract.
 
 permissions:
   contents: read
@@ -59,7 +52,6 @@ jobs:
       GIT_NO_REPLACE_OBJECTS: "1"
       SOURCE_SHA: ${{ inputs.source_sha }}
       SOURCE_BRANCH: ${{ inputs.source_branch }}
-      AFFECTED_SINCE_SHA: ${{ inputs.affected_since_sha }}
       NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082
       DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082
       DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083
@@ -258,23 +250,7 @@ jobs:
           # use a resumable source transport only if all three still fail.
           remote="https://github.com/ZenoWangzy/vecta.git"
           cache="/home/github-runner/.cache/vecta-main.git"
-          # Automatic selection needs both trees locally. Explicit image names
-          # take precedence, so an unused baseline must not trigger a fetch.
-          affected_baseline="$(node -e '
-            if (!(process.env.PRODUCTION_IMAGE_NAMES || "").trim()) {
-              process.stdout.write((process.env.AFFECTED_SINCE_SHA || "").trim());
-            }
-          ')"
           baseline_refs=()
-          if [ -n "$affected_baseline" ]; then
-            if ! printf '%s' "$affected_baseline" | grep -Eq '^[0-9a-f]{40}$'; then
-              echo "affected_since_sha must be a full 40-character lowercase Git SHA" >&2
-              exit 1
-            fi
-            if [ "$affected_baseline" != "$SOURCE_SHA" ]; then
-              baseline_refs=("$affected_baseline")
-            fi
-          fi
           clone_source() {
             git init vecta >/dev/null || return 1
             GIT_HTTP_LOW_SPEED_LIMIT=0 \
@@ -391,12 +367,8 @@ jobs:
           const unknown = requested.filter(name => !available.includes(name));
           if (unknown.length) throw new Error(`Unknown production images: ${unknown.join(', ')}`);
           const selected = [...new Set(available.filter(name => !requested.length || requested.includes(name)))];
-          // Preserve the upstream affected-baseline lane. Writing the full
-          // list here would silently override its automatic image selection.
-          const automatic = !requested.length && Boolean(process.env.AFFECTED_SINCE_SHA?.trim());
-          const imageNames = automatic ? '' : selected.join(',');
-          fs.appendFileSync(process.env.GITHUB_ENV, `PRODUCTION_IMAGE_NAMES=${imageNames}\n`);
-          console.log(`Selected production images: ${automatic ? '(affected baseline)' : imageNames}`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `PRODUCTION_IMAGE_NAMES=${selected.join(',')}\n`);
+          console.log(`Selected production images: ${selected.join(',')}`);
           NODE
 
       - name: Validate Fruit V4 isolated Compose contract
