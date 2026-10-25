@@ -66,15 +66,28 @@ def find_evidence(
     sha: str,
     branch: str,
 ) -> tuple[int, int] | None:
-    """Return the first exact successful run/job pair, newest run first."""
+    """Return the newest exact Postsubmit verdict's run/job pair if it passed.
+
+    A main push/dispatch run or an exact-SHA train/* dispatch (vecta's merge
+    train validates the batch SHA before main fast-forwards to it) counts. The
+    newest run whose Postsubmit job completed decides: an older success cannot
+    override a newer failure. Runs without a completed, non-skipped,
+    non-cancelled Postsubmit job carry no verdict and are passed over.
+    """
+
+    def counts(run: dict[str, Any]) -> bool:
+        head_branch = str(run.get("head_branch") or "")
+        event = run.get("event")
+        return (head_branch == branch and event in {"push", "workflow_dispatch"}) or (
+            head_branch.startswith("train/") and event == "workflow_dispatch"
+        )
 
     candidates = sorted(
         (
             run
             for run in runs
             if run.get("head_sha") == sha
-            and run.get("head_branch") == branch
-            and run.get("event") in {"push", "workflow_dispatch"}
+            and counts(run)
             and run.get("path") == POSTSUBMIT_WORKFLOW_PATH
             and run.get("status") == "completed"
         ),
@@ -87,12 +100,14 @@ def find_evidence(
             continue
         for job in jobs_for_run(run_id):
             if (
-                job.get("name") == POSTSUBMIT_JOB_NAME
-                and job.get("status") == "completed"
-                and job.get("conclusion") == "success"
-                and isinstance(job.get("id"), int)
+                job.get("name") != POSTSUBMIT_JOB_NAME
+                or job.get("status") != "completed"
+                or job.get("conclusion") in {"skipped", "cancelled"}
             ):
+                continue
+            if job.get("conclusion") == "success" and isinstance(job.get("id"), int):
                 return run_id, job["id"]
+            return None
     return None
 
 
@@ -248,18 +263,26 @@ def verify(
 
     client = GitHubClient(api_url=api_url, token=token)
 
+    # Train evidence is produced before main contains the SHA; only a SHA that
+    # main reached may be built.
+    on_main = client.get_json(f"/repos/{repo}/compare/{sha}...{branch}", {})
+    if on_main.get("status") not in {"ahead", "identical"}:
+        raise EvidenceError(
+            f"{sha} is not on {branch} (compare status={on_main.get('status')!r})"
+        )
+
     def runs_for(candidate_sha: str) -> list[dict[str, Any]]:
         # head_sha filters server-side to the runs for this exact commit. Without
         # it GitHub returns the last 100 completed runs in full — about 1.2 MB
         # — to find the one or two that matter, and on a slow link that response
         # arrives truncated (http.client.IncompleteRead), failing the gate for a
-        # commit whose Postsubmit is green. Scope to CI, retaining exact-SHA,
-        # branch and completed filters; leave event unfiltered so manual
-        # revalidations are included. find_evidence re-checks identity/event/job.
+        # commit whose Postsubmit is green. Scope to CI, retaining exact-SHA and
+        # completed filters; leave branch and event unfiltered so manual and
+        # train revalidations are included. find_evidence re-checks
+        # identity/branch/event/job.
         payload = client.get_json(
             f"/repos/{repo}/actions/workflows/ci.yml/runs",
             {
-                "branch": branch,
                 "status": "completed",
                 "head_sha": candidate_sha,
                 "per_page": "100",
