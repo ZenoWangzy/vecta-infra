@@ -97,6 +97,31 @@ class PostsubmitEvidenceTests(unittest.TestCase):
                 with self.subTest(event=event, candidate=candidate):
                     self.assertIsNone(self.find([run(event=event)], {10: [candidate]}))
 
+    def test_accepts_exact_sha_train_dispatch(self) -> None:
+        train = run(branch="train/b3", event="workflow_dispatch")
+        self.assertEqual(self.find([train], {10: [job()]}), (10, 20))
+
+    def test_rejects_train_push_and_lookalike_branches(self) -> None:
+        for candidate in [
+            run(branch="train/b3", event="push"),
+            run(branch="trains/b3", event="workflow_dispatch"),
+        ]:
+            with self.subTest(candidate=candidate):
+                self.assertIsNone(self.find([candidate], {10: [job()]}))
+
+    def test_newest_completed_verdict_wins(self) -> None:
+        older = run(run_id=10, branch="train/b3", event="workflow_dispatch", created_at="2026-10-25T15:00:00Z")
+        newer = run(run_id=11, created_at="2026-10-25T15:30:00Z")
+        self.assertIsNone(self.find([older, newer], {10: [job()], 11: [job(job_id=21, conclusion="failure")]}))
+        self.assertEqual(
+            self.find([older, newer], {10: [job(conclusion="failure")], 11: [job(job_id=21)]}),
+            (11, 21),
+        )
+        self.assertEqual(
+            self.find([older, newer], {10: [job()], 11: [job(job_id=21, conclusion="cancelled")]}),
+            (10, 20),
+        )
+
     def test_uses_an_older_exact_run_when_newest_lacks_the_job(self) -> None:
         newest = run(run_id=11, created_at="2026-08-25T02:00:00Z")
         older = run(run_id=10, created_at="2026-08-25T01:00:00Z")
@@ -125,6 +150,8 @@ class EvidenceQueryTests(unittest.TestCase):
                 recorded.append((path, query))
                 if path.endswith("/jobs"):
                     return {"jobs": [job()]}
+                if "/compare/" in path:
+                    return {"status": "identical"}
                 return {"workflow_runs": [run()]}
 
         original = MODULE.GitHubClient
@@ -155,6 +182,8 @@ class EvidenceQueryTests(unittest.TestCase):
                 recorded.append((path, query))
                 if path.endswith('/jobs'):
                     return {'jobs': [job()]}
+                if '/compare/' in path:
+                    return {'status': 'identical'}
                 if path.endswith('/actions/workflows/ci.yml/runs') and 'event' not in query:
                     return {'workflow_runs': [run(event='workflow_dispatch')]}
                 return {'workflow_runs': []}
@@ -167,7 +196,36 @@ class EvidenceQueryTests(unittest.TestCase):
             MODULE.GitHubClient = original
         self.assertEqual(result, MODULE.EvidenceResult(10, 20, SHA))
         query = next(query for path, query in recorded if path.endswith('/runs'))
-        self.assertEqual(query, {'branch': 'main', 'status': 'completed', 'head_sha': SHA, 'per_page': '100'})
+        self.assertEqual(query, {'status': 'completed', 'head_sha': SHA, 'per_page': '100'})
+
+    def test_train_evidence_builds_only_a_sha_main_reached(self) -> None:
+        for status, accepted in [('identical', True), ('ahead', True), ('behind', False), ('diverged', False)]:
+            class FakeClient:
+                def __init__(self, **kwargs) -> None:
+                    pass
+
+                def get_json(self, path, query):
+                    if '/compare/' in path:
+                        assert path.endswith(f'/compare/{SHA}...main')
+                        return {'status': status}
+                    if path.endswith('/jobs'):
+                        return {'jobs': [job()]}
+                    return {'workflow_runs': [run(branch='train/b3', event='workflow_dispatch')]}
+
+            original = MODULE.GitHubClient
+            MODULE.GitHubClient = FakeClient
+            try:
+                with self.subTest(status=status):
+                    if accepted:
+                        self.assertEqual(
+                            MODULE.verify(repo='ZenoWangzy/vecta', sha=SHA, branch='main', token='t', api_url='https://api.github.com'),
+                            MODULE.EvidenceResult(10, 20, SHA),
+                        )
+                    else:
+                        with self.assertRaises(MODULE.EvidenceError):
+                            MODULE.verify(repo='ZenoWangzy/vecta', sha=SHA, branch='main', token='t', api_url='https://api.github.com')
+            finally:
+                MODULE.GitHubClient = original
 
     def test_unreadable_evidence_and_invalid_requested_identity_fail_closed(self) -> None:
         reads = []
