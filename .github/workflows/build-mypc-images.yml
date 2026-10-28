@@ -536,11 +536,11 @@ jobs:
             pypi: { indexPath: '/simple' },
           });
           for (const repo of [
-            ['vecta-alpine-proxy', 'https://dl-cdn.alpinelinux.org/alpine'],
-            ['vecta-debian-proxy', 'http://deb.debian.org/debian'],
+            ['vecta-alpine-proxy', 'https://mirrors.aliyun.com/alpine'],
+            ['vecta-debian-proxy', 'https://mirrors.aliyun.com/debian'],
             [
               'vecta-debian-security-proxy',
-              'http://deb.debian.org/debian-security',
+              'https://mirrors.aliyun.com/debian-security',
             ],
           ]) {
             await upsert('raw', 'proxy', repo[0], {

@@ -8,13 +8,13 @@ nexus_pypi_proxy_repo: vecta-pypi-proxy
 nexus_pypi_remote_url: "https://pypi.org"
 
 nexus_alpine_proxy_repo: vecta-alpine-proxy
-nexus_alpine_remote_url: "https://dl-cdn.alpinelinux.org/alpine"
+nexus_alpine_remote_url: "https://mirrors.aliyun.com/alpine"
 
 nexus_debian_proxy_repo: vecta-debian-proxy
-nexus_debian_remote_url: "http://deb.debian.org/debian"
+nexus_debian_remote_url: "https://mirrors.aliyun.com/debian"
 
 nexus_debian_security_proxy_repo: vecta-debian-security-proxy
-nexus_debian_security_remote_url: "http://deb.debian.org/debian-security"
+nexus_debian_security_remote_url: "https://mirrors.aliyun.com/debian-security"
 
 # Docker registry — app images use hosted on 8082; daemon mirror uses group on 8083.
 nexus_docker_connector_port: 8082
