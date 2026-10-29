@@ -295,6 +295,27 @@ class LoadPrefixTableTests(unittest.TestCase):
             {"scripts/production-image-contract.json", "packages/demo/Dockerfile"},
         )
 
+    def test_migrations_stay_release_evidence_without_a_dockerfile_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts").mkdir()
+            (root / "scripts" / "production-image-contract.json").write_text(
+                json.dumps(
+                    {"images": [{"name": "demo", "dockerfile": "packages/demo/Dockerfile"}]}
+                )
+            )
+            (root / "packages" / "demo").mkdir(parents=True)
+            (root / "packages" / "demo" / "Dockerfile").write_text(
+                "FROM node:20\nCOPY packages/demo packages/demo\n"
+            )
+            prefixes, recipe_paths = MODULE.load_prefix_table(root)
+        self.assertEqual(
+            MODULE.diff_affects_image(
+                ["migrations/0001_x.sql", "drizzle.config.ts"], prefixes, recipe_paths
+            ),
+            ["migrations/0001_x.sql"],
+        )
+
 
 class DiffAffectsImageTests(unittest.TestCase):
     def test_matches_prefix_directory_or_recipe_file_only(self) -> None:

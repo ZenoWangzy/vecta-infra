@@ -40,6 +40,10 @@ REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 POSTSUBMIT_JOB_NAME = "Postsubmit validate"
 POSTSUBMIT_WORKFLOW_PATH = ".github/workflows/ci.yml"
 IMAGE_CONTRACT_PATH = "scripts/production-image-contract.json"
+# Root migrations ship with a release although no image copies them, so they
+# stay release-evidence inputs without a Dockerfile. vecta's
+# scripts/verify-branch-promotion-evidence.mjs keeps the same list.
+RELEASE_EVIDENCE_PREFIXES = ("migrations",)
 # ponytail: one page of ancestor history covers every deadlock actually
 # seen (the tip is one or two non-code commits past real evidence).
 # Paginate further only if a real gap is ever observed deeper than this.
@@ -172,6 +176,7 @@ def load_prefix_table(vecta_root: Path) -> tuple[list[tuple[str, str]], set[str]
         prefixes.extend(
             (image["name"], prefix) for prefix in _last_stage_copy_prefixes(text)
         )
+    prefixes.extend(("release-evidence", p) for p in RELEASE_EVIDENCE_PREFIXES)
     return prefixes, recipe_paths
 
 
