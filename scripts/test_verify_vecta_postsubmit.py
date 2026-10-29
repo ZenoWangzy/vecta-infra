@@ -122,6 +122,24 @@ class PostsubmitEvidenceTests(unittest.TestCase):
             (10, 20),
         )
 
+    def test_pending_manual_run_does_not_bury_older_push_success(self) -> None:
+        # A revalidation still queued or in flight carries no verdict, so the
+        # previous completed success stays the evidence (3603 acceptance:
+        # pending must not bury a valid completed result).
+        older_push = run(run_id=10, event="push", created_at="2026-08-25T01:00:00Z")
+        for pending_status in ("queued", "in_progress"):
+            with self.subTest(status=pending_status):
+                newer_dispatch = run(
+                    run_id=11,
+                    event="workflow_dispatch",
+                    status=pending_status,
+                    created_at="2026-08-25T02:00:00Z",
+                )
+                self.assertEqual(
+                    self.find([older_push, newer_dispatch], {10: [job()], 11: [job(job_id=21)]}),
+                    (10, 20),
+                )
+
     def test_uses_an_older_exact_run_when_newest_lacks_the_job(self) -> None:
         newest = run(run_id=11, created_at="2026-08-25T02:00:00Z")
         older = run(run_id=10, created_at="2026-08-25T01:00:00Z")
