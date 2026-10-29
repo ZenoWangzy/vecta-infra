@@ -203,16 +203,19 @@ def assert_static_contract(workflow: str) -> None:
     checkout_step = "- name: Checkout infra contract"
     fruit_contract_step = "- name: Validate Fruit V4 isolated Compose contract"
     hermes_seed_step = "- name: Seed verified Hermes base image"
+    node_runtime_seed_step = "- name: Seed verified Node runtime base image"
     image_build_step = "- name: Build and push production images"
     postsubmit_step = "- name: Require green VectA Postsubmit evidence"
     nexus_step = "- name: Ensure production Nexus is running"
     assert workflow.count(checkout_step) == 1
     assert workflow.count(postsubmit_step) == 1
     assert workflow.count(fruit_contract_step) == 1
+    assert workflow.count(node_runtime_seed_step) == 1
     assert workflow.index(checkout_step) < workflow.index(fruit_contract_step)
     assert workflow.index(postsubmit_step) < workflow.index(image_build_step)
     assert workflow.index(postsubmit_step) < workflow.index(nexus_step)
     assert workflow.index(hermes_seed_step) < workflow.index(image_build_step)
+    assert workflow.index(node_runtime_seed_step) < workflow.index(image_build_step)
     assert "uses: actions/checkout@" not in workflow
     proxy_step = "- name: Configure git proxy"
     assert workflow.count(proxy_step) == 1
@@ -892,6 +895,96 @@ else:
             assert not list((root / 'runner').iterdir())
 
 
+def assert_candidate_node_runtime_pin(workflow: str) -> None:
+    script = extract_step_script(workflow, 'Seed verified Node runtime base image')
+    target = 'node:22.16.0-bookworm-slim'
+    digest = 'sha256:048ed02c5fd52e86fda6fbd2f6a76cf0d4492fd6c6fee9e2c463ed5108da0e34'
+    group_ref = f'127.0.0.1:8083/{target}@{digest}'
+    for selected, selected_ref, allowed in (
+        ('employee-runtime', group_ref, True),
+        ('employee-runtime', group_ref.replace(target, 'node:-bad/tag'), False),
+        ('employee-runtime', None, True),
+        ('employee-runtime', group_ref.replace('@sha256:', '@sha512:'), False),
+        ('employee-runtime', group_ref.replace('127.0.0.1:8083', 'unapproved.invalid'), False),
+        ('app', 'not-a-pinned-node-reference', True),
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'vecta/scripts').mkdir(parents=True)
+            (root / 'scripts').mkdir()
+            (root / 'runner').mkdir()
+            (root / 'bin').mkdir()
+            (root / 'vecta/scripts/production-image-contract.json').write_text(json.dumps({
+                'images': [{'name': 'employee-runtime', 'baseImages': (
+                    [] if selected_ref is None else [{'arg': 'NODE_RUNTIME_BASE', 'groupRef': selected_ref}]
+                )}],
+            }))
+            log = root / 'calls'
+            write_executable(root / 'bin/docker', '''#!/usr/bin/env python3
+import json, os, sys
+if sys.argv[1] != 'login': raise SystemExit(89)
+sys.stdin.read()
+with open(os.environ['FAKE_LOG'], 'a') as output:
+    output.write(json.dumps(['docker', *sys.argv[1:]]) + '\\n')
+''')
+            write_executable(root / 'bin/skopeo', '''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ['FAKE_LOG'], 'a') as output:
+    output.write(json.dumps(['skopeo', *args]) + '\\n')
+state_file = Path(os.environ['FAKE_REGISTRY'])
+state = json.loads(state_file.read_text()) if state_file.exists() else {}
+if args[0] == 'copy':
+    source, target = args[-2:]
+    if '--all' not in args or '--preserve-digests' not in args: raise SystemExit(88)
+    if '@sha256:' not in source: raise SystemExit(87)
+    state[target] = source.split('@', 1)[1]
+    state_file.write_text(json.dumps(state))
+elif args[0] == 'inspect':
+    target = args[-1].replace('127.0.0.1:8083/', '127.0.0.1:8082/')
+    if target not in state: raise SystemExit(1)
+    print(state[target])
+else:
+    raise SystemExit(89)
+''')
+            for helper in ('sync-mypc-nexus-images.sh', 'verify-nexus-image-digest.sh'):
+                helper_path = root / 'scripts' / helper
+                shutil.copyfile(ROOT / 'scripts' / helper, helper_path)
+                helper_path.chmod(0o755)
+            result = subprocess.run(['bash', '-c', script], cwd=root, env={
+                **os.environ, 'PATH': f'{root / "bin"}:{os.environ["PATH"]}',
+                'PRODUCTION_IMAGE_NAMES': selected, 'RUNNER_TEMP': str(root / 'runner'),
+                'NEXUS_ADMIN_PASSWORD': 'fixture', 'FAKE_LOG': str(log),
+                'FAKE_REGISTRY': str(root / 'registry'),
+                'NEXUS_DOCKER_REGISTRY': '127.0.0.1:8082', 'DOCKER_BASE_IMAGE_SOURCE_REGISTRY': '127.0.0.1:8083',
+            }, text=True, capture_output=True, check=False, timeout=15)
+            assert (result.returncode == 0) == allowed, result.stderr
+            if allowed and selected == 'employee-runtime' and selected_ref is not None:
+                calls = [json.loads(line) for line in log.read_text().splitlines()]
+                expected_copy = [
+                    'skopeo', 'copy', '--all', '--preserve-digests',
+                    '--src-tls-verify=false', '--dest-tls-verify=false',
+                    f'docker://127.0.0.1:8083/node@{digest}',
+                    f'docker://127.0.0.1:8082/{target}',
+                ]
+                copy_calls = [call for call in calls if call[:2] == ['skopeo', 'copy']]
+                assert copy_calls == [expected_copy]
+                login_calls = [call for call in calls if call[:2] == ['docker', 'login']]
+                assert login_calls == [
+                    ['docker', 'login', '127.0.0.1:8082', '-u', 'admin', '--password-stdin'],
+                    ['docker', 'login', '127.0.0.1:8083', '-u', 'admin', '--password-stdin'],
+                ]
+                assert len([call for call in calls if call[:2] == ['skopeo', 'inspect']]) == 3
+                assert calls[-1][-1] == f'docker://127.0.0.1:8083/{target}'
+                assert json.loads((root / 'registry').read_text()) == {
+                    f'docker://127.0.0.1:8082/{target}': digest,
+                }
+            else:
+                assert not log.exists()
+            assert not list((root / 'runner').iterdir())
+
+
 def main() -> None:
     workflow = WORKFLOW_PATH.read_text()
     assert_static_contract(workflow)
@@ -900,6 +993,7 @@ def main() -> None:
     assert_image_selection(workflow)
     assert_fixed_source_checkout(workflow)
     assert_candidate_hermes_pin(workflow)
+    assert_candidate_node_runtime_pin(workflow)
     assert_local_checkout_isolation(workflow)
     assert_incomplete_cache_rejected()
     print("build-mypc images contract: ok")
