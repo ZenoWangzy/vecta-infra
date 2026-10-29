@@ -268,7 +268,7 @@ class EvidenceQueryTests(unittest.TestCase):
 
 
 class LastStageCopyPrefixTests(unittest.TestCase):
-    def test_keeps_only_final_stage_and_derives_src_from_dist(self) -> None:
+    def test_follows_final_stage_and_derives_src_from_dist(self) -> None:
         dockerfile = """
 FROM node:20 AS builder
 COPY packages/foo packages/foo
@@ -284,12 +284,36 @@ COPY scripts/entrypoint.sh /app/entrypoint.sh
             sorted(MODULE._last_stage_copy_prefixes(dockerfile)),
             sorted(
                 [
+                    "packages/foo",
                     "packages/foo/src",
                     "packages/foo/package.json",
                     "scripts/entrypoint.sh",
                 ]
             ),
         )
+
+    def test_follows_from_and_numbered_stages_but_skips_unrelated_stages(self) -> None:
+        dockerfile = """
+FROM node AS base
+ADD shared/ /app/shared/
+FROM node AS unused
+COPY unrelated/ /app/
+FROM base AS builder
+COPY build/ /app/build/
+FROM node
+COPY --from=2 /app/build /app/build
+"""
+        prefixes = MODULE._last_stage_copy_prefixes(dockerfile)
+        self.assertIn("shared", prefixes)
+        self.assertIn("build", prefixes)
+        self.assertNotIn("unrelated", prefixes)
+
+    def test_open_webui_build_stage_patches_affect_image(self) -> None:
+        dockerfile = (Path(__file__).parent / "fixtures" / "open-webui.Dockerfile").read_text()
+        prefixes = [("open-webui", prefix) for prefix in MODULE._last_stage_copy_prefixes(dockerfile)]
+        path = "infra/open-webui/source-patches/example.patch"
+        self.assertIn(("open-webui", "infra/open-webui/source-patches"), prefixes)
+        self.assertEqual(MODULE.diff_affects_image([path], prefixes, set()), [path])
 
 
 class LoadPrefixTableTests(unittest.TestCase):
