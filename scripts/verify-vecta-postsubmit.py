@@ -7,7 +7,7 @@ landed at HEAD -- the tip has no evidence and never will, and the commit
 that does have evidence isn't the tip. `verify()` now falls back to the
 newest ancestor commit that does carry exact-SHA evidence, but only when
 the diff between that ancestor and the requested sha touches no path a
-production Dockerfile's *final* build stage would copy into an image. That
+production Dockerfile's final stage or its dependencies copy into an image. That
 path->image mapping (`load_prefix_table`) is re-derived from
 scripts/production-image-contract.json and its Dockerfiles on every call,
 never a hand-copied table that can silently go stale. It's a lean port of
@@ -112,36 +112,36 @@ def find_evidence(
 
 
 def _last_stage_copy_prefixes(dockerfile_text: str) -> list[str]:
-    """Path prefixes the Dockerfile's *last* build stage COPYs into the image.
+    """Collect COPY/ADD sources from the final stage and its dependencies.
 
-    `FROM` resets the accumulator, so only the final stage's COPY lines
-    survive. `--from=<stage> /app/X ...` strips the `/app/` prefix and, for
-    a `/dist` destination, swaps it for `/src` (the builder compiles
-    src -> dist, so a src change is what actually varies the image). A
-    bare COPY (no `--from`) keeps its source path as-is. `--from=<stage>`
-    paths outside `/app/` come from a base image, not this repo, and are
-    skipped.
+    Keep the existing /app and dist-to-src mapping for stage copies, while
+    following named and numbered stages to their build-context inputs.
     """
-    prefixes: list[str] = []
+    stages: list[tuple[list[str], list[str]]] = []
+    names: dict[str, int] = {}
     for line in dockerfile_text.splitlines():
-        if re.match(r"^\s*FROM\s+", line, re.IGNORECASE):
-            prefixes = []
+        match = re.match(r"^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?", line, re.IGNORECASE)
+        if match:
+            base, name = match.groups()
+            stages.append(([], [base]))
+            if name:
+                names[name.lower()] = len(stages) - 1
             continue
-        match = re.match(r"^\s*COPY\s+(.*)$", line)
-        if not match:
+        match = re.match(r"^\s*(?:COPY|ADD)\s+(.*)$", line, re.IGNORECASE)
+        if not match or not stages:
             continue
         from_stage: str | None = None
         args: list[str] = []
         for token in match.group(1).split():
             if token.startswith("--from="):
                 from_stage = token[len("--from=") :]
-            elif token.startswith("--"):
-                continue
-            else:
+            elif not token.startswith("--"):
                 args.append(token)
         if len(args) < 2:
             continue
-        for source in args[:-1]:  # the last token is the destination
+        if from_stage is not None:
+            stages[-1][1].append(from_stage)
+        for source in args[:-1]:
             prefix = source
             if from_stage is not None:
                 if not prefix.startswith("/app/"):
@@ -151,7 +151,24 @@ def _last_stage_copy_prefixes(dockerfile_text: str) -> list[str]:
                     prefix = prefix[: -len("/dist")] + "/src"
             prefix = prefix.rstrip("/")
             if prefix:
-                prefixes.append(prefix)
+                stages[-1][0].append(prefix)
+
+    prefixes: list[str] = []
+    pending = [len(stages) - 1] if stages else []
+    visited: set[int] = set()
+    while pending:
+        index = pending.pop()
+        if index in visited:
+            continue
+        visited.add(index)
+        sources, dependencies = stages[index]
+        prefixes.extend(sources)
+        for dependency in dependencies:
+            target = names.get(dependency.lower())
+            if dependency.isdigit():
+                target = int(dependency)
+            if target is not None and 0 <= target < index:
+                pending.append(target)
     return prefixes
 
 
@@ -182,7 +199,7 @@ def diff_affects_image(
 ) -> list[str]:
     """Paths (in input order) that would change a built image's content.
 
-    A path affects an image if some Dockerfile's final stage COPYs it in
+    A path affects an image if a Dockerfile's final stage or a dependency copies it
     (exact prefix match or inside a prefix directory), or if it's the
     build recipe itself (the contract or one of its Dockerfiles) -- a
     changed recipe invalidates any classification derived from it.
