@@ -536,7 +536,7 @@ jobs:
             pypi: { indexPath: '/simple' },
           });
           for (const repo of [
-            ['vecta-alpine-proxy', 'https://mirrors.aliyun.com/alpine'],
+            ['vecta-alpine-proxy', 'https://mirrors.tuna.tsinghua.edu.cn/alpine'],
             ['vecta-debian-proxy', 'https://mirrors.aliyun.com/debian'],
             [
               'vecta-debian-security-proxy',
@@ -556,6 +556,8 @@ jobs:
               },
             });
           }
+          // A 404 cached from the old upstream would outlive the repoint by up to 24 h.
+          await request('POST', '/repositories/vecta-alpine-proxy/invalidate-cache');
           await upsert('docker', 'hosted', 'vecta-docker-local', {
             name: 'vecta-docker-local',
             online: true,
