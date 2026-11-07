@@ -8,7 +8,7 @@ nexus_pypi_proxy_repo: vecta-pypi-proxy
 nexus_pypi_remote_url: "https://pypi.org"
 
 nexus_alpine_proxy_repo: vecta-alpine-proxy
-nexus_alpine_remote_url: "https://mirrors.aliyun.com/alpine"
+nexus_alpine_remote_url: "https://mirrors.tuna.tsinghua.edu.cn/alpine"
 
 nexus_debian_proxy_repo: vecta-debian-proxy
 nexus_debian_remote_url: "https://mirrors.aliyun.com/debian"
