@@ -56,6 +56,34 @@ def extract_step_script(workflow: str, step_name: str) -> str:
     return "\n".join(body)
 
 
+def parse_workflow_yaml(workflow: str) -> dict[str, object]:
+    try:
+        import yaml
+    except ModuleNotFoundError:
+        # The infra PR job installs ansible-core, which provides PyYAML. Keep
+        # the isolated local contract command usable in the shared checkout,
+        # where the workspace's Node YAML parser is available instead.
+        parser = (
+            "const YAML = require('yaml'); "
+            "process.stdout.write(JSON.stringify(YAML.parse(require('fs')"
+            ".readFileSync(0, 'utf8'))));"
+        )
+        result = subprocess.run(
+            ["node", "-e", parser],
+            input=workflow,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        parsed = json.loads(result.stdout)
+    else:
+        # BaseLoader keeps GitHub Actions' `on` key as a string instead of
+        # applying YAML 1.1's legacy boolean interpretation.
+        parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
+    assert isinstance(parsed, dict)
+    return parsed
+
+
 def assert_static_contract(workflow: str) -> None:
     expected_condition = (
         "github.repository == 'ZenoWangzy/vecta-infra' && "
@@ -95,8 +123,20 @@ def assert_static_contract(workflow: str) -> None:
         "workflow_dispatch",
         "workflow_call",
     ]
+    triggers = parse_workflow_yaml(workflow)["on"]
+    assert isinstance(triggers, dict)
+    assert "secrets" not in triggers["workflow_dispatch"]
+    reusable_secrets = triggers["workflow_call"]["secrets"]
+    assert set(reusable_secrets) == {
+        "MYPC_NEXUS_ADMIN_PASSWORD",
+        "VECTA_READ_TOKEN",
+    }
+    assert all(secret["required"] in (True, "true") for secret in reusable_secrets.values())
+    image_names = triggers["workflow_dispatch"]["inputs"]["image_names"]
+    assert image_names["description"] == (
+        "Comma-separated subset of contract images to build; empty builds the full contract."
+    )
     assert "  workflow_call:\n    inputs:" in workflow
-    assert "    secrets:\n      MYPC_NEXUS_ADMIN_PASSWORD:\n        required: true\n      VECTA_READ_TOKEN:\n        required: true" in workflow
     assert set(re.findall(r"\$\{\{ secrets\.([A-Z0-9_]+) \}\}", workflow)) == {
         "MYPC_NEXUS_ADMIN_PASSWORD",
         "VECTA_READ_TOKEN",

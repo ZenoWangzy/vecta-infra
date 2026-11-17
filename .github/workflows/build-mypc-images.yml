@@ -23,11 +23,6 @@ name: Build mypc production images
         type: string
         required: false
         default: ""
-    secrets:
-      MYPC_NEXUS_ADMIN_PASSWORD:
-        required: true
-      VECTA_READ_TOKEN:
-        required: true
         description: >-
           Comma-separated subset of contract images to build; empty builds the
           full contract.
@@ -43,6 +38,11 @@ name: Build mypc production images
         type: string
         required: false
         default: ""
+    secrets:
+      MYPC_NEXUS_ADMIN_PASSWORD:
+        required: true
+      VECTA_READ_TOKEN:
+        required: true
 
 permissions:
   contents: read
