@@ -342,7 +342,7 @@ def assert_static_contract(workflow: str) -> None:
         "command -v timeout >/dev/null",
         "GIT_HTTP_LOW_SPEED_LIMIT=0",
         "LC_ALL=C",
-        'git -C "$target" fetch --depth=1 "$source" "$SOURCE_SHA"',
+        'fetch_with_auth --depth=1 "$source" "$SOURCE_SHA"',
         'remote="https://github.com/ZenoWangzy/vecta.git"',
         'git -C "$target" switch --detach "$SOURCE_SHA"',
         'checkout_sha="$(git -C "$target" rev-parse HEAD)"',
@@ -373,7 +373,9 @@ def assert_static_contract(workflow: str) -> None:
         r"\becho\b[^\n]*\$(?:VECTA_READ_TOKEN|\{VECTA_READ_TOKEN[^}]*\})",
         FETCH_SCRIPT,
     )
-    assert FETCH_SCRIPT.count('git -C "$target" fetch --depth=1') == 1
+    assert FETCH_SCRIPT.count('fetch_with_auth --depth=1') == 1
+    assert 'fetch_with_auth --filter=blob:none --no-tags' in FETCH_SCRIPT
+    assert '+refs/heads/main:refs/remotes/origin/main' in FETCH_SCRIPT
     assert FETCH_SCRIPT.count("https://github.com/ZenoWangzy/vecta.git") == 1
     assert not re.search(r"https://[^\s/]*@github\.com", FETCH_SCRIPT)
 
@@ -816,6 +818,7 @@ esac
             ('retained-warm', selected, 'ahead', selected, cache, '', None, False),
             ('cached-main-history', selected, 'ahead', selected, cache, '', None, True),
             ('stale-cache-main-history', latest, 'identical', latest, cache, '', None, True),
+            ('missing-cache-main-history', latest, 'identical', latest, None, '', None, True),
             ('divergent', selected, 'diverged', selected, None, '', 'main ancestry', False),
             ('wrong-merge-base', selected, 'ahead', tip, None, '', 'ancestor of the current VectA main', False),
             ('unknown-proof', selected, 'unknown', selected, None, '', 'main ancestry', False),
@@ -845,10 +848,21 @@ esac
                     'git', '-C', str(workspace / 'vecta'), 'rev-parse', 'HEAD',
                 ], env=environment, text=True, capture_output=True, check=True).stdout.strip() == requested, label
                 if history:
-                    assert 'Using cached VectA main history' in result.stdout, (label, result.stdout, result.stderr)
+                    cache_used = selected_cache == cache and requested == selected
+                    if cache_used:
+                        assert 'Using cached VectA main history' in result.stdout, (label, result.stdout, result.stderr)
+                        expected_main_count = '2'
+                    else:
+                        assert 'runner cache was stale or unavailable' in result.stdout, (label, result.stdout, result.stderr)
+                        expected_main_count = '3'
                     assert subprocess.run([
-                        'git', '-C', str(workspace / 'vecta'), 'rev-list', '--count', 'refs/remotes/cache/main',
-                    ], env=environment, text=True, capture_output=True, check=True).stdout.strip() == '2'
+                        'git', '-C', str(workspace / 'vecta'), 'rev-list', '--count', 'refs/remotes/origin/main',
+                    ], env=environment, text=True, capture_output=True, check=True).stdout.strip() == expected_main_count
+                    ancestry = subprocess.run([
+                        'git', '-C', str(workspace / 'vecta'), 'merge-base', '--is-ancestor',
+                        requested, 'refs/remotes/origin/main',
+                    ], env=environment, text=True, capture_output=True, check=False)
+                    assert ancestry.returncode == 0, (label, ancestry.returncode, ancestry.stderr)
                     if requested == latest:
                         changed = subprocess.run([
                             'git', '-C', str(workspace / 'vecta'), 'diff', '--name-only', tip, latest,

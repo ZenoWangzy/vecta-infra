@@ -98,43 +98,67 @@ fi
 git init "$target" >/dev/null
 git -C "$target" remote add origin "$remote"
 
+main_history_loaded=false
 if [ "$include_main_history" = true ]; then
-  [ -d "$cache" ] || {
-    echo "VectA main history cache is missing at $cache; refusing a full-history GitHub fetch" >&2
-    exit 1
-  }
-  cache_shallow="$(git --git-dir="$cache" rev-parse --is-shallow-repository 2>/dev/null || echo unknown)"
-  [ "$cache_shallow" = false ] || {
-    echo "VectA main history cache at $cache is not complete (shallow=$cache_shallow)" >&2
-    exit 1
-  }
-  cache_main="$(git --git-dir="$cache" rev-parse --verify refs/heads/main 2>/dev/null)" || {
-    echo "VectA main history cache at $cache has no refs/heads/main" >&2
-    exit 1
-  }
-  timeout 30m git -C "$target" fetch --no-tags "$cache" \
-    refs/heads/main:refs/remotes/cache/main || {
-      echo "could not fetch VectA main history from the local cache" >&2
-      exit 1
-    }
-  git -C "$target" fsck --connectivity-only refs/remotes/cache/main
-  [ "$(git -C "$target" rev-parse --is-shallow-repository)" = false ] || {
-    echo "fetched VectA main history is incomplete" >&2
-    exit 1
-  }
-  echo "Using cached VectA main history ($cache_main)"
+  if [ -d "$cache" ]; then
+    cache_shallow="$(git --git-dir="$cache" rev-parse --is-shallow-repository 2>/dev/null || echo unknown)"
+    cache_main=""
+    if [ "$cache_shallow" = false ]; then
+      cache_main="$(git --git-dir="$cache" rev-parse --verify refs/heads/main 2>/dev/null || true)"
+    fi
+    if [ -n "$cache_main" ] && timeout 30m git -C "$target" fetch --no-tags "$cache" \
+      +refs/heads/main:refs/remotes/origin/main; then
+      if git -C "$target" fsck --connectivity-only refs/remotes/origin/main \
+        && [ "$(git -C "$target" rev-parse --is-shallow-repository)" = false ]; then
+        main_history_loaded=true
+        echo "Using cached VectA main history ($cache_main)"
+      else
+        echo "Cached VectA main history is incomplete; it will be refreshed from GitHub if needed" >&2
+      fi
+    else
+      echo "VectA main history cache at $cache is stale or incomplete; it will be refreshed from GitHub if needed" >&2
+    fi
+  else
+    echo "VectA main history cache is missing at $cache; it will be fetched from GitHub if needed" >&2
+  fi
 fi
 
-fetch_exact() {
-  local source="$1"
+fetch_with_auth() {
   GIT_HTTP_LOW_SPEED_LIMIT=0 \
     LC_ALL=C \
     GIT_ASKPASS="$askpass" \
     GIT_ASKPASS_REQUIRE=force \
     GIT_TERMINAL_PROMPT=0 \
-    timeout 30m git -C "$target" fetch --depth=1 "$source" "$SOURCE_SHA" \
-    || return 1
+    timeout 30m git -C "$target" fetch "$@"
+}
+
+fetch_exact() {
+  local source="$1"
+  fetch_with_auth --depth=1 "$source" "$SOURCE_SHA" || return 1
   git -C "$target" fsck --connectivity-only "$SOURCE_SHA"
+}
+
+fetch_main_from_github() {
+  local attempt shallow
+  for attempt in 1 2 3; do
+    shallow="$(git -C "$target" rev-parse --is-shallow-repository)"
+    local history_args=()
+    if [ "$shallow" = true ]; then
+      history_args+=(--unshallow)
+    fi
+    if fetch_with_auth --filter=blob:none --no-tags \
+      "${history_args[@]}" "$remote" +refs/heads/main:refs/remotes/origin/main \
+      && git -C "$target" fsck --connectivity-only refs/remotes/origin/main \
+      && [ "$(git -C "$target" rev-parse --is-shallow-repository)" = false ]; then
+      echo "Fetched VectA main history from GitHub (runner cache was stale or unavailable)"
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      echo "Retrying VectA main history fetch after transient failure"
+    fi
+  done
+  echo "VectA main history fetch from GitHub failed after 3 attempts; the runner cache was stale or unavailable" >&2
+  return 1
 }
 
 source_loaded=false
@@ -178,6 +202,18 @@ if [ "$source_loaded" = false ]; then
 fi
 
 test "$source_loaded" = true
+
+if [ "$include_main_history" = true ] \
+  && { [ "$main_history_loaded" != true ] \
+    || ! git -C "$target" merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; }; then
+  echo "Cached VectA main history does not contain $SOURCE_SHA; refreshing main from GitHub because the runner cache is stale" >&2
+  fetch_main_from_github
+  if ! git -C "$target" merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
+    echo "The runner cache was stale or unavailable, and refreshed GitHub main still does not contain source_sha=$SOURCE_SHA" >&2
+    exit 1
+  fi
+fi
+
 git -C "$target" switch --detach "$SOURCE_SHA"
 checkout_sha="$(git -C "$target" rev-parse HEAD)"
 if [ "$checkout_sha" != "$SOURCE_SHA" ]; then
