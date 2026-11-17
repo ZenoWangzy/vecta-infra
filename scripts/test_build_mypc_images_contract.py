@@ -27,7 +27,7 @@ BUILDX_PLUGIN_PATH = "/usr/local/lib/docker/cli-plugins/docker-buildx"
 def job_allowed(event_name: str, repository: str, ref: str) -> bool:
     return (
         repository == "ZenoWangzy/vecta-infra"
-        and event_name == "workflow_dispatch"
+        and event_name in {"workflow_dispatch", "workflow_call"}
         and ref == "refs/heads/main"
     )
 
@@ -59,7 +59,8 @@ def extract_step_script(workflow: str, step_name: str) -> str:
 def assert_static_contract(workflow: str) -> None:
     expected_condition = (
         "github.repository == 'ZenoWangzy/vecta-infra' && "
-        "github.event_name == 'workflow_dispatch' && "
+        "(github.event_name == 'workflow_dispatch' || "
+        "github.event_name == 'workflow_call') && "
         "github.ref == 'refs/heads/main'"
     )
     assert extract_job_condition(workflow) == expected_condition
@@ -70,6 +71,7 @@ def assert_static_contract(workflow: str) -> None:
             "ZenoWangzy/vecta-infra",
             "refs/heads/main",
         ),
+        ("workflow_call", "ZenoWangzy/vecta-infra", "refs/heads/main"),
     )
     rejected = (
         ("push", "ZenoWangzy/vecta", "refs/heads/main"),
@@ -90,9 +92,10 @@ def assert_static_contract(workflow: str) -> None:
     assert '"on":\n  workflow_dispatch:' in workflow
     trigger_block = workflow.split('"on":\n', 1)[1].split("\npermissions:", 1)[0]
     assert re.findall(r"^  ([a-z_]+):", trigger_block, re.MULTILINE) == [
-        "workflow_dispatch"
+        "workflow_dispatch",
+        "workflow_call",
     ]
-    assert "  workflow_call:" not in workflow
+    assert "  workflow_call:\n    inputs:" in workflow
     assert "\n    secrets:\n" not in workflow
     assert set(re.findall(r"\$\{\{ secrets\.([A-Z0-9_]+) \}\}", workflow)) == {
         "MYPC_NEXUS_ADMIN_PASSWORD",
@@ -235,7 +238,7 @@ def assert_static_contract(workflow: str) -> None:
     assert 'GIT_NO_REPLACE_OBJECTS: "1"' in workflow
     assert "working-directory: infra" in workflow
     assert "- name: Login to production Nexus Docker registry" not in workflow
-    assert workflow.count("image_names:") == 1
+    assert workflow.count("image_names:") == 2  # workflow_dispatch and reusable call
     assert "main|develop" not in workflow
     assert "          - develop" not in workflow
     assert "github.com/docker/buildx" not in workflow

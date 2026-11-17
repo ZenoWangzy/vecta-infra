@@ -1,0 +1,221 @@
+name: Release Vecta on mypc
+
+"on":
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+        description: Full 40-character Vecta main SHA to release
+      mode:
+        type: choice
+        required: true
+        default: release
+        options:
+          - release
+          - hotfix
+        description: Release mode recorded in the production Deployment
+      services:
+        type: string
+        required: false
+        default: ""
+        description: Optional comma-separated production images to build and deploy
+      dry_run:
+        type: boolean
+        required: false
+        default: false
+        description: Acquire the deploy lock, validate, and print the plan without compose changes
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mypc-production-release-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: >-
+      github.repository == 'ZenoWangzy/vecta-infra' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, mypc, prod-build]
+    environment: production
+    timeout-minutes: 20
+    steps:
+      - name: Checkout infra contract
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate workflow inputs
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'source_sha must be a full lowercase 40-character SHA' >&2
+            exit 64
+          }
+          [[ "$RELEASE_MODE" == release || "$RELEASE_MODE" == hotfix ]] || {
+            echo 'mode must be release or hotfix' >&2
+            exit 64
+          }
+
+      - name: Checkout selected Vecta source
+        uses: actions/checkout@v4
+        with:
+          repository: ZenoWangzy/vecta
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.VECTA_READ_TOKEN }}
+          path: vecta
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require selected source on main with green Postsubmit evidence
+        run: |
+          set -euo pipefail
+          python3 scripts/verify-vecta-postsubmit.py \
+            --repo ZenoWangzy/vecta --sha "$SOURCE_SHA" --branch main \
+            --vecta-checkout vecta
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
+
+      - name: Validate requested image names
+        env:
+          REQUESTED_IMAGES: ${{ inputs.services }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const contract = JSON.parse(fs.readFileSync('vecta/scripts/production-image-contract.json', 'utf8'));
+          const available = contract.images.map((image) => image.name);
+          const raw = process.env.REQUESTED_IMAGES || '';
+          const requested = raw.split(',').map((name) => name.trim()).filter(Boolean);
+          if (raw.trim() && requested.length === 0) throw new Error('services must contain a production image name');
+          const unknown = requested.filter((name) => !available.includes(name));
+          if (unknown.length) throw new Error(`Unknown production images: ${unknown.join(', ')}`);
+          if (new Set(requested).size !== requested.length) throw new Error('services contains duplicate image names');
+          console.log(`Validated source ${process.env.GITHUB_SHA || 'workflow input'} and ${requested.length || 'all'} requested image(s)`);
+          NODE
+
+  build:
+    if: ${{ inputs.dry_run != true }}
+    needs: validate
+    uses: ./.github/workflows/build-mypc-images.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      source_branch: main
+      image_names: ${{ inputs.services }}
+    secrets: inherit
+
+  deploy:
+    needs: [validate, build]
+    if: >-
+      always() && needs.validate.result == 'success' &&
+      (inputs.dry_run == true || needs.build.result == 'success')
+    runs-on: [self-hosted, mypc, prod-build]
+    environment: production
+    timeout-minutes: 240
+    steps:
+      - name: Checkout infra release contract
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Initialize mypc-local release state
+        run: |
+          set -euo pipefail
+          AGENT_HOME="$HOME/.vecta-agent/mypc-release"
+          mkdir -p "$AGENT_HOME/engine-versions" "$AGENT_HOME/engine-sync"
+          chmod 700 "$AGENT_HOME" "$AGENT_HOME/engine-versions" "$AGENT_HOME/engine-sync"
+          echo "AGENT_HOME=$AGENT_HOME" >> "$GITHUB_ENV"
+
+      - name: Checkout selected Vecta source
+        uses: actions/checkout@v4
+        with:
+          repository: ZenoWangzy/vecta
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.VECTA_READ_TOKEN }}
+          path: vecta
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read the selected Vecta engine pin
+        id: engine-pin
+        run: |
+          set -euo pipefail
+          engine_sha="$(jq -er '.engine | select(test("^[0-9a-f]{40}$"))' vecta/.zenoforge/build.json)"
+          echo "sha=$engine_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout pinned Zenoforge engine source
+        uses: actions/checkout@v4
+        with:
+          repository: ZenoWangzy/zenoforge
+          ref: ${{ steps.engine-pin.outputs.sha }}
+          token: ${{ github.token }}
+          path: zenoforge
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build the pinned Vecta engine pack
+        env:
+          PINNED_ENGINE_SHA: ${{ steps.engine-pin.outputs.sha }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          engine_sha="$PINNED_ENGINE_SHA"
+          ENGINE_SYNC_STATE_DIR="$AGENT_HOME/engine-sync" \
+          ZF_LOCAL_CLONE="$GITHUB_WORKSPACE/zenoforge" \
+          ZF_URL=https://github.com/ZenoWangzy/zenoforge \
+          ZF_TARGET_CHECKOUT="$GITHUB_WORKSPACE/vecta" \
+            bash vecta/.zenoforge/build/engine-sync.sh --build "$engine_sha" \
+              "$SOURCE_SHA" --out "$AGENT_HOME/engine-versions"
+          version_dir="$(find "$AGENT_HOME/engine-versions" -mindepth 1 -maxdepth 1 \
+            -type d -name "${engine_sha:0:12}-*" -print -quit)"
+          [[ -n "$version_dir" && -r "$version_dir/engine/lib.sh" ]] || {
+            echo 'pinned Vecta engine pack was not produced' >&2
+            exit 1
+          }
+          echo "ZF_ENGINE_DIR=$version_dir/engine" >> "$GITHUB_ENV"
+
+      - name: Prepare authenticated acceptance credentials
+        if: ${{ inputs.dry_run != true }}
+        env:
+          VECTA_PRODUCTION_ACCEPTANCE_ENV: ${{ secrets.VECTA_PRODUCTION_ACCEPTANCE_ENV }}
+        run: |
+          set -euo pipefail
+          [[ -n "$VECTA_PRODUCTION_ACCEPTANCE_ENV" ]] || {
+            echo 'production environment secret VECTA_PRODUCTION_ACCEPTANCE_ENV is required' >&2
+            exit 78
+          }
+          umask 077
+          printf '%s\n' "$VECTA_PRODUCTION_ACCEPTANCE_ENV" > "$AGENT_HOME/acceptance-l1.env"
+          chmod 600 "$AGENT_HOME/acceptance-l1.env"
+
+      - name: Deploy or print dry-run plan
+        env:
+          GH_TOKEN: ${{ inputs.dry_run && secrets.VECTA_READ_TOKEN || secrets.VECTA_RELEASE_TOKEN }}
+          RELEASE_DEPLOY_LOCK_SCRIPT: ${{ github.workspace }}/scripts/deploy-lock.sh
+          RELEASE_BUILD_ALREADY_COMPLETED: ${{ inputs.dry_run != true && '1' || '0' }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_MODE: ${{ inputs.mode }}
+          RELEASE_SERVICES: ${{ inputs.services }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          [[ -n "$GH_TOKEN" ]] || {
+            echo 'production environment needs VECTA_RELEASE_TOKEN for deployment and VECTA_READ_TOKEN for dry-run' >&2
+            exit 78
+          }
+          args=(--source-sha "$SOURCE_SHA" --mode "$RELEASE_MODE")
+          if [[ -n "$RELEASE_SERVICES" ]]; then args+=(--services "$RELEASE_SERVICES"); fi
+          if [[ "$DRY_RUN" == true ]]; then args+=(--dry-run); fi
+          GH_TOKEN="$GH_TOKEN" VECTA_READ_TOKEN="$GH_TOKEN" \
+            bash vecta/scripts/release/mypc-release.sh "${args[@]}"
+
+      - name: Remove authenticated acceptance credentials
+        if: always()
+        run: rm -f -- "$HOME/.vecta-agent/mypc-release/acceptance-l1.env"

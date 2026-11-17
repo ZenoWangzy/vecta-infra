@@ -26,6 +26,18 @@ name: Build mypc production images
         description: >-
           Comma-separated subset of contract images to build; empty builds the
           full contract.
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      source_branch:
+        type: string
+        required: true
+      image_names:
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -38,7 +50,7 @@ jobs:
   build:
     if: >-
       github.repository == 'ZenoWangzy/vecta-infra' &&
-      github.event_name == 'workflow_dispatch' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call') &&
       github.ref == 'refs/heads/main'
     runs-on: [self-hosted, mypc, prod-build]
     environment: production
