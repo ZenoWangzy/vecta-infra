@@ -146,7 +146,7 @@ fetch_main_from_github() {
     if [ "$shallow" = true ]; then
       history_args+=(--unshallow)
     fi
-    if fetch_with_auth --filter=blob:none --no-tags \
+    if fetch_with_auth --no-tags \
       "${history_args[@]}" "$remote" +refs/heads/main:refs/remotes/origin/main \
       && git -C "$target" fsck --connectivity-only refs/remotes/origin/main \
       && [ "$(git -C "$target" rev-parse --is-shallow-repository)" = false ]; then

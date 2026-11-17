@@ -374,7 +374,8 @@ def assert_static_contract(workflow: str) -> None:
         FETCH_SCRIPT,
     )
     assert FETCH_SCRIPT.count('fetch_with_auth --depth=1') == 1
-    assert 'fetch_with_auth --filter=blob:none --no-tags' in FETCH_SCRIPT
+    assert 'fetch_with_auth --no-tags' in FETCH_SCRIPT
+    assert '--filter=blob:none' not in FETCH_SCRIPT
     assert '+refs/heads/main:refs/remotes/origin/main' in FETCH_SCRIPT
     assert FETCH_SCRIPT.count("https://github.com/ZenoWangzy/vecta.git") == 1
     assert not re.search(r"https://[^\s/]*@github\.com", FETCH_SCRIPT)
