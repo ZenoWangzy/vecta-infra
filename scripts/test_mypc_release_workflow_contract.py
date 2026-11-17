@@ -33,7 +33,8 @@ def main() -> None:
     require("RELEASE_BUILD_ALREADY_COMPLETED:")
     require("$HOME/.vecta-agent/mypc-release")
     require("secrets.VECTA_PRODUCTION_ACCEPTANCE_ENV")
-    require("secrets.VECTA_RELEASE_TOKEN")
+    require("secrets.VECTA_PRODUCTION_RELEASE_TOKEN")
+    require("secrets.VECTA_PRODUCTION_READ_TOKEN")
     require("Remove authenticated acceptance credentials")
     require("inputs.dry_run == true")
     require("without compose changes")
@@ -45,6 +46,8 @@ def main() -> None:
     assert "run-release.sh" not in RELEASE
     assert "runs-on: [self-hosted, mypc, prod-build]" in RELEASE
     assert RELEASE.count("secrets.VECTA_PRODUCTION_ACCEPTANCE_ENV") == 1
+    assert "secrets.VECTA_READ_TOKEN" not in RELEASE
+    assert "secrets.VECTA_RELEASE_TOKEN" not in RELEASE
     print("mypc release workflow contract: PASS")
 
 

@@ -68,7 +68,7 @@ jobs:
         with:
           repository: ZenoWangzy/vecta
           ref: ${{ inputs.source_sha }}
-          token: ${{ secrets.VECTA_READ_TOKEN }}
+          token: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
           path: vecta
           fetch-depth: 0
           persist-credentials: false
@@ -81,7 +81,7 @@ jobs:
             --vecta-checkout vecta
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
-          VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
+          VECTA_READ_TOKEN: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
 
       - name: Validate requested image names
         env:
@@ -138,7 +138,7 @@ jobs:
         with:
           repository: ZenoWangzy/vecta
           ref: ${{ inputs.source_sha }}
-          token: ${{ secrets.VECTA_READ_TOKEN }}
+          token: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
           path: vecta
           fetch-depth: 0
           persist-credentials: false
@@ -197,7 +197,7 @@ jobs:
 
       - name: Deploy or print dry-run plan
         env:
-          GH_TOKEN: ${{ inputs.dry_run && secrets.VECTA_READ_TOKEN || secrets.VECTA_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ inputs.dry_run && secrets.VECTA_PRODUCTION_READ_TOKEN || secrets.VECTA_PRODUCTION_RELEASE_TOKEN }}
           RELEASE_DEPLOY_LOCK_SCRIPT: ${{ github.workspace }}/scripts/deploy-lock.sh
           RELEASE_BUILD_ALREADY_COMPLETED: ${{ inputs.dry_run != true && '1' || '0' }}
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -207,7 +207,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ -n "$GH_TOKEN" ]] || {
-            echo 'production environment needs VECTA_RELEASE_TOKEN for deployment and VECTA_READ_TOKEN for dry-run' >&2
+            echo 'production environment needs VECTA_PRODUCTION_RELEASE_TOKEN for deployment and VECTA_PRODUCTION_READ_TOKEN for dry-run' >&2
             exit 78
           }
           args=(--source-sha "$SOURCE_SHA" --mode "$RELEASE_MODE")

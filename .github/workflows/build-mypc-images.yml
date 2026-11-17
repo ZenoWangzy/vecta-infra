@@ -79,7 +79,7 @@ jobs:
       BUILDX_VERSION: v0.34.1
       BUILDX_PLUGIN_PATH: /usr/local/lib/docker/cli-plugins/docker-buildx
       PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}
-      NEXUS_ADMIN_PASSWORD_SECRET_NAME: MYPC_NEXUS_ADMIN_PASSWORD
+      NEXUS_ADMIN_PASSWORD_SECRET_NAME: VECTA_PRODUCTION_NEXUS_ADMIN_PASSWORD
     steps:
       - name: Configure git proxy
         working-directory: .
@@ -326,7 +326,7 @@ jobs:
             exit 1
           fi
         env:
-          VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
+          VECTA_READ_TOKEN: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
 
       - name: Preflight production build runner
         run: |
@@ -360,7 +360,7 @@ jobs:
           --branch "$SOURCE_BRANCH"
           --vecta-checkout vecta
         env:
-          VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
+          VECTA_READ_TOKEN: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
 
       - name: Validate requested production images
         working-directory: infra/vecta
@@ -470,7 +470,7 @@ jobs:
               http://127.0.0.1:8081/service/rest/v1/system/eula >/dev/null
           fi
         env:
-          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.VECTA_PRODUCTION_NEXUS_ADMIN_PASSWORD }}
 
       - name: Provision production Nexus repositories
         run: |
@@ -479,7 +479,7 @@ jobs:
           const base = 'http://127.0.0.1:8081/service/rest/v1';
           const password = process.env.NEXUS_ADMIN_PASSWORD;
           const secretName = process.env.NEXUS_ADMIN_PASSWORD_SECRET_NAME
-            || 'MYPC_NEXUS_ADMIN_PASSWORD';
+            || 'VECTA_PRODUCTION_NEXUS_ADMIN_PASSWORD';
           if (!password) throw new Error(`${secretName} is required`);
           const auth = 'Basic ' + Buffer
             .from(`admin:${password}`)
@@ -623,7 +623,7 @@ jobs:
             done
           done
         env:
-          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.VECTA_PRODUCTION_NEXUS_ADMIN_PASSWORD }}
 
       - name: Validate production image contract
         working-directory: infra/vecta
@@ -686,7 +686,7 @@ jobs:
           bash scripts/verify-nexus-image-digest.sh \
             "$expected_group_tag_ref" "$expected_manifest_digest"
         env:
-          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.VECTA_PRODUCTION_NEXUS_ADMIN_PASSWORD }}
 
       - name: Build and push production images
         working-directory: infra/vecta
@@ -721,7 +721,7 @@ jobs:
             docker login "$DOCKER_BASE_IMAGE_SOURCE_REGISTRY" -u admin --password-stdin
           node scripts/build-push-production-images.mjs
         env:
-          NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
+          NEXUS_ADMIN_PASSWORD: ${{ secrets.VECTA_PRODUCTION_NEXUS_ADMIN_PASSWORD }}
 
       - name: Keep mypc Docker build cache under 60 GB
         if: always()
