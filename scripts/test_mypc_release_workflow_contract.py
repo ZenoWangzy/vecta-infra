@@ -33,7 +33,6 @@ def main() -> None:
     require("DEPLOY_HOST: root@127.0.0.1")
     require("ssh -o BatchMode=yes -o ConnectTimeout=5 root@127.0.0.1 true")
     require("openssh-client")
-    require("scripts/deploy-lock.sh")
     require("bash vecta/scripts/release/mypc-release.sh")
     require("RELEASE_BUILD_ALREADY_COMPLETED:")
     require("$HOME/.vecta-agent/mypc-release")
@@ -55,6 +54,7 @@ def main() -> None:
     assert first_deploy_step == "- name: Preflight root SSH to local runner"
     assert RELEASE.count("ssh -o BatchMode=yes -o ConnectTimeout=5 root@127.0.0.1 true") == 1
     assert "secrets: inherit" not in RELEASE
+    assert "RELEASE_DEPLOY_LOCK_SCRIPT" not in RELEASE
     assert "9222" not in RELEASE
     assert "run-release.sh" not in RELEASE
     assert "runs-on: [self-hosted, mypc, prod-build]" in RELEASE

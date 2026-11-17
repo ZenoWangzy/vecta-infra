@@ -213,7 +213,6 @@ jobs:
       - name: Deploy or print dry-run plan
         env:
           GH_TOKEN: ${{ inputs.dry_run && secrets.VECTA_PRODUCTION_READ_TOKEN || secrets.VECTA_PRODUCTION_RELEASE_TOKEN }}
-          RELEASE_DEPLOY_LOCK_SCRIPT: ${{ github.workspace }}/scripts/deploy-lock.sh
           RELEASE_BUILD_ALREADY_COMPLETED: ${{ inputs.dry_run != true && '1' || '0' }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_MODE: ${{ inputs.mode }}
