@@ -183,10 +183,12 @@ jobs:
           ZF_TARGET_CHECKOUT="$GITHUB_WORKSPACE/vecta" \
             bash vecta/.zenoforge/build/engine-sync.sh --build "$engine_sha" \
               "$SOURCE_SHA" --out "$AGENT_HOME/engine-versions"
-          version_dir="$(find "$AGENT_HOME/engine-versions" -mindepth 1 -maxdepth 1 \
-            -type d -name "${engine_sha:0:12}-*" -print -quit)"
-          [[ -n "$version_dir" && -r "$version_dir/engine/lib.sh" ]] || {
-            echo 'pinned Vecta engine pack was not produced' >&2
+          # Same id engine-sync.sh names the dir with (and its converge computes): engine12-pack12-review12-advisor12.
+          vecta_rev() { git -C "$GITHUB_WORKSPACE/vecta" rev-parse --verify --short=12 "$SOURCE_SHA:$1"; }
+          version_id="${engine_sha:0:12}-$(vecta_rev .zenoforge/build/pack)-$(vecta_rev .agents/skills/vecta-code-review)-$(vecta_rev .agents/skills/web-advisor-provider)"
+          version_dir="$AGENT_HOME/engine-versions/$version_id"
+          [[ -r "$version_dir/engine/lib.sh" ]] || {
+            echo "pinned Vecta engine pack $version_id was not produced" >&2
             exit 1
           }
           echo "ZF_ENGINE_DIR=$version_dir/engine" >> "$GITHUB_ENV"
