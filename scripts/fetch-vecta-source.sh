@@ -49,7 +49,6 @@ command -v timeout >/dev/null || {
 remote="https://github.com/ZenoWangzy/vecta.git"
 cache="/home/github-runner/.cache/vecta-main.git"
 target=vecta
-umask 077
 curl_config="$(mktemp)"
 askpass="$(mktemp)"
 keep_target=false

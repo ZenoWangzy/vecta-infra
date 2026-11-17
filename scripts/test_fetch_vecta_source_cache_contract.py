@@ -43,7 +43,10 @@ def make_fixture(root: Path) -> tuple[Path, Path, str]:
     run_git("-C", str(seed), "config", "user.name", "Cache contract")
     run_git("-C", str(seed), "config", "user.email", "cache-contract@example.invalid")
     (seed / "source.txt").write_text("base\n")
-    run_git("-C", str(seed), "add", "source.txt")
+    nested_file = seed / "nested" / "deeper" / "migration.sql"
+    nested_file.parent.mkdir(parents=True)
+    nested_file.write_text("select 1;\n")
+    run_git("-C", str(seed), "add", "source.txt", "nested/deeper/migration.sql")
     run_git("-C", str(seed), "commit", "-m", "base")
     (seed / "source.txt").write_text("selected\n")
     run_git("-C", str(seed), "commit", "-am", "selected")
@@ -145,6 +148,7 @@ def run_fetch(
         ["bash", str(scripts_dir / "fetch-vecta-source.sh"), "--with-main-history"],
         cwd=invocation,
         env=env,
+        preexec_fn=lambda: os.umask(0o022),
         check=False,
         text=True,
         capture_output=True,
@@ -190,6 +194,16 @@ def main() -> None:
         )
         assert full.returncode == 0, full.stdout + full.stderr
         assert "Using cached VectA main history" in full.stdout, full.stdout
+        checkout = root / f"run-{cache.name}" / "vecta"
+        nested_directory = checkout / "nested" / "deeper"
+        nested_file = nested_directory / "migration.sql"
+        directory_mode = nested_directory.stat().st_mode & 0o777
+        file_mode = nested_file.stat().st_mode & 0o777
+        assert directory_mode == 0o755, (
+            f"expected nested directory mode 0755, got {directory_mode:04o}"
+        )
+        assert file_mode == 0o644, f"expected checked-out file mode 0644, got {file_mode:04o}"
+        print("fetch-vecta-source checkout permissions contract: nested directory 0755, file 0644")
         full_github_fetches = [
             line for line in full_calls.read_text().splitlines()
             if "fetch" in line.split() and GITHUB_SOURCE in line
