@@ -20,6 +20,13 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+if [ ! -r "$SCRIPT_DIR/vecta-main-history.sh" ]; then
+  printf 'FATAL: missing required helper %s/vecta-main-history.sh; install both scripts with: sudo install -m 0755 scripts/warm-vecta-source-cache.sh scripts/vecta-main-history.sh /usr/local/sbin/\n' "$SCRIPT_DIR" >&2
+  exit 1
+fi
+source "$SCRIPT_DIR/vecta-main-history.sh"
+
 OCEE=/data/ocee
 CACHE=/home/github-runner/.cache/vecta-main.git
 UPSTREAM_TIMEOUT=120 # seconds; fetching /data/ocee from GitHub is incremental
@@ -87,13 +94,13 @@ if ! timeout "$CACHE_TIMEOUT" sudo -u github-runner git --git-dir="$CACHE" \
 fi
 
 cache_tip="$(sudo -u github-runner git --git-dir="$CACHE" rev-parse refs/heads/main)"
-cache_shallow="$(sudo -u github-runner git --git-dir="$CACHE" rev-parse --is-shallow-repository)"
 if [ "$cache_tip" != "$ocee_tip" ]; then
   log "FATAL: cache tip ($cache_tip) does not match /data/ocee tip ($ocee_tip) after a successful fetch -- should be impossible, investigate"
   exit 1
 fi
-if [ "$cache_shallow" != false ]; then
-  log "FATAL: cache still reports shallow history after a successful fetch"
+if ! sudo -u github-runner bash -c 'source "$1" && vecta_main_history_is_complete "$2" refs/heads/main' \
+  _ "$SCRIPT_DIR/vecta-main-history.sh" "$CACHE"; then
+  log "FATAL: cache main history is incomplete after a successful fetch"
   exit 1
 fi
 sudo -u github-runner git --git-dir="$CACHE" gc --auto

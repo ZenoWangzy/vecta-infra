@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/build-mypc-images.yml"
 FETCH_SCRIPT_PATH = ROOT / "scripts/fetch-vecta-source.sh"
 FETCH_SCRIPT = FETCH_SCRIPT_PATH.read_text()
+HISTORY_HELPER_PATH = ROOT / "scripts/vecta-main-history.sh"
 BUILDX_DEFAULTS_PATH = ROOT / "roles/infra-bootstrap/defaults/main.yml"
 BUILDX_TASKS_PATH = ROOT / "roles/infra-bootstrap/tasks/buildx.yml"
 INFRA_BOOTSTRAP_MAIN_PATH = ROOT / "roles/infra-bootstrap/tasks/main.yml"
@@ -828,6 +829,7 @@ esac
         ):
             workspace = root / label
             workspace.mkdir()
+            shutil.copyfile(HISTORY_HELPER_PATH, workspace / "vecta-main-history.sh")
             adapted = script.replace('https://github.com/ZenoWangzy/vecta.git', f'file://{source}')
             adapted = adapted.replace('/home/github-runner/.cache/vecta-main.git', str(selected_cache or root / 'absent-cache'))
             # Capture the SHA exposed to the following build step.
