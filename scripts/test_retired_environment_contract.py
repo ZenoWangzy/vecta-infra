@@ -173,6 +173,7 @@ def main() -> None:
         assert literal in mypc_compatibility, literal
 
     workflow = (ROOT / ".github/workflows/build-mypc-images.yml").read_text()
+    fetch_script = (ROOT / "scripts/fetch-vecta-source.sh").read_text()
     retired_environment = "".join(("v", "test"))
     assert "name: Build mypc production images" in workflow
     assert '"on":\n  workflow_dispatch:' in workflow
@@ -182,9 +183,9 @@ def main() -> None:
     assert "permissions:\n  contents: read" in workflow
     assert "SOURCE_SHA: ${{ inputs.source_sha }}" in workflow
     assert "SOURCE_BRANCH: ${{ inputs.source_branch }}" in workflow
-    assert 'main) ;;' in workflow
+    assert 'main) ;;' in fetch_script
     assert "main|develop" not in workflow
-    assert "source_sha must be an ancestor of the current VectA main HEAD" in workflow
+    assert "source_sha must be an ancestor of the current VectA main HEAD" in fetch_script
     assert "NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082" in workflow
     assert "DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082" in workflow
     assert "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083" in workflow

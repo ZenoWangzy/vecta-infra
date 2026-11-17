@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Executable contract for the safe.directory guard in
-scripts/warm-vecta-source-cache.sh -- ticket 136.
+"""Executable contracts for the Vecta source cache warmer.
 
 `git config --global --add` is not idempotent: running it every ten minutes
 (this script's own systemd timer, ticket 143) grows github-runner's shared
@@ -30,7 +29,99 @@ def extract_guard() -> str:
     return text[start:end]
 
 
+def assert_full_history_cache_fetch() -> None:
+    with tempfile.TemporaryDirectory(prefix=".warm-cache-contract-", dir=ROOT) as temporary:
+        root = Path(temporary)
+        source = root / "source"
+        source.mkdir()
+
+        def git(*arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "core.hooksPath=/dev/null", "-C", str(source), *arguments],
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout.strip()
+
+        git("init", "-b", "main")
+        git("config", "user.name", "Cache contract")
+        git("config", "user.email", "cache-contract@example.invalid")
+        (source / "source.txt").write_text("base\n")
+        git("add", "source.txt")
+        git("commit", "-m", "base")
+        (source / "source.txt").write_text("selected\n")
+        git("commit", "-am", "selected")
+        selected_sha = git("rev-parse", "HEAD")
+
+        cache = root / "cache.git"
+        subprocess.run(
+            ["git", "clone", "--bare", "--depth=1", f"file://{source}", str(cache)],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        initial_shallow = subprocess.run(
+            ["git", f"--git-dir={cache}", "rev-parse", "--is-shallow-repository"],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+        assert initial_shallow == "true", initial_shallow
+
+        subprocess.run(
+            [
+                "git", f"--git-dir={cache}", "fetch", "--unshallow", "--force", "--quiet",
+                f"file://{source}", "refs/heads/main:refs/heads/main",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        full_shallow = subprocess.run(
+            ["git", f"--git-dir={cache}", "rev-parse", "--is-shallow-repository"],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+        commit_count = subprocess.run(
+            ["git", f"--git-dir={cache}", "rev-list", "--count", "refs/heads/main"],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+        assert full_shallow == "false", full_shallow
+        assert commit_count == "2", commit_count
+
+        target = root / "target"
+        subprocess.run(["git", "init", str(target)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(target), "fetch", "--depth=1", str(cache), selected_sha],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(target), "checkout", "--detach", selected_sha],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        assert (target / "source.txt").read_text() == "selected\n"
+
+    print("warm-vecta-source-cache history: full main and build-style depth-1 fetch ok")
+
+
 def main() -> None:
+    script = SCRIPT.read_text()
+    assert 'rev-parse --is-shallow-repository' in script
+    assert 'history_args+=(--unshallow)' in script
+    assert 'fetch "${history_args[@]}" --force --quiet "file://$OCEE/.git"' in script
+    assert 'fetch --depth=1' not in script
+    assert 'cache still reports shallow history' in script
+    service = (ROOT / "scripts" / "warm-vecta-source-cache.service").read_text()
+    assert "TimeoutStartSec=30min" in service
+    assert_full_history_cache_fetch()
+
     guard = extract_guard()
     assert "--get-all safe.directory" in guard, (
         "guard must check before adding, not blindly --add -- ticket 136"

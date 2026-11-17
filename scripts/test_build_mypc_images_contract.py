@@ -14,6 +14,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/build-mypc-images.yml"
+FETCH_SCRIPT_PATH = ROOT / "scripts/fetch-vecta-source.sh"
+FETCH_SCRIPT = FETCH_SCRIPT_PATH.read_text()
 BUILDX_DEFAULTS_PATH = ROOT / "roles/infra-bootstrap/defaults/main.yml"
 BUILDX_TASKS_PATH = ROOT / "roles/infra-bootstrap/tasks/buildx.yml"
 INFRA_BOOTSTRAP_MAIN_PATH = ROOT / "roles/infra-bootstrap/tasks/main.yml"
@@ -153,26 +155,6 @@ def assert_static_contract(workflow: str) -> None:
         "only main is accepted.",
         'main) ;;',
         '*) echo "source_branch must be main: $SOURCE_BRANCH"',
-        '"https://api.github.com/repos/ZenoWangzy/vecta/compare/$SOURCE_SHA...$SOURCE_BRANCH?per_page=1"',
-        'if [ "$merge_base_sha" != "$SOURCE_SHA" ]; then',
-        'echo "source_sha must be an ancestor of the current VectA main HEAD"',
-        'merge_base_commit?.sha ?? ""',
-        'askpass="$(mktemp)"',
-        "trap 'rm -f \"$curl_config\" \"$askpass\"' EXIT",
-        'chmod 700 "$askpass"',
-        "*Username*) printf '%s\\n' x-access-token ;;",
-        "*Password*) printf '%s\\n' \"$VECTA_READ_TOKEN\" ;;",
-        'GIT_ASKPASS="$askpass"',
-        "GIT_ASKPASS_REQUIRE=force",
-        "GIT_TERMINAL_PROMPT=0",
-        "command -v timeout >/dev/null",
-        "GIT_HTTP_LOW_SPEED_LIMIT=0",
-        "LC_ALL=C",
-        'git -C vecta fetch --depth=1 "$1" "$SOURCE_SHA"',
-        'remote="https://github.com/ZenoWangzy/vecta.git"',
-        'git -C vecta switch --detach "$SOURCE_SHA"',
-        'checkout_sha="$(git -C vecta rev-parse HEAD)"',
-        'git -C vecta status --porcelain --untracked-files=all',
         "NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082",
         "DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082",
         "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083",
@@ -200,7 +182,7 @@ def assert_static_contract(workflow: str) -> None:
         "NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}",
     )
     for literal in required:
-        assert literal in workflow, literal
+        assert literal in workflow + FETCH_SCRIPT, literal
     assert 'default: never' not in workflow
     assert 'command -v nice' not in workflow
     assert 'command -v ionice' not in workflow
@@ -343,42 +325,57 @@ def assert_static_contract(workflow: str) -> None:
         assert literal in infra_script, literal
     assert not re.search(r"https://[^\s/]*@github\.com", infra_script)
     assert not re.search(r"\bset\s+-x\b|\bxtrace\b", infra_script)
-    download_script = extract_step_script(workflow, "Download selected VectA source")
-    clone_prefix = (
-        "  GIT_HTTP_LOW_SPEED_LIMIT=0 \\\n"
-        "    LC_ALL=C \\\n"
-        '    GIT_ASKPASS="$askpass" \\\n'
-        "    GIT_ASKPASS_REQUIRE=force \\\n"
-        "    GIT_TERMINAL_PROMPT=0 \\\n"
-        '    timeout 30m git -C vecta fetch --depth=1 "$1" "$SOURCE_SHA" "${baseline_refs[@]}"'
+    download_step = extract_step_script(workflow, "Download selected VectA source")
+    assert download_step.strip() == "bash scripts/fetch-vecta-source.sh"
+    fetch_contract = (
+        '"https://api.github.com/repos/ZenoWangzy/vecta/compare/$SOURCE_SHA...$SOURCE_BRANCH?per_page=1"',
+        'if [ "$merge_base_sha" != "$SOURCE_SHA" ]; then',
+        'echo "source_sha must be an ancestor of the current VectA main HEAD"',
+        'askpass="$(mktemp)"',
+        "trap cleanup EXIT",
+        'chmod 700 "$askpass"',
+        "*Username*) printf '%s\\n' x-access-token ;;",
+        "*Password*) printf '%s\\n' \"$VECTA_READ_TOKEN\" ;;",
+        'GIT_ASKPASS="$askpass"',
+        "GIT_ASKPASS_REQUIRE=force",
+        "GIT_TERMINAL_PROMPT=0",
+        "command -v timeout >/dev/null",
+        "GIT_HTTP_LOW_SPEED_LIMIT=0",
+        "LC_ALL=C",
+        'git -C "$target" fetch --depth=1 "$source" "$SOURCE_SHA"',
+        'remote="https://github.com/ZenoWangzy/vecta.git"',
+        'git -C "$target" switch --detach "$SOURCE_SHA"',
+        'checkout_sha="$(git -C "$target" rev-parse HEAD)"',
+        'git -C "$target" status --porcelain --untracked-files=all',
+        'cache="/home/github-runner/.cache/vecta-main.git"',
+        'git --git-dir="$cache" cat-file -e "$SOURCE_SHA^{commit}"',
+        'git --git-dir="$cache" fsck --connectivity-only "$SOURCE_SHA"',
+        'if fetch_exact "$cache"; then',
+        'fetch_exact "$remote"',
+        'echo "Cached VectA source unusable; falling back to GitHub"',
+        'rm -rf -- "$target"',
     )
-    assert clone_prefix in download_script
-    assert "for attempt in 1 2 3; do" in download_script
-    assert 'rm -rf vecta' in download_script
-    assert 'if [ "$attempt" -eq 3 ]; then' in download_script
-    assert 'echo "VectA clone failed after 3 attempts" >&2' in download_script
-    assert 'cache="/home/github-runner/.cache/vecta-main.git"' in download_script
-    assert "proxy =" not in download_script
-    assert "HTTPS_PROXY" not in download_script
-    assert "https_proxy" not in download_script
-    assert 'git --git-dir="$cache" cat-file -e "$SOURCE_SHA^{commit}"' in download_script
-    assert 'git --git-dir="$cache" fsck --connectivity-only "$SOURCE_SHA"' in download_script
-    assert 'if clone_source "$cache"; then' in download_script
-    assert 'clone_source "$remote"' in download_script
-    assert "Cached VectA source unusable; falling back to GitHub" in download_script
-    assert download_script.count("GIT_HTTP_LOW_SPEED_LIMIT") == 1
-    assert "GIT_HTTP_LOW_SPEED_TIME" not in workflow
-    assert not re.search(r"\bgh\b", download_script)
-    assert not re.search(r"\bgit\b[^\n]*\bconfig\b", download_script)
-    assert "GIT_CONFIG_" not in download_script
-    assert not re.search(r"\bset\s+-x\b|\bxtrace\b", download_script)
+    for literal in fetch_contract:
+        assert literal in FETCH_SCRIPT, literal
+    assert "for attempt in 1 2 3; do" in FETCH_SCRIPT
+    assert 'if [ "$attempt" -eq 3 ]; then' in FETCH_SCRIPT
+    assert 'echo "VectA clone failed after 3 attempts" >&2' in FETCH_SCRIPT
+    assert "proxy =" not in FETCH_SCRIPT
+    assert "HTTPS_PROXY" not in FETCH_SCRIPT
+    assert "https_proxy" not in FETCH_SCRIPT
+    assert FETCH_SCRIPT.count("GIT_HTTP_LOW_SPEED_LIMIT") == 1
+    assert "GIT_HTTP_LOW_SPEED_TIME" not in FETCH_SCRIPT
+    assert not re.search(r"\bgh\b", FETCH_SCRIPT)
+    assert not re.search(r"\bgit\b[^\n]*\bconfig\b", FETCH_SCRIPT)
+    assert "GIT_CONFIG_" not in FETCH_SCRIPT
+    assert not re.search(r"\bset\s+-x\b|\bxtrace\b", FETCH_SCRIPT)
     assert not re.search(
         r"\becho\b[^\n]*\$(?:VECTA_READ_TOKEN|\{VECTA_READ_TOKEN[^}]*\})",
-        download_script,
+        FETCH_SCRIPT,
     )
-    assert download_script.count('git -C vecta fetch --depth=1') == 1
-    assert download_script.count("https://github.com/ZenoWangzy/vecta.git") == 1
-    assert not re.search(r"https://[^\s/]*@github\.com", download_script)
+    assert FETCH_SCRIPT.count('git -C "$target" fetch --depth=1') == 1
+    assert FETCH_SCRIPT.count("https://github.com/ZenoWangzy/vecta.git") == 1
+    assert not re.search(r"https://[^\s/]*@github\.com", FETCH_SCRIPT)
 
     hermes_seed_script = extract_step_script(workflow, "Seed verified Hermes base image")
     for literal in (
@@ -774,7 +771,7 @@ def assert_image_selection(workflow: str) -> None:
 
 
 def assert_fixed_source_checkout(workflow: str) -> None:
-    script = extract_step_script(workflow, 'Download selected VectA source')
+    script = FETCH_SCRIPT
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         source = root / 'source'
@@ -810,15 +807,20 @@ esac
 ''')
         cache = root / 'cache.git'
         subprocess.run(['git', 'clone', '--bare', str(source), str(cache)], env=environment, check=True, capture_output=True)
-        for label, requested, status, base, selected_cache, names, error in (
-            ('head', tip, 'identical', tip, None, '', None),
-            ('retained-cold', selected, 'ahead', selected, None, '', None),
-            ('retained-warm', selected, 'ahead', selected, cache, '', None),
-            ('divergent', selected, 'diverged', selected, None, '', 'main ancestry'),
-            ('wrong-merge-base', selected, 'ahead', tip, None, '', 'ancestor of the current VectA main'),
-            ('unknown-proof', selected, 'unknown', selected, None, '', 'main ancestry'),
-            ('explicit-subset', selected, 'ahead', selected, None, ' vecta-web , vecta-web ', None),
-            ('unfetchable-source', 'f' * 40, 'ahead', 'f' * 40, None, '', 'VectA clone failed after 3 attempts'),
+        (source / 'candidate').write_text('latest main\n')
+        git('commit', '-am', 'latest main')
+        latest = git('rev-parse', 'HEAD')
+        for label, requested, status, base, selected_cache, names, error, history in (
+            ('head', tip, 'identical', tip, None, '', None, False),
+            ('retained-cold', selected, 'ahead', selected, None, '', None, False),
+            ('retained-warm', selected, 'ahead', selected, cache, '', None, False),
+            ('cached-main-history', selected, 'ahead', selected, cache, '', None, True),
+            ('stale-cache-main-history', latest, 'identical', latest, cache, '', None, True),
+            ('divergent', selected, 'diverged', selected, None, '', 'main ancestry', False),
+            ('wrong-merge-base', selected, 'ahead', tip, None, '', 'ancestor of the current VectA main', False),
+            ('unknown-proof', selected, 'unknown', selected, None, '', 'main ancestry', False),
+            ('explicit-subset', selected, 'ahead', selected, None, ' vecta-web , vecta-web ', None, False),
+            ('unfetchable-source', 'f' * 40, 'ahead', 'f' * 40, None, '', 'VectA clone failed after 3 attempts', False),
         ):
             workspace = root / label
             workspace.mkdir()
@@ -826,7 +828,8 @@ esac
             adapted = adapted.replace('/home/github-runner/.cache/vecta-main.git', str(selected_cache or root / 'absent-cache'))
             # Capture the SHA exposed to the following build step.
             adapted += '\nprintf "%s\\n" "$SOURCE_SHA" > downstream-source-sha\n'
-            result = subprocess.run(['bash', '-c', adapted], cwd=workspace, env={
+            script_args = ['--with-main-history'] if history else []
+            result = subprocess.run(['bash', '-c', adapted, 'fetch-vecta-source.sh', *script_args], cwd=workspace, env={
                 **environment, 'PATH': f'{fake_bin}:{environment["PATH"]}',
                 'VECTA_READ_TOKEN': 'fixture', 'SOURCE_BRANCH': 'main', 'SOURCE_SHA': requested,
                 'PRODUCTION_IMAGE_NAMES': names,
@@ -835,16 +838,27 @@ esac
             }, text=True, capture_output=True, check=False, timeout=15)
             if error is None:
                 assert result.returncode == 0, (label, result.stderr)
-                expected = 'newer main\n' if requested == tip else 'selected\n'
+                expected = 'latest main\n' if requested == latest else ('newer main\n' if requested == tip else 'selected\n')
                 assert (workspace / 'vecta/candidate').read_text() == expected, label
                 assert (workspace / 'downstream-source-sha').read_text().strip() == requested, label
                 assert subprocess.run([
                     'git', '-C', str(workspace / 'vecta'), 'rev-parse', 'HEAD',
                 ], env=environment, text=True, capture_output=True, check=True).stdout.strip() == requested, label
-                if selected_cache == cache:
+                if history:
+                    assert 'Using cached VectA main history' in result.stdout, (label, result.stdout, result.stderr)
+                    assert subprocess.run([
+                        'git', '-C', str(workspace / 'vecta'), 'rev-list', '--count', 'refs/remotes/cache/main',
+                    ], env=environment, text=True, capture_output=True, check=True).stdout.strip() == '2'
+                    if requested == latest:
+                        changed = subprocess.run([
+                            'git', '-C', str(workspace / 'vecta'), 'diff', '--name-only', tip, latest,
+                        ], env=environment, text=True, capture_output=True, check=True).stdout.splitlines()
+                        assert changed == ['candidate'], (label, changed)
+                elif selected_cache == cache:
                     assert 'Using cached exact VectA source' in result.stdout
                 fetched = (workspace / 'vecta/.git/FETCH_HEAD').read_text().splitlines()
-                assert {line.split()[0] for line in fetched} == {requested}, label
+                expected_fetch = tip if history and requested == selected else requested
+                assert {line.split()[0] for line in fetched} == {expected_fetch}, label
             else:
                 assert result.returncode != 0, label
                 assert error in result.stderr, (label, result.stderr)

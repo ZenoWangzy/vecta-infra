@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Ticket 143: keep /home/github-runner/.cache/vecta-main.git hot so
 # build-mypc-images.yml's "Download selected VectA source" step never has to
-# fall back to a cold full clone over a link that kills bulk transfers.
+# fall back to a cold exact-SHA fetch over a link that kills bulk transfers.
 #
 # Two-hop relay, proven manually in production window 5 (2026-09-07):
 #   GitHub (SSH, already works, already authenticated) -> /data/ocee (full
 #   history, root-owned, this host's production checkout) -> the runner's
-#   own shallow cache (github-runner-owned, local file:// fetch, no auth).
+#   own full-history cache (github-runner-owned, local file:// fetch, no auth).
+# Keep blobs in the cache: the build workflow's depth-1 local fetch asks for a
+# complete selected tree, and upload-pack cannot serve promised blobs from a
+# filtered bare cache on this local path. The VectA pack is about 276 MiB here.
 # Both hops are `fetch` only. Nothing here ever touches a working tree,
 # checks out a branch, or resets anything -- /data/ocee's checked-out state
 # is not this script's concern and must not be disturbed.
@@ -19,7 +22,8 @@ set -euo pipefail
 
 OCEE=/data/ocee
 CACHE=/home/github-runner/.cache/vecta-main.git
-HOP_TIMEOUT=120 # seconds; each hop is normally single-digit seconds once warm
+UPSTREAM_TIMEOUT=120 # seconds; fetching /data/ocee from GitHub is incremental
+CACHE_TIMEOUT=1800 # seconds; the first unshallow fetch copies main's history
 
 log() { printf '%s [warm-vecta-source-cache] %s\n' "$(date -u +%FT%TZ)" "$1"; }
 
@@ -29,16 +33,21 @@ if [ ! -d "$OCEE/.git" ]; then
 fi
 
 log "hop 1: fetching $OCEE forward from its own origin (SSH, already authenticated)"
-if ! timeout "$HOP_TIMEOUT" git -C "$OCEE" fetch origin main --quiet; then
+if ! timeout "$UPSTREAM_TIMEOUT" git -C "$OCEE" fetch origin main --quiet; then
   log "hop 1 FAILED (timeout or network) -- cache stays at its previous point, not fatal, next timer tick retries"
   exit 1
 fi
 ocee_tip="$(git -C "$OCEE" rev-parse refs/remotes/origin/main)"
 log "hop 1 ok: /data/ocee/origin/main = $ocee_tip"
+ocee_shallow="$(git -C "$OCEE" rev-parse --is-shallow-repository)"
+if [ "$ocee_shallow" != false ]; then
+  log "FATAL: $OCEE is shallow; it cannot warm the runner's full main history"
+  exit 1
+fi
 
 mkdir -p "$(dirname "$CACHE")"
 if [ ! -d "$CACHE" ]; then
-  log "runner cache missing at $CACHE -- bootstrapping fresh (--depth=1, small regardless of repo size)"
+  log "runner cache missing at $CACHE -- bootstrapping a full-history bare repository"
   sudo -u github-runner git init --bare "$CACHE" --quiet
   chown -R github-runner:github-runner "$CACHE"
 fi
@@ -53,17 +62,29 @@ if ! sudo -u github-runner git config --global --get-all safe.directory 2>/dev/n
   sudo -u github-runner git config --global --add safe.directory "$OCEE/.git" 2>/dev/null || true
 fi
 
+cache_shallow="$(sudo -u github-runner git --git-dir="$CACHE" rev-parse --is-shallow-repository)"
+history_args=()
+if [ "$cache_shallow" = true ]; then
+  log "runner cache is shallow; fetching full main history for the first time"
+  history_args+=(--unshallow)
+fi
+
 log "hop 2: fetching runner cache from $OCEE locally (no auth, no network)"
-if ! timeout "$HOP_TIMEOUT" sudo -u github-runner git --git-dir="$CACHE" \
-  fetch --depth=1 --force --quiet "file://$OCEE/.git" \
+if ! timeout "$CACHE_TIMEOUT" sudo -u github-runner git --git-dir="$CACHE" \
+  fetch "${history_args[@]}" --force --quiet "file://$OCEE/.git" \
   "refs/remotes/origin/main:refs/heads/main"; then
   log "hop 2 FAILED -- unexpected, hop 1 succeeded and this is a local fetch; investigate, don't just retry blindly"
   exit 1
 fi
 
 cache_tip="$(sudo -u github-runner git --git-dir="$CACHE" rev-parse refs/heads/main)"
+cache_shallow="$(sudo -u github-runner git --git-dir="$CACHE" rev-parse --is-shallow-repository)"
 if [ "$cache_tip" != "$ocee_tip" ]; then
   log "FATAL: cache tip ($cache_tip) does not match /data/ocee tip ($ocee_tip) after a successful fetch -- should be impossible, investigate"
+  exit 1
+fi
+if [ "$cache_shallow" != false ]; then
+  log "FATAL: cache still reports shallow history after a successful fetch"
   exit 1
 fi
 log "cache warm: refs/heads/main = $cache_tip"
