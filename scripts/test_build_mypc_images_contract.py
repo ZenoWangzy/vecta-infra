@@ -96,10 +96,10 @@ def assert_static_contract(workflow: str) -> None:
         "workflow_call",
     ]
     assert "  workflow_call:\n    inputs:" in workflow
-    assert "\n    secrets:\n" not in workflow
+    assert "    secrets:\n      MYPC_NEXUS_ADMIN_PASSWORD:\n        required: true\n      VECTA_READ_TOKEN:\n        required: true" in workflow
     assert set(re.findall(r"\$\{\{ secrets\.([A-Z0-9_]+) \}\}", workflow)) == {
-        "VECTA_PRODUCTION_NEXUS_ADMIN_PASSWORD",
-        "VECTA_PRODUCTION_READ_TOKEN",
+        "MYPC_NEXUS_ADMIN_PASSWORD",
+        "VECTA_READ_TOKEN",
     }
 
     required = (
@@ -156,7 +156,8 @@ def assert_static_contract(workflow: str) -> None:
         'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin',
         "run: pnpm check:production-images",
         "          node scripts/build-push-production-images.mjs",
-        "NEXUS_ADMIN_PASSWORD: ${{ secrets.VECTA_PRODUCTION_NEXUS_ADMIN_PASSWORD }}",
+        "VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}",
+        "NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}",
     )
     for literal in required:
         assert literal in workflow, literal

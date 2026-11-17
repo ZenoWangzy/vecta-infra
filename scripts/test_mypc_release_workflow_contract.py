@@ -28,6 +28,11 @@ def main() -> None:
     require("--branch main")
     require("uses: ./.github/workflows/build-mypc-images.yml")
     require("image_names: ${{ inputs.services }}")
+    require("MYPC_NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}")
+    require("VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}")
+    require("DEPLOY_HOST: root@127.0.0.1")
+    require("ssh -o BatchMode=yes -o ConnectTimeout=5 root@127.0.0.1 true")
+    require("openssh-client")
     require("scripts/deploy-lock.sh")
     require("bash vecta/scripts/release/mypc-release.sh")
     require("RELEASE_BUILD_ALREADY_COMPLETED:")
@@ -39,14 +44,21 @@ def main() -> None:
     require("inputs.dry_run == true")
     require("without compose changes")
     require("workflow_call:\n    inputs:", BUILD)
+    require(
+        "secrets:\n      MYPC_NEXUS_ADMIN_PASSWORD:\n        required: true\n      VECTA_READ_TOKEN:\n        required: true",
+        BUILD,
+    )
     require("github.event_name == 'workflow_call'", BUILD)
 
-    assert "ssh " not in RELEASE
+    deploy = RELEASE.split("  deploy:", 1)[1]
+    first_deploy_step = deploy.split("    steps:\n", 1)[1].lstrip().splitlines()[0]
+    assert first_deploy_step == "- name: Preflight root SSH to local runner"
+    assert RELEASE.count("ssh -o BatchMode=yes -o ConnectTimeout=5 root@127.0.0.1 true") == 1
+    assert "secrets: inherit" not in RELEASE
     assert "9222" not in RELEASE
     assert "run-release.sh" not in RELEASE
     assert "runs-on: [self-hosted, mypc, prod-build]" in RELEASE
     assert RELEASE.count("secrets.VECTA_PRODUCTION_ACCEPTANCE_ENV") == 1
-    assert "secrets.VECTA_READ_TOKEN" not in RELEASE
     assert "secrets.VECTA_RELEASE_TOKEN" not in RELEASE
     print("mypc release workflow contract: PASS")
 

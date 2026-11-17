@@ -109,7 +109,9 @@ jobs:
       source_sha: ${{ inputs.source_sha }}
       source_branch: main
       image_names: ${{ inputs.services }}
-    secrets: inherit
+    secrets:
+      MYPC_NEXUS_ADMIN_PASSWORD: ${{ secrets.MYPC_NEXUS_ADMIN_PASSWORD }}
+      VECTA_READ_TOKEN: ${{ secrets.VECTA_READ_TOKEN }}
 
   deploy:
     needs: [validate, build]
@@ -120,6 +122,19 @@ jobs:
     environment: production
     timeout-minutes: 240
     steps:
+      - name: Preflight root SSH to local runner
+        run: |
+          set -euo pipefail
+          runner_user="$(id -un)"
+          command -v ssh >/dev/null || {
+            echo "runner user '$runner_user' needs openssh-client installed to reach root@127.0.0.1" >&2
+            exit 78
+          }
+          ssh -o BatchMode=yes -o ConnectTimeout=5 root@127.0.0.1 true || {
+            echo "runner user '$runner_user' must authorize its SSH key for root@127.0.0.1; install openssh-client if missing and configure root's authorized_keys" >&2
+            exit 78
+          }
+
       - name: Checkout infra release contract
         uses: actions/checkout@v4
         with:
@@ -204,6 +219,7 @@ jobs:
           RELEASE_MODE: ${{ inputs.mode }}
           RELEASE_SERVICES: ${{ inputs.services }}
           DRY_RUN: ${{ inputs.dry_run }}
+          DEPLOY_HOST: root@127.0.0.1
         run: |
           set -euo pipefail
           [[ -n "$GH_TOKEN" ]] || {
