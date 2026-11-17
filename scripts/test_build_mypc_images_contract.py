@@ -855,14 +855,14 @@ esac
                     else:
                         assert 'runner cache was stale or unavailable' in result.stdout, (label, result.stdout, result.stderr)
                         expected_main_count = '3'
-                    assert subprocess.run([
-                        'git', '-C', str(workspace / 'vecta'), 'rev-list', '--count', 'refs/remotes/origin/main',
-                    ], env=environment, text=True, capture_output=True, check=True).stdout.strip() == expected_main_count
                     ancestry = subprocess.run([
                         'git', '-C', str(workspace / 'vecta'), 'merge-base', '--is-ancestor',
                         requested, 'refs/remotes/origin/main',
                     ], env=environment, text=True, capture_output=True, check=False)
                     assert ancestry.returncode == 0, (label, ancestry.returncode, ancestry.stderr)
+                    assert subprocess.run([
+                        'git', '-C', str(workspace / 'vecta'), 'rev-list', '--count', 'refs/remotes/origin/main',
+                    ], env=environment, text=True, capture_output=True, check=True).stdout.strip() == expected_main_count
                     if requested == latest:
                         changed = subprocess.run([
                             'git', '-C', str(workspace / 'vecta'), 'diff', '--name-only', tip, latest,
