@@ -42,7 +42,7 @@ def main() -> None:
     require("secrets.VECTA_PRODUCTION_READ_TOKEN")
     require("Remove authenticated acceptance credentials")
     require("inputs.dry_run == true")
-    require("without compose changes")
+    require("without acquiring the production lock or changing containers")
     require("workflow_call:\n    inputs:", BUILD)
     require(
         "secrets:\n      MYPC_NEXUS_ADMIN_PASSWORD:\n        required: true\n      VECTA_READ_TOKEN:\n        required: true",

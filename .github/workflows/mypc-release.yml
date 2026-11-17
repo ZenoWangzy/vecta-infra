@@ -24,7 +24,7 @@ name: Release Vecta on mypc
         type: boolean
         required: false
         default: false
-        description: Acquire the deploy lock, validate, and print the plan without compose changes
+        description: Validate the selected SHA and print the plan without acquiring the production lock or changing containers
 
 permissions:
   contents: read
