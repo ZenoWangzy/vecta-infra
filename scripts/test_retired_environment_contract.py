@@ -176,7 +176,7 @@ def main() -> None:
     retired_environment = "".join(("v", "test"))
     assert "name: Build mypc production images" in workflow
     assert '"on":\n  workflow_dispatch:' in workflow
-    assert "  workflow_call:" not in workflow
+    assert "  workflow_call:\n    inputs:" in workflow
     assert "runs-on: [self-hosted, mypc, prod-build]" in workflow
     assert "environment: production" in workflow
     assert "permissions:\n  contents: read" in workflow
@@ -188,7 +188,7 @@ def main() -> None:
     assert "NEXUS_DOCKER_REGISTRY: 127.0.0.1:8082" in workflow
     assert "DOCKER_BASE_IMAGE_REGISTRY: 127.0.0.1:8082" in workflow
     assert "DOCKER_BASE_IMAGE_SOURCE_REGISTRY: 127.0.0.1:8083" in workflow
-    assert workflow.count("image_names:") == 1
+    assert workflow.count("image_names:") == 2
     assert "PRODUCTION_IMAGE_NAMES: ${{ inputs.image_names || '' }}" in workflow
     assert 'docker login "$NEXUS_DOCKER_REGISTRY" -u admin --password-stdin' in workflow
     assert "run: pnpm check:production-images" in workflow
