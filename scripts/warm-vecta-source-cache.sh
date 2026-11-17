@@ -21,6 +21,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+if [ ! -r "$SCRIPT_DIR/vecta-main-history.sh" ]; then
+  printf 'FATAL: missing required helper %s/vecta-main-history.sh; install both scripts with: sudo install -m 0755 scripts/warm-vecta-source-cache.sh scripts/vecta-main-history.sh /usr/local/sbin/\n' "$SCRIPT_DIR" >&2
+  exit 1
+fi
 source "$SCRIPT_DIR/vecta-main-history.sh"
 
 OCEE=/data/ocee

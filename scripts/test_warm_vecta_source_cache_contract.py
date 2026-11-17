@@ -31,6 +31,35 @@ def extract_guard() -> str:
     return text[start:end]
 
 
+def assert_installed_warmer_requires_helper() -> None:
+    install_command = (
+        "sudo install -m 0755 scripts/warm-vecta-source-cache.sh "
+        "scripts/vecta-main-history.sh /usr/local/sbin/"
+    )
+    with tempfile.TemporaryDirectory(prefix=".warm-cache-installed-alone-", dir=ROOT) as temporary:
+        installed = Path(temporary) / "usr/local/sbin/warm-vecta-source-cache.sh"
+        installed.parent.mkdir(parents=True)
+        installed.write_text(SCRIPT.read_text())
+
+        result = subprocess.run(
+            ["bash", str(installed)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        expected_helper = str(installed.parent / "vecta-main-history.sh")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert expected_helper in result.stderr, result.stderr
+        assert install_command in result.stderr, result.stderr
+        assert "No such file or directory" not in result.stderr, result.stderr
+        print(
+            "warm-vecta-source-cache installed-alone reproduction: "
+            f"{result.stderr.strip()} (exit code: {result.returncode})"
+        )
+    print("warm-vecta-source-cache installed-alone guard: helper install diagnostic verified (exit code: 0)")
+
+
 def assert_full_history_cache_fetch() -> None:
     with tempfile.TemporaryDirectory(prefix=".warm-cache-contract-", dir=ROOT) as temporary:
         root = Path(temporary)
@@ -294,6 +323,7 @@ def assert_shallow_backup_ref_does_not_block_main_and_is_idempotent() -> None:
 
 def main() -> None:
     script = SCRIPT.read_text()
+    assert_installed_warmer_requires_helper()
     assert 'rev-parse --is-shallow-repository' in script
     assert 'vecta_main_history_is_complete "$2" refs/heads/main' in script
     assert 'history_args+=(--unshallow)' in script

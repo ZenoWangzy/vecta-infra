@@ -576,9 +576,13 @@ workflow calls the same helper without the history option and keeps its
 depth-1 exact-SHA cache fetch.
 
 The timer runs on `mypc`; its unit invokes
-`/usr/local/sbin/warm-vecta-source-cache.sh`. The runner host units and script
-are installed by hand because no Ansible role manages the runner host. The
-associated #6706 PR records the exact install commands.
+`/usr/local/sbin/warm-vecta-source-cache.sh`. The runner host units and scripts
+are installed by hand because no Ansible role manages the runner host. From
+the repository root, install both the warmer and its shared history helper:
+
+```bash
+sudo install -m 0755 scripts/warm-vecta-source-cache.sh scripts/vecta-main-history.sh /usr/local/sbin/
+```
 
 ## 3. Reading the live `-f` chain (before you touch anything)
 
