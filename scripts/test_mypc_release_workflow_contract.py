@@ -106,6 +106,15 @@ def main() -> None:
         ]
         assert len(fetch_steps) == 1, f"{job_name} must fetch VectA source and main history with the shared script"
 
+    engine_build_steps = [
+        step for step in steps_for(release, "deploy")
+        if step.get("name") == "Build the pinned Vecta engine pack"
+    ]
+    assert len(engine_build_steps) == 1
+    engine_build_run = str(engine_build_steps[0].get("run", ""))
+    assert 'VECTA_DIR="$GITHUB_WORKSPACE/vecta"' in engine_build_run
+    assert 'ZF_TARGET_CHECKOUT="$GITHUB_WORKSPACE/vecta"' in engine_build_run
+
     assert FETCH_SCRIPT_PATH.is_file(), FETCH_SCRIPT_PATH
     build_fetch_steps = [
         step for step in steps_for(build, "build")
