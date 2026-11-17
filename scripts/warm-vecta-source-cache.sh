@@ -27,6 +27,15 @@ CACHE_TIMEOUT=1800 # seconds; the first unshallow fetch copies main's history
 
 log() { printf '%s [warm-vecta-source-cache] %s\n' "$(date -u +%FT%TZ)" "$1"; }
 
+log_cache_size() {
+  local size=unavailable
+  if [ -d "$CACHE" ]; then
+    size="$(du -sh "$CACHE" 2>/dev/null | cut -f1)" || size=unavailable
+  fi
+  log "runner cache size: ${size:-unavailable}"
+}
+trap log_cache_size EXIT
+
 if [ ! -d "$OCEE/.git" ]; then
   log "FATAL: $OCEE is not a git checkout -- not this script's job to bootstrap it, fix separately"
   exit 1
@@ -87,4 +96,5 @@ if [ "$cache_shallow" != false ]; then
   log "FATAL: cache still reports shallow history after a successful fetch"
   exit 1
 fi
+sudo -u github-runner git --git-dir="$CACHE" gc --auto
 log "cache warm: refs/heads/main = $cache_tip"

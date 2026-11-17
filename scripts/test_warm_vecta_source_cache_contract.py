@@ -118,6 +118,9 @@ def main() -> None:
     assert 'fetch "${history_args[@]}" --force --quiet "file://$OCEE/.git"' in script
     assert 'fetch --depth=1' not in script
     assert 'cache still reports shallow history' in script
+    assert 'sudo -u github-runner git --git-dir="$CACHE" gc --auto' in script
+    assert 'trap log_cache_size EXIT' in script
+    assert 'du -sh "$CACHE"' in script
     service = (ROOT / "scripts" / "warm-vecta-source-cache.service").read_text()
     assert "TimeoutStartSec=30min" in service
     assert_full_history_cache_fetch()
