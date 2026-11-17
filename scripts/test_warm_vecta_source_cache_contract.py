@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "warm-vecta-source-cache.sh"
+HISTORY_HELPER = ROOT / "scripts" / "vecta-main-history.sh"
 
 GUARD_START = "# Cross-user local fetch trips git's dubious-ownership guard"
 GUARD_END = 'git config --global --add safe.directory "$OCEE/.git" 2>/dev/null || true\nfi\n'
@@ -112,7 +113,7 @@ def assert_full_history_cache_fetch() -> None:
     print("warm-vecta-source-cache history: full main and build-style depth-1 fetch ok")
 
 
-def assert_shallow_backup_refs_are_removed_idempotently() -> None:
+def assert_shallow_backup_ref_does_not_block_main_and_is_idempotent() -> None:
     with tempfile.TemporaryDirectory(prefix=".warm-cache-backups-", dir=ROOT) as temporary:
         root = Path(temporary)
         seed = root / "seed"
@@ -187,9 +188,19 @@ def assert_shallow_backup_refs_are_removed_idempotently() -> None:
         assert cache_git("for-each-ref", "--format=%(refname)", "refs/backups/") == (
             "refs/backups/pre-stale-main"
         )
+        complete_before = subprocess.run(
+            [
+                "bash", "-c", 'source "$1" && vecta_main_history_is_complete "$2" refs/heads/main',
+                "bash", str(HISTORY_HELPER), str(cache),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert complete_before.returncode == 0, complete_before.stdout + complete_before.stderr
 
-        # Run the real warmer against disposable paths. The sudo shim drops
-        # only its user switch; all Git work remains in this test fixture.
+        # Run the real warmer and shared helper against disposable paths. The
+        # sudo shim drops only its user switch; all Git work stays in this fixture.
         script_text = SCRIPT.read_text()
         script_text = script_text.replace("OCEE=/data/ocee", f"OCEE='{ocee}'")
         script_text = script_text.replace(
@@ -197,16 +208,10 @@ def assert_shallow_backup_refs_are_removed_idempotently() -> None:
         )
         assert "OCEE=/data/ocee" not in script_text
         assert "CACHE=/home/github-runner/.cache/vecta-main.git" not in script_text
-
-        cleanup_start = script_text.index(
-            "# The runner cache is derivative of /data/ocee; old warmers' backup refs"
-        )
-        cleanup_end = script_text.index(
-            "cache_shallow=", cleanup_start
-        )
-        legacy_script = root / "warm-vecta-source-cache-before-fix.sh"
-        legacy_script.write_text(script_text[:cleanup_start] + script_text[cleanup_end:])
-        warm_script = root / "warm-vecta-source-cache.sh"
+        scripts_dir = root / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "vecta-main-history.sh").write_text(HISTORY_HELPER.read_text())
+        warm_script = scripts_dir / "warm-vecta-source-cache.sh"
         warm_script.write_text(script_text)
         fake_bin = root / "bin"
         fake_bin.mkdir()
@@ -224,19 +229,23 @@ def assert_shallow_backup_refs_are_removed_idempotently() -> None:
         environment["GIT_CONFIG_GLOBAL"] = str(global_config)
 
         before_fix = subprocess.run(
-            ["bash", str(legacy_script)],
-            cwd=ROOT,
+            [
+                "bash", "-c",
+                'if [ "$(git --git-dir="$1" rev-parse --is-shallow-repository)" != false ]; '
+                'then echo "FATAL: cache still reports shallow history after a successful fetch"; exit 1; fi',
+                "bash", str(cache),
+            ],
             env=environment,
             check=False,
             text=True,
             capture_output=True,
         )
         assert before_fix.returncode == 1, before_fix.stdout + before_fix.stderr
-        fatal_line = next(
-            line for line in before_fix.stdout.splitlines()
-            if "FATAL: cache still reports shallow history after a successful fetch" in line
+        assert "FATAL: cache still reports shallow history after a successful fetch" in before_fix.stdout
+        print(
+            "warm-vecta-source-cache before-fix reproduction: "
+            "FATAL: cache still reports shallow history after a successful fetch (exit code: 1)"
         )
-        print(f"warm-vecta-source-cache before-fix reproduction: {fatal_line} (exit code: 1)")
 
         for run_number in (1, 2):
             result = subprocess.run(
@@ -254,11 +263,21 @@ def assert_shallow_backup_refs_are_removed_idempotently() -> None:
                     if "cache warm: refs/heads/main = " in line
                 )
                 print(f"warm-vecta-source-cache after-fix reproduction: {warm_line} (exit code: 0)")
-            assert cache_git("rev-parse", "--is-shallow-repository") == "false"
-            assert cache_git("for-each-ref", "--format=%(refname)", "refs/backups/") == ""
+            assert cache_git("for-each-ref", "--format=%(refname)", "refs/backups/") == (
+                "refs/backups/pre-stale-main"
+            )
             assert cache_git("rev-list", "--count", "refs/heads/main") == "2"
-            shallow_file = cache / "shallow"
-            assert not shallow_file.exists() or not shallow_file.read_text().strip()
+            assert cache_git("rev-parse", "--is-shallow-repository") == "true"
+            complete_after = subprocess.run(
+                [
+                    "bash", "-c", 'source "$1" && vecta_main_history_is_complete "$2" refs/heads/main',
+                    "bash", str(HISTORY_HELPER), str(cache),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            assert complete_after.returncode == 0, complete_after.stdout + complete_after.stderr
 
             entries = subprocess.run(
                 ["git", "config", "--file", str(global_config), "--get-all", "safe.directory"],
@@ -270,19 +289,19 @@ def assert_shallow_backup_refs_are_removed_idempotently() -> None:
                 f"run {run_number}: expected one safe.directory entry, got {entries}"
             )
 
-    print("warm-vecta-source-cache shallow backup cleanup: main stays complete and 2 runs are idempotent")
+    print("warm-vecta-source-cache shallow backup ref: main stays complete and 2 runs are idempotent")
 
 
 def main() -> None:
     script = SCRIPT.read_text()
     assert 'rev-parse --is-shallow-repository' in script
+    assert 'vecta_main_history_is_complete "$2" refs/heads/main' in script
     assert 'history_args+=(--unshallow)' in script
     assert 'fetch "${history_args[@]}" --force --quiet "file://$OCEE/.git"' in script
-    assert "for-each-ref --format='%(refname)' refs/backups/" in script
-    assert 'update-ref -d "$backup_ref"' in script
-    assert 'git --git-dir="$CACHE" prune' in script
+    assert 'update-ref -d "$backup_ref"' not in script
+    assert 'prune' not in script
     assert 'fetch --depth=1' not in script
-    assert 'cache still reports shallow history' in script
+    assert 'cache main history is incomplete after a successful fetch' in script
     assert 'sudo -u github-runner git --git-dir="$CACHE" gc --auto' in script
     assert 'trap log_cache_size EXIT' in script
     assert 'du -sh "$CACHE"' in script
@@ -314,7 +333,7 @@ def main() -> None:
             )
 
     print("warm-vecta-source-cache safe.directory guard: idempotent across 2 runs, ok")
-    assert_shallow_backup_refs_are_removed_idempotently()
+    assert_shallow_backup_ref_does_not_block_main_and_is_idempotent()
 
 
 if __name__ == "__main__":

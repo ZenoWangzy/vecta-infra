@@ -20,6 +20,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/vecta-main-history.sh"
+
 OCEE=/data/ocee
 CACHE=/home/github-runner/.cache/vecta-main.git
 UPSTREAM_TIMEOUT=120 # seconds; fetching /data/ocee from GitHub is incremental
@@ -71,18 +74,6 @@ if ! sudo -u github-runner git config --global --get-all safe.directory 2>/dev/n
   sudo -u github-runner git config --global --add safe.directory "$OCEE/.git" 2>/dev/null || true
 fi
 
-# The runner cache is derivative of /data/ocee; old warmers' backup refs are
-# not inputs to builds and can keep unrelated shallow grafts alive forever.
-backup_refs="$(sudo -u github-runner git --git-dir="$CACHE" \
-  for-each-ref --format='%(refname)' refs/backups/)"
-if [ -n "$backup_refs" ]; then
-  while IFS= read -r backup_ref; do
-    sudo -u github-runner git --git-dir="$CACHE" update-ref -d "$backup_ref"
-  done <<< "$backup_refs"
-  sudo -u github-runner git --git-dir="$CACHE" prune
-  log "removed stale runner cache backup refs and pruned unreachable objects"
-fi
-
 cache_shallow="$(sudo -u github-runner git --git-dir="$CACHE" rev-parse --is-shallow-repository)"
 history_args=()
 if [ "$cache_shallow" = true ]; then
@@ -99,13 +90,13 @@ if ! timeout "$CACHE_TIMEOUT" sudo -u github-runner git --git-dir="$CACHE" \
 fi
 
 cache_tip="$(sudo -u github-runner git --git-dir="$CACHE" rev-parse refs/heads/main)"
-cache_shallow="$(sudo -u github-runner git --git-dir="$CACHE" rev-parse --is-shallow-repository)"
 if [ "$cache_tip" != "$ocee_tip" ]; then
   log "FATAL: cache tip ($cache_tip) does not match /data/ocee tip ($ocee_tip) after a successful fetch -- should be impossible, investigate"
   exit 1
 fi
-if [ "$cache_shallow" != false ]; then
-  log "FATAL: cache still reports shallow history after a successful fetch"
+if ! sudo -u github-runner bash -c 'source "$1" && vecta_main_history_is_complete "$2" refs/heads/main' \
+  _ "$SCRIPT_DIR/vecta-main-history.sh" "$CACHE"; then
+  log "FATAL: cache main history is incomplete after a successful fetch"
   exit 1
 fi
 sudo -u github-runner git --git-dir="$CACHE" gc --auto

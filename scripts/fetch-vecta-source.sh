@@ -5,6 +5,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/vecta-main-history.sh"
+
 include_main_history=false
 case "${1:-}" in
   "") ;;
@@ -101,15 +104,14 @@ git -C "$target" remote add origin "$remote"
 main_history_loaded=false
 if [ "$include_main_history" = true ]; then
   if [ -d "$cache" ]; then
-    cache_shallow="$(git --git-dir="$cache" rev-parse --is-shallow-repository 2>/dev/null || echo unknown)"
     cache_main=""
-    if [ "$cache_shallow" = false ]; then
+    if vecta_main_history_is_complete "$cache" refs/heads/main; then
       cache_main="$(git --git-dir="$cache" rev-parse --verify refs/heads/main 2>/dev/null || true)"
     fi
     if [ -n "$cache_main" ] && timeout 30m git -C "$target" fetch --no-tags "$cache" \
       +refs/heads/main:refs/remotes/origin/main; then
       if git -C "$target" fsck --connectivity-only refs/remotes/origin/main \
-        && [ "$(git -C "$target" rev-parse --is-shallow-repository)" = false ]; then
+        && vecta_main_history_is_complete "$target/.git" refs/remotes/origin/main; then
         main_history_loaded=true
         echo "Using cached VectA main history ($cache_main)"
       else
@@ -149,7 +151,7 @@ fetch_main_from_github() {
     if fetch_with_auth --no-tags \
       "${history_args[@]}" "$remote" +refs/heads/main:refs/remotes/origin/main \
       && git -C "$target" fsck --connectivity-only refs/remotes/origin/main \
-      && [ "$(git -C "$target" rev-parse --is-shallow-repository)" = false ]; then
+      && vecta_main_history_is_complete "$target/.git" refs/remotes/origin/main; then
       echo "Fetched VectA main history from GitHub (runner cache was stale or unavailable)"
       return 0
     fi
