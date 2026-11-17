@@ -11,6 +11,7 @@ proving the second run adds no new line.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -111,11 +112,175 @@ def assert_full_history_cache_fetch() -> None:
     print("warm-vecta-source-cache history: full main and build-style depth-1 fetch ok")
 
 
+def assert_shallow_backup_refs_are_removed_idempotently() -> None:
+    with tempfile.TemporaryDirectory(prefix=".warm-cache-backups-", dir=ROOT) as temporary:
+        root = Path(temporary)
+        seed = root / "seed"
+        seed.mkdir()
+
+        def git(*arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "core.hooksPath=/dev/null", "-C", str(seed), *arguments],
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout.strip()
+
+        git("init", "-b", "main")
+        git("config", "user.name", "Cache contract")
+        git("config", "user.email", "cache-contract@example.invalid")
+        (seed / "source.txt").write_text("base\n")
+        git("add", "source.txt")
+        git("commit", "-m", "base")
+        (seed / "source.txt").write_text("selected\n")
+        git("commit", "-am", "selected")
+
+        git("checkout", "--orphan", "backup")
+        git("rm", "-rf", ".")
+        (seed / "backup.txt").write_text("obsolete backup\n")
+        git("add", "backup.txt")
+        git("commit", "-m", "obsolete backup")
+
+        upstream = root / "upstream.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-b", "main", str(upstream)],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        git("remote", "add", "origin", str(upstream))
+        git("push", "origin", "main")
+        ocee = root / "ocee"
+        subprocess.run(
+            ["git", "clone", str(upstream), str(ocee)],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+
+        cache = root / "cache.git"
+        subprocess.run(
+            ["git", "clone", "--bare", "--branch=main", f"file://{ocee}/.git", str(cache)],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "git", f"--git-dir={cache}", "fetch", "--depth=1", "--quiet",
+                f"file://{seed}/.git", "refs/heads/backup:refs/backups/pre-stale-main",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+
+        def cache_git(*arguments: str) -> str:
+            return subprocess.run(
+                ["git", f"--git-dir={cache}", *arguments],
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout.strip()
+
+        assert cache_git("rev-parse", "--is-shallow-repository") == "true"
+        assert cache_git("for-each-ref", "--format=%(refname)", "refs/backups/") == (
+            "refs/backups/pre-stale-main"
+        )
+
+        # Run the real warmer against disposable paths. The sudo shim drops
+        # only its user switch; all Git work remains in this test fixture.
+        script_text = SCRIPT.read_text()
+        script_text = script_text.replace("OCEE=/data/ocee", f"OCEE='{ocee}'")
+        script_text = script_text.replace(
+            "CACHE=/home/github-runner/.cache/vecta-main.git", f"CACHE='{cache}'"
+        )
+        assert "OCEE=/data/ocee" not in script_text
+        assert "CACHE=/home/github-runner/.cache/vecta-main.git" not in script_text
+
+        cleanup_start = script_text.index(
+            "# The runner cache is derivative of /data/ocee; old warmers' backup refs"
+        )
+        cleanup_end = script_text.index(
+            "cache_shallow=", cleanup_start
+        )
+        legacy_script = root / "warm-vecta-source-cache-before-fix.sh"
+        legacy_script.write_text(script_text[:cleanup_start] + script_text[cleanup_end:])
+        warm_script = root / "warm-vecta-source-cache.sh"
+        warm_script.write_text(script_text)
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        sudo = fake_bin / "sudo"
+        sudo.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = -u ]; then shift 2; fi\n"
+            "exec \"$@\"\n"
+        )
+        sudo.chmod(0o755)
+        global_config = root / "gitconfig"
+        global_config.touch()
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+        environment["GIT_CONFIG_GLOBAL"] = str(global_config)
+
+        before_fix = subprocess.run(
+            ["bash", str(legacy_script)],
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        assert before_fix.returncode == 1, before_fix.stdout + before_fix.stderr
+        fatal_line = next(
+            line for line in before_fix.stdout.splitlines()
+            if "FATAL: cache still reports shallow history after a successful fetch" in line
+        )
+        print(f"warm-vecta-source-cache before-fix reproduction: {fatal_line} (exit code: 1)")
+
+        for run_number in (1, 2):
+            result = subprocess.run(
+                ["bash", str(warm_script)],
+                cwd=ROOT,
+                env=environment,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            assert "cache warm: refs/heads/main = " in result.stdout, result.stdout
+            if run_number == 1:
+                warm_line = next(
+                    line for line in result.stdout.splitlines()
+                    if "cache warm: refs/heads/main = " in line
+                )
+                print(f"warm-vecta-source-cache after-fix reproduction: {warm_line} (exit code: 0)")
+            assert cache_git("rev-parse", "--is-shallow-repository") == "false"
+            assert cache_git("for-each-ref", "--format=%(refname)", "refs/backups/") == ""
+            assert cache_git("rev-list", "--count", "refs/heads/main") == "2"
+            shallow_file = cache / "shallow"
+            assert not shallow_file.exists() or not shallow_file.read_text().strip()
+
+            entries = subprocess.run(
+                ["git", "config", "--file", str(global_config), "--get-all", "safe.directory"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.splitlines()
+            assert entries.count(f"{ocee}/.git") == 1, (
+                f"run {run_number}: expected one safe.directory entry, got {entries}"
+            )
+
+    print("warm-vecta-source-cache shallow backup cleanup: main stays complete and 2 runs are idempotent")
+
+
 def main() -> None:
     script = SCRIPT.read_text()
     assert 'rev-parse --is-shallow-repository' in script
     assert 'history_args+=(--unshallow)' in script
     assert 'fetch "${history_args[@]}" --force --quiet "file://$OCEE/.git"' in script
+    assert "for-each-ref --format='%(refname)' refs/backups/" in script
+    assert 'update-ref -d "$backup_ref"' in script
+    assert 'git --git-dir="$CACHE" prune' in script
     assert 'fetch --depth=1' not in script
     assert 'cache still reports shallow history' in script
     assert 'sudo -u github-runner git --git-dir="$CACHE" gc --auto' in script
@@ -130,7 +295,7 @@ def main() -> None:
         "guard must check before adding, not blindly --add -- ticket 136"
     )
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(prefix=".safe-directory-contract-", dir=ROOT) as tmp:
         config = Path(tmp) / "gitconfig"
         config.touch()
         env = {"GIT_CONFIG_GLOBAL": str(config), "PATH": "/usr/bin:/bin", "OCEE": "/fake/ocee"}
@@ -149,6 +314,7 @@ def main() -> None:
             )
 
     print("warm-vecta-source-cache safe.directory guard: idempotent across 2 runs, ok")
+    assert_shallow_backup_refs_are_removed_idempotently()
 
 
 if __name__ == "__main__":

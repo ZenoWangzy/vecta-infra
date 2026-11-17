@@ -71,6 +71,18 @@ if ! sudo -u github-runner git config --global --get-all safe.directory 2>/dev/n
   sudo -u github-runner git config --global --add safe.directory "$OCEE/.git" 2>/dev/null || true
 fi
 
+# The runner cache is derivative of /data/ocee; old warmers' backup refs are
+# not inputs to builds and can keep unrelated shallow grafts alive forever.
+backup_refs="$(sudo -u github-runner git --git-dir="$CACHE" \
+  for-each-ref --format='%(refname)' refs/backups/)"
+if [ -n "$backup_refs" ]; then
+  while IFS= read -r backup_ref; do
+    sudo -u github-runner git --git-dir="$CACHE" update-ref -d "$backup_ref"
+  done <<< "$backup_refs"
+  sudo -u github-runner git --git-dir="$CACHE" prune
+  log "removed stale runner cache backup refs and pruned unreachable objects"
+fi
+
 cache_shallow="$(sudo -u github-runner git --git-dir="$CACHE" rev-parse --is-shallow-repository)"
 history_args=()
 if [ "$cache_shallow" = true ]; then
