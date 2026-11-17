@@ -5,6 +5,11 @@ import json
 from pathlib import Path
 import subprocess
 
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_PATH = ROOT / ".github/workflows/mypc-release.yml"
@@ -19,15 +24,18 @@ def require(fragment: str, source: str = RELEASE) -> None:
 
 
 def parse_workflow_yaml(source: str) -> dict[str, object]:
-    parser = (
-        "const YAML = require('yaml'); "
-        "const parsed = YAML.parse(require('fs').readFileSync(0, 'utf8')); "
-        "process.stdout.write(JSON.stringify(parsed));"
-    )
-    result = subprocess.run(
-        ["node", "-e", parser], input=source, text=True, capture_output=True, check=True
-    )
-    parsed = json.loads(result.stdout)
+    if yaml is not None:
+        parsed = yaml.safe_load(source)
+    else:
+        parser = (
+            "const YAML = require('yaml'); "
+            "const parsed = YAML.parse(require('fs').readFileSync(0, 'utf8')); "
+            "process.stdout.write(JSON.stringify(parsed));"
+        )
+        result = subprocess.run(
+            ["node", "-e", parser], input=source, text=True, capture_output=True, check=True
+        )
+        parsed = json.loads(result.stdout)
     assert isinstance(parsed, dict)
     return parsed
 
