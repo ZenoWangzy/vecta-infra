@@ -179,6 +179,7 @@ jobs:
           ENGINE_SYNC_STATE_DIR="$AGENT_HOME/engine-sync" \
           ZF_LOCAL_CLONE="$GITHUB_WORKSPACE/zenoforge" \
           ZF_URL=https://github.com/ZenoWangzy/zenoforge \
+          VECTA_DIR="$GITHUB_WORKSPACE/vecta" \
           ZF_TARGET_CHECKOUT="$GITHUB_WORKSPACE/vecta" \
             bash vecta/.zenoforge/build/engine-sync.sh --build "$engine_sha" \
               "$SOURCE_SHA" --out "$AGENT_HOME/engine-versions"
