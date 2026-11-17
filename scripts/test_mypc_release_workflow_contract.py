@@ -1,19 +1,59 @@
 #!/usr/bin/env python3
 """Static contract for the manually dispatched mypc release workflow."""
 
+import json
 from pathlib import Path
+import subprocess
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE = (ROOT / ".github/workflows/mypc-release.yml").read_text()
-BUILD = (ROOT / ".github/workflows/build-mypc-images.yml").read_text()
+RELEASE_PATH = ROOT / ".github/workflows/mypc-release.yml"
+BUILD_PATH = ROOT / ".github/workflows/build-mypc-images.yml"
+FETCH_SCRIPT_PATH = ROOT / "scripts/fetch-vecta-source.sh"
+RELEASE = RELEASE_PATH.read_text()
+BUILD = BUILD_PATH.read_text()
 
 
 def require(fragment: str, source: str = RELEASE) -> None:
     assert fragment in source, fragment
 
 
+def parse_workflow_yaml(source: str) -> dict[str, object]:
+    if yaml is not None:
+        parsed = yaml.safe_load(source)
+    else:
+        parser = (
+            "const YAML = require('yaml'); "
+            "const parsed = YAML.parse(require('fs').readFileSync(0, 'utf8')); "
+            "process.stdout.write(JSON.stringify(parsed));"
+        )
+        result = subprocess.run(
+            ["node", "-e", parser], input=source, text=True, capture_output=True, check=True
+        )
+        parsed = json.loads(result.stdout)
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def steps_for(workflow: dict[str, object], job_name: str) -> list[dict[str, object]]:
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    job = jobs[job_name]
+    assert isinstance(job, dict)
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    return steps
+
+
 def main() -> None:
+    release = parse_workflow_yaml(RELEASE)
+    build = parse_workflow_yaml(BUILD)
+
     for name in ("source_sha", "mode", "services", "dry_run"):
         require(f"      {name}:")
     require("workflow_dispatch:")
@@ -44,10 +84,35 @@ def main() -> None:
     require("without acquiring the production lock or changing containers")
     require("workflow_call:\n    inputs:", BUILD)
     require(
-        "secrets:\n      MYPC_NEXUS_ADMIN_PASSWORD:\n        required: true\n      VECTA_READ_TOKEN:\n        required: true",
+        "secrets:\n      MYPC_NEXUS_ADMIN_PASSWORD:\n        required: true\n"
+        "      VECTA_READ_TOKEN:\n        required: true",
         BUILD,
     )
     require("github.event_name == 'workflow_call'", BUILD)
+
+    vecta_checkouts = []
+    for job_name in ("validate", "deploy"):
+        for step in steps_for(release, job_name):
+            options = step.get("with", {})
+            if isinstance(options, dict) and options.get("repository") == "ZenoWangzy/vecta":
+                vecta_checkouts.append(step)
+                assert options.get("fetch-depth") not in (0, "0"), step
+    assert not vecta_checkouts, "VectA source must use the shared fetch script, not actions/checkout"
+
+    for job_name in ("validate", "deploy"):
+        fetch_steps = [
+            step for step in steps_for(release, job_name)
+            if "bash scripts/fetch-vecta-source.sh --with-main-history" in str(step.get("run", ""))
+        ]
+        assert len(fetch_steps) == 1, f"{job_name} must fetch VectA source and main history with the shared script"
+
+    assert FETCH_SCRIPT_PATH.is_file(), FETCH_SCRIPT_PATH
+    build_fetch_steps = [
+        step for step in steps_for(build, "build")
+        if "Download selected VectA source" in str(step.get("name", ""))
+    ]
+    assert len(build_fetch_steps) == 1
+    assert "bash scripts/fetch-vecta-source.sh" in str(build_fetch_steps[0].get("run", ""))
 
     deploy = RELEASE.split("  deploy:", 1)[1]
     first_deploy_step = deploy.split("    steps:\n", 1)[1].lstrip().splitlines()[0]

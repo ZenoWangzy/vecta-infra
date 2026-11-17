@@ -63,15 +63,12 @@ jobs:
             exit 64
           }
 
-      - name: Checkout selected Vecta source
-        uses: actions/checkout@v4
-        with:
-          repository: ZenoWangzy/vecta
-          ref: ${{ inputs.source_sha }}
-          token: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
-          path: vecta
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Fetch selected Vecta source and main history
+        run: bash scripts/fetch-vecta-source.sh --with-main-history
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_BRANCH: main
+          VECTA_READ_TOKEN: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
 
       - name: Require selected source on main with green Postsubmit evidence
         run: |
@@ -148,15 +145,12 @@ jobs:
           chmod 700 "$AGENT_HOME" "$AGENT_HOME/engine-versions" "$AGENT_HOME/engine-sync"
           echo "AGENT_HOME=$AGENT_HOME" >> "$GITHUB_ENV"
 
-      - name: Checkout selected Vecta source
-        uses: actions/checkout@v4
-        with:
-          repository: ZenoWangzy/vecta
-          ref: ${{ inputs.source_sha }}
-          token: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
-          path: vecta
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Fetch selected Vecta source and main history
+        run: bash scripts/fetch-vecta-source.sh --with-main-history
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_BRANCH: main
+          VECTA_READ_TOKEN: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
 
       - name: Read the selected Vecta engine pin
         id: engine-pin

@@ -558,6 +558,28 @@ shows successive `cache warm: refs/heads/main = <sha>` lines advancing as
 source"` and completes in single-digit seconds without you having touched
 the cache that session.
 
+### Ticket #6706 follow-up: retain main history for mypc releases
+
+The source-cache shape is now a full-history bare repository at
+`/home/github-runner/.cache/vecta-main.git`. `scripts/warm-vecta-source-cache.sh`
+unshallows the existing cache from `/data/ocee` on its first run, then advances
+`refs/heads/main` incrementally on later timer runs. Keep blobs in the cache:
+the image workflow's exact-SHA depth-1 fetch needs a complete selected tree,
+and a filtered cache cannot serve that local fetch.
+
+Both Vecta source steps in `mypc-release.yml` call
+`scripts/fetch-vecta-source.sh --with-main-history`; it fetches main's history
+from the runner cache and fetches a selected SHA from GitHub only when it is
+missing from that cache. `scripts/release/changed-images.mjs` compares the
+previous successful Deployment SHA with the selected SHA locally. The image
+workflow calls the same helper without the history option and keeps its
+depth-1 exact-SHA cache fetch.
+
+The timer runs on `mypc`; its unit invokes
+`/usr/local/sbin/warm-vecta-source-cache.sh`. The runner host units and script
+are installed by hand because no Ansible role manages the runner host. The
+associated #6706 PR records the exact install commands.
+
 ## 3. Reading the live `-f` chain (before you touch anything)
 
 **`/data/ocee/migration-compose.config.yml` — the first file in every version of
