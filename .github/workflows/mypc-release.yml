@@ -224,9 +224,10 @@ jobs:
           }
           # run-release's git_fetch_bounded fetches origin main from GitHub; this runner has no git credential
           # and that bulk link is too slow. Serve the URL from the warm cache, for this step's env only.
+          # insteadOf also rewrites pushes, so pushes go back to GitHub, authenticated by GH_TOKEN.
           cache=/home/github-runner/.cache/vecta-main.git
           if [[ -d "$cache" ]]; then
-            export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$cache.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/ZenoWangzy/vecta.git
+            export GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0="url.$cache.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/ZenoWangzy/vecta.git GIT_CONFIG_KEY_1=url.https://github.com/ZenoWangzy/vecta.git.pushInsteadOf GIT_CONFIG_VALUE_1=https://github.com/ZenoWangzy/vecta.git GIT_CONFIG_KEY_2=credential.https://github.com.helper GIT_CONFIG_VALUE_2='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
           fi
           args=(--source-sha "$SOURCE_SHA" --mode "$RELEASE_MODE")
           if [[ -n "$RELEASE_SERVICES" ]]; then args+=(--services "$RELEASE_SERVICES"); fi

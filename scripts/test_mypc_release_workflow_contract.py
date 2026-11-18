@@ -2,8 +2,10 @@
 """Static contract for the manually dispatched mypc release workflow."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 
 try:
     import yaml
@@ -17,10 +19,78 @@ BUILD_PATH = ROOT / ".github/workflows/build-mypc-images.yml"
 FETCH_SCRIPT_PATH = ROOT / "scripts/fetch-vecta-source.sh"
 RELEASE = RELEASE_PATH.read_text()
 BUILD = BUILD_PATH.read_text()
+GITHUB_VECTA = "https://github.com/ZenoWangzy/vecta.git"
+CREDENTIAL_HELPER = '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
 
 
 def require(fragment: str, source: str = RELEASE) -> None:
     assert fragment in source, fragment
+
+
+def git_env(rules: list[tuple[str, str]], token: str) -> dict[str, str]:
+    env = {**os.environ, "GH_TOKEN": token, "GIT_CONFIG_COUNT": str(len(rules))}
+    for index, (key, value) in enumerate(rules):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
+def git_run(args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], env=env, text=True, capture_output=True)
+
+
+def ref_exists(repo: Path, ref: str) -> bool:
+    return git_run(["--git-dir", str(repo), "show-ref", "--verify", "-q", ref]).returncode == 0
+
+
+def git_mechanism_proof() -> None:
+    """Fetch reads the warm cache; push goes to the GitHub remote. file:// stands in for GitHub."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        seed, github, cache, work = root / "seed", root / "github.git", root / "cache.git", root / "work"
+        identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        assert git_run(["init", "-q", "-b", "main", str(seed)]).returncode == 0
+        assert git_run(["-C", str(seed), *identity, "commit", "-q", "--allow-empty", "-m", "seed"]).returncode == 0
+        sha = git_run(["-C", str(seed), "rev-parse", "HEAD"]).stdout.strip()
+        for bare in (github, cache):
+            assert git_run(["init", "-q", "--bare", str(bare)]).returncode == 0
+            assert git_run(["-C", str(seed), "push", "-q", str(bare), "HEAD:refs/heads/main"]).returncode == 0
+        # Only the cache has this ref, so a successful fetch proves the read went to the cache.
+        assert git_run(["-C", str(seed), "push", "-q", str(cache), f"{sha}:refs/heads/cache-only"]).returncode == 0
+        assert git_run(["init", "-q", str(work)]).returncode == 0
+        github_url = f"file://{github}"
+        assert git_run(["-C", str(work), "remote", "add", "origin", github_url]).returncode == 0
+
+        fixed = [(f"url.{cache}.insteadOf", github_url), (f"url.{github_url}.pushInsteadOf", github_url)]
+        env = git_env(fixed, "fake-token")
+        fetched = git_run(
+            ["-C", str(work), "fetch", "-q", "origin", "refs/heads/cache-only:refs/remotes/origin/cache-only"], env
+        )
+        assert fetched.returncode == 0, fetched.stderr
+        pushed = git_run(["-C", str(work), "push", "-q", "origin", f"{sha}:refs/heads/train/release-572"], env)
+        assert pushed.returncode == 0, pushed.stderr
+        assert ref_exists(github, "refs/heads/train/release-572"), "push must land on GitHub"
+        assert not ref_exists(cache, "refs/heads/train/release-572"), "push must not land in the cache"
+
+        # The insteadOf-only rules that #135 shipped: this is the bug the contract blocks.
+        old = git_env([(f"url.{cache}.insteadOf", github_url)], "fake-token")
+        assert git_run(["-C", str(work), "push", "-q", "origin", f"{sha}:refs/heads/train/release-old"], old).returncode == 0
+        assert ref_exists(cache, "refs/heads/train/release-old"), "old rules send the push into the cache"
+        assert not ref_exists(github, "refs/heads/train/release-old")
+
+
+def credential_fill_proof() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp) / "work"
+        assert git_run(["init", "-q", str(work)]).returncode == 0
+        env = git_env([("credential.https://github.com.helper", CREDENTIAL_HELPER)], "fake-token")
+        result = subprocess.run(
+            ["git", "-C", str(work), "credential", "fill"], env=env, text=True,
+            input="protocol=https\nhost=github.com\n\n", capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "username=x-access-token" in result.stdout.splitlines(), result.stdout
+        assert "password=fake-token" in result.stdout.splitlines(), result.stdout
 
 
 def parse_workflow_yaml(source: str) -> dict[str, object]:
@@ -146,9 +216,15 @@ def main() -> None:
         if step.get("name") == "Deploy or print dry-run plan"
     )
     require("cache=/home/github-runner/.cache/vecta-main.git", deploy_run)
-    require('export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$cache.insteadOf"', deploy_run)
-    require("GIT_CONFIG_VALUE_0=https://github.com/ZenoWangzy/vecta.git", deploy_run)
+    require('export GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0="url.$cache.insteadOf"', deploy_run)
+    require(f"GIT_CONFIG_VALUE_0={GITHUB_VECTA}", deploy_run)
+    # insteadOf also rewrites pushes (#135 sent release pushes into the cache). Pushes must go back to GitHub,
+    # and GitHub needs a credential that reads GH_TOKEN from the step env.
+    require(f"GIT_CONFIG_KEY_1=url.{GITHUB_VECTA}.pushInsteadOf GIT_CONFIG_VALUE_1={GITHUB_VECTA}", deploy_run)
+    require(f"GIT_CONFIG_KEY_2=credential.https://github.com.helper GIT_CONFIG_VALUE_2='{CREDENTIAL_HELPER}'", deploy_run)
     assert deploy_run.index("GIT_CONFIG_COUNT") < deploy_run.index("bash vecta/scripts/release/mypc-release.sh")
+    git_mechanism_proof()
+    credential_fill_proof()
     require('cache="/home/github-runner/.cache/vecta-main.git"', FETCH_SCRIPT_PATH.read_text())
     assert "git config --global" not in RELEASE and "extraheader" not in RELEASE
     print("mypc release workflow contract: PASS")
