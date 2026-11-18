@@ -169,6 +169,27 @@ def main() -> None:
                 assert options.get("fetch-depth") not in (0, "0"), step
     assert not vecta_checkouts, "VectA source must use the shared fetch script, not actions/checkout"
 
+    # vecta-infra checkout: actions/checkout has no slow-link retry (run 44391317843, 44417360328).
+    # Each job's infra checkout must be an inline bounded fetch of the exact SHA with a low-speed abort.
+    for job_name in ("validate", "deploy"):
+        infra_checkouts = [
+            step for step in steps_for(release, job_name)
+            if str(step.get("name", "")).startswith("Checkout infra")
+        ]
+        assert len(infra_checkouts) == 1, job_name
+        assert "uses" not in infra_checkouts[0], infra_checkouts[0]
+        infra_run = str(infra_checkouts[0].get("run", ""))
+        for fragment in (
+            "https://github.com/ZenoWangzy/vecta-infra.git",
+            "for attempt in 1 2 3 4 5; do",
+            "GIT_HTTP_LOW_SPEED_LIMIT=1024",
+            "GIT_HTTP_LOW_SPEED_TIME=60",
+            'git -C "$target" fetch --depth=1 origin "$GITHUB_SHA"',
+            'test "$(git -C "$target" rev-parse HEAD)" = "$GITHUB_SHA"',
+        ):
+            assert fragment in infra_run, (job_name, fragment)
+        assert "extraheader" not in infra_run and "git config --global" not in infra_run
+
     for job_name in ("validate", "deploy"):
         fetch_steps = [
             step for step in steps_for(release, job_name)
