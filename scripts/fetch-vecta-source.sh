@@ -101,27 +101,49 @@ git init "$target" >/dev/null
 git -C "$target" remote add origin "$remote"
 
 main_history_loaded=false
-if [ "$include_main_history" = true ]; then
-  if [ -d "$cache" ]; then
-    cache_main=""
-    if vecta_main_history_is_complete "$cache" refs/heads/main; then
-      cache_main="$(git --git-dir="$cache" rev-parse --verify refs/heads/main 2>/dev/null || true)"
-    fi
-    if [ -n "$cache_main" ] && timeout 30m git -C "$target" fetch --no-tags "$cache" \
-      +refs/heads/main:refs/remotes/origin/main; then
-      if git -C "$target" fsck --connectivity-only refs/remotes/origin/main \
-        && vecta_main_history_is_complete "$target/.git" refs/remotes/origin/main; then
-        main_history_loaded=true
-        echo "Using cached VectA main history ($cache_main)"
-      else
-        echo "Cached VectA main history is incomplete; it will be refreshed from GitHub if needed" >&2
-      fi
+load_cache_main_history() {
+  main_history_loaded=false
+  if [ ! -d "$cache" ]; then
+    echo "VectA main history cache is missing at $cache; it will be fetched from GitHub if needed" >&2
+    return 0
+  fi
+  local cache_main="" history_args=()
+  if vecta_main_history_is_complete "$cache" refs/heads/main; then
+    cache_main="$(git --git-dir="$cache" rev-parse --verify refs/heads/main 2>/dev/null || true)"
+  fi
+  # The exact-SHA depth-1 fetch may already have made the target shallow.
+  if [ "$(git -C "$target" rev-parse --is-shallow-repository)" = true ]; then
+    history_args+=(--unshallow)
+  fi
+  if [ -n "$cache_main" ] && timeout 30m git -C "$target" fetch --no-tags "${history_args[@]}" "$cache" \
+    +refs/heads/main:refs/remotes/origin/main; then
+    if git -C "$target" fsck --connectivity-only refs/remotes/origin/main \
+      && vecta_main_history_is_complete "$target/.git" refs/remotes/origin/main; then
+      main_history_loaded=true
+      echo "Using cached VectA main history ($cache_main)"
     else
-      echo "VectA main history cache at $cache is stale or incomplete; it will be refreshed from GitHub if needed" >&2
+      echo "Cached VectA main history is incomplete; it will be refreshed from GitHub if needed" >&2
     fi
   else
-    echo "VectA main history cache is missing at $cache; it will be fetched from GitHub if needed" >&2
+    echo "VectA main history cache at $cache is stale or incomplete; it will be refreshed from GitHub if needed" >&2
   fi
+}
+# A main publish (vecta ci.yml "Publish validated source") leaves a shallow boundary
+# on main until warm-vecta-source-cache.service unshallows it on its next 10-minute
+# tick. Wait for that repair before any GitHub fallback.
+wait_for_warm_cache_main() {
+  local waited=0 limit="${VECTA_CACHE_WAIT_SECONDS:-900}" step="${VECTA_CACHE_WAIT_STEP:-30}"
+  while ! { vecta_main_history_is_complete "$cache" refs/heads/main \
+    && git --git-dir="$cache" merge-base --is-ancestor "$SOURCE_SHA" refs/heads/main 2>/dev/null; }; do
+    [ "$waited" -lt "$limit" ] || return 1
+    echo "Waiting for the runner cache warmer to repair main history (${waited}s of ${limit}s)" >&2
+    sleep "$step"
+    waited=$((waited + step))
+  done
+  echo "Runner cache main contains source_sha after ${waited}s" >&2
+}
+if [ "$include_main_history" = true ]; then
+  load_cache_main_history
 fi
 
 fetch_with_auth() {
@@ -207,8 +229,14 @@ test "$source_loaded" = true
 if [ "$include_main_history" = true ] \
   && { [ "$main_history_loaded" != true ] \
     || ! git -C "$target" merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; }; then
-  echo "Cached VectA main history does not contain $SOURCE_SHA; refreshing main from GitHub because the runner cache is stale" >&2
-  fetch_main_from_github
+  if [ -d "$cache" ] && wait_for_warm_cache_main; then
+    load_cache_main_history
+  fi
+  if [ "$main_history_loaded" != true ] \
+    || ! git -C "$target" merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
+    echo "Cached VectA main history does not contain $SOURCE_SHA; refreshing main from GitHub because the runner cache is stale" >&2
+    fetch_main_from_github
+  fi
   if ! git -C "$target" merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
     echo "The runner cache was stale or unavailable, and refreshed GitHub main still does not contain source_sha=$SOURCE_SHA" >&2
     exit 1
