@@ -139,6 +139,18 @@ def main() -> None:
     assert "runs-on: [self-hosted, mypc, prod-build]" in RELEASE
     assert RELEASE.count("secrets.VECTA_PRODUCTION_ACCEPTANCE_ENV") == 1
     assert "secrets.VECTA_RELEASE_TOKEN" not in RELEASE
+    # run-release's git_fetch_bounded fetches origin main from GitHub; the runner has no git credential
+    # for it, so the deploy step must rewrite that URL to the warm cache, env only, never a gitconfig.
+    deploy_run = next(
+        str(step.get("run", "")) for step in steps_for(release, "deploy")
+        if step.get("name") == "Deploy or print dry-run plan"
+    )
+    require("cache=/home/github-runner/.cache/vecta-main.git", deploy_run)
+    require('export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$cache.insteadOf"', deploy_run)
+    require("GIT_CONFIG_VALUE_0=https://github.com/ZenoWangzy/vecta.git", deploy_run)
+    assert deploy_run.index("GIT_CONFIG_COUNT") < deploy_run.index("bash vecta/scripts/release/mypc-release.sh")
+    require('cache="/home/github-runner/.cache/vecta-main.git"', FETCH_SCRIPT_PATH.read_text())
+    assert "git config --global" not in RELEASE and "extraheader" not in RELEASE
     print("mypc release workflow contract: PASS")
 
 

@@ -222,6 +222,12 @@ jobs:
             echo 'production environment needs VECTA_PRODUCTION_RELEASE_TOKEN for deployment and VECTA_PRODUCTION_READ_TOKEN for dry-run' >&2
             exit 78
           }
+          # run-release's git_fetch_bounded fetches origin main from GitHub; this runner has no git credential
+          # and that bulk link is too slow. Serve the URL from the warm cache, for this step's env only.
+          cache=/home/github-runner/.cache/vecta-main.git
+          if [[ -d "$cache" ]]; then
+            export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$cache.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/ZenoWangzy/vecta.git
+          fi
           args=(--source-sha "$SOURCE_SHA" --mode "$RELEASE_MODE")
           if [[ -n "$RELEASE_SERVICES" ]]; then args+=(--services "$RELEASE_SERVICES"); fi
           if [[ "$DRY_RUN" == true ]]; then args+=(--dry-run); fi
