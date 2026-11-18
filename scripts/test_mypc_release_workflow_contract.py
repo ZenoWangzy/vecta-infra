@@ -114,6 +114,11 @@ def main() -> None:
     engine_build_run = str(engine_build_steps[0].get("run", ""))
     assert 'VECTA_DIR="$GITHUB_WORKSPACE/vecta"' in engine_build_run
     assert 'ZF_TARGET_CHECKOUT="$GITHUB_WORKSPACE/vecta"' in engine_build_run
+    # engine-versions persists across runs; picking a dir by name prefix can return an older pack of the same engine pin.
+    assert "-print -quit" not in engine_build_run
+    assert 'find "$AGENT_HOME/engine-versions"' not in engine_build_run
+    assert 'version_dir="$AGENT_HOME/engine-versions/$version_id"' in engine_build_run
+    assert "$(vecta_rev .zenoforge/build/pack)" in engine_build_run
 
     assert FETCH_SCRIPT_PATH.is_file(), FETCH_SCRIPT_PATH
     build_fetch_steps = [
