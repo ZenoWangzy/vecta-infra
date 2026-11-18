@@ -44,9 +44,43 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout infra contract
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+        env:
+          INFRA_ASKPASS_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "GITHUB_SHA must be a full lowercase Git SHA" >&2; exit 1; }
+          target="${GITHUB_WORKSPACE:?}"
+          # actions/checkout has no slow-link retry: one 30 s stall killed runs 44391317843 and 44417360328.
+          find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git init -q "$target"
+          git -C "$target" remote add origin https://github.com/ZenoWangzy/vecta-infra.git
+          askpass="$(mktemp)"
+          trap 'rm -f "$askpass"' EXIT
+          chmod 700 "$askpass"
+          cat > "$askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$INFRA_ASKPASS_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          # shortcut: bounded retry, no warm mirror for vecta-infra yet; upgrade to a host mirror if fetches still stall.
+          fetched=false
+          for attempt in 1 2 3 4 5; do
+            if GIT_HTTP_LOW_SPEED_LIMIT=1024 GIT_HTTP_LOW_SPEED_TIME=60 \
+              GIT_ASKPASS="$askpass" GIT_ASKPASS_REQUIRE=force GIT_TERMINAL_PROMPT=0 \
+              timeout 10m git -C "$target" fetch --depth=1 origin "$GITHUB_SHA"; then
+              fetched=true
+              break
+            fi
+            echo "infra fetch attempt $attempt failed" >&2
+            [ "$attempt" -eq 5 ] || sleep $((attempt * 10))
+          done
+          [ "$fetched" = true ] || { echo "infra fetch failed after 5 attempts" >&2; exit 1; }
+          git -C "$target" checkout --detach --force "$GITHUB_SHA"
+          test "$(git -C "$target" rev-parse HEAD)" = "$GITHUB_SHA"
+          [ -z "$(git -C "$target" status --porcelain --untracked-files=all)" ]
 
       - name: Validate workflow inputs
         env:
@@ -133,9 +167,43 @@ jobs:
           }
 
       - name: Checkout infra release contract
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+        env:
+          INFRA_ASKPASS_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "GITHUB_SHA must be a full lowercase Git SHA" >&2; exit 1; }
+          target="${GITHUB_WORKSPACE:?}"
+          # actions/checkout has no slow-link retry: one 30 s stall killed runs 44391317843 and 44417360328.
+          find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git init -q "$target"
+          git -C "$target" remote add origin https://github.com/ZenoWangzy/vecta-infra.git
+          askpass="$(mktemp)"
+          trap 'rm -f "$askpass"' EXIT
+          chmod 700 "$askpass"
+          cat > "$askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$INFRA_ASKPASS_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          # shortcut: bounded retry, no warm mirror for vecta-infra yet; upgrade to a host mirror if fetches still stall.
+          fetched=false
+          for attempt in 1 2 3 4 5; do
+            if GIT_HTTP_LOW_SPEED_LIMIT=1024 GIT_HTTP_LOW_SPEED_TIME=60 \
+              GIT_ASKPASS="$askpass" GIT_ASKPASS_REQUIRE=force GIT_TERMINAL_PROMPT=0 \
+              timeout 10m git -C "$target" fetch --depth=1 origin "$GITHUB_SHA"; then
+              fetched=true
+              break
+            fi
+            echo "infra fetch attempt $attempt failed" >&2
+            [ "$attempt" -eq 5 ] || sleep $((attempt * 10))
+          done
+          [ "$fetched" = true ] || { echo "infra fetch failed after 5 attempts" >&2; exit 1; }
+          git -C "$target" checkout --detach --force "$GITHUB_SHA"
+          test "$(git -C "$target" rev-parse HEAD)" = "$GITHUB_SHA"
+          [ -z "$(git -C "$target" status --porcelain --untracked-files=all)" ]
 
       - name: Initialize mypc-local release state
         run: |
