@@ -838,6 +838,7 @@ esac
             result = subprocess.run(['bash', '-c', adapted, 'fetch-vecta-source.sh', *script_args], cwd=workspace, env={
                 **environment, 'PATH': f'{fake_bin}:{environment["PATH"]}',
                 'VECTA_READ_TOKEN': 'fixture', 'SOURCE_BRANCH': 'main', 'SOURCE_SHA': requested,
+                'VECTA_CACHE_WAIT_SECONDS': '0',
                 'PRODUCTION_IMAGE_NAMES': names,
                 'FAKE_BRANCH_JSON': json.dumps({'object': {'sha': tip}}),
                 'FAKE_COMPARE_JSON': json.dumps({'status': status, 'base_commit': {'sha': requested}, 'merge_base_commit': {'sha': base}}),

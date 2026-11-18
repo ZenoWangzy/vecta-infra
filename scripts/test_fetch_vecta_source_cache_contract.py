@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,6 +116,7 @@ def run_fetch(
     calls_file: Path,
     curl_calls: Path,
     helper: Path,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     invocation = root / f"run-{cache.name}"
     scripts_dir = invocation / "scripts"
@@ -142,6 +144,7 @@ def run_fetch(
             ),
             "GIT_CALLS": str(calls_file),
             "CURL_CALLS": str(curl_calls),
+            **(extra_env or {}),
         }
     )
     return subprocess.run(
@@ -225,6 +228,7 @@ def main() -> None:
             shallow_calls,
             shallow_curl_calls,
             HISTORY_HELPER,
+            extra_env={"VECTA_CACHE_WAIT_SECONDS": "0"},
         )
         assert rejected.returncode != 0, rejected.stdout + rejected.stderr
         assert "is stale or incomplete" in rejected.stderr, rejected.stderr
@@ -234,6 +238,74 @@ def main() -> None:
         ]
         assert shallow_github_fetches, shallow_calls.read_text()
         print("fetch-vecta-source main-history contract: shallow main rejected; GitHub fallback selected")
+        test_publish_boundary_shapes(root / "publish-shapes")
+        test_main_boundary_waits_for_warmer(root / "warm-wait")
+
+
+def publish_depth_one(cache: Path, upstream: Path, refspec: str) -> None:
+    # Same shape as vecta ci.yml "Publish validated source to the local source cache".
+    subprocess.run(
+        ["git", f"--git-dir={cache}", "fetch", "--depth=1", "--quiet", f"file://{upstream}", refspec],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_publish_boundary_shapes(root: Path) -> None:
+    (root / "main").mkdir(parents=True)
+    upstream, cache, _ = make_fixture(root / "main")
+    publish_depth_one(cache, upstream, "+refs/heads/main:refs/heads/main")
+    main_boundary = helper_result(cache)
+    assert main_boundary.returncode == 1, main_boundary.stdout + main_boundary.stderr
+
+    (root / "train").mkdir(parents=True)
+    upstream, cache, _ = make_fixture(root / "train")
+    publish_depth_one(cache, upstream, "+refs/heads/backup:refs/heads/train/b1")
+    train_boundary = helper_result(cache)
+    assert train_boundary.returncode == 0, train_boundary.stdout + train_boundary.stderr
+    print("fetch-vecta-source publish-boundary contract: main boundary rejected, train boundary accepted")
+
+
+def test_main_boundary_waits_for_warmer(root: Path) -> None:
+    root.mkdir(parents=True)
+    upstream, cache, selected_sha = make_fixture(root)
+    publish_depth_one(cache, upstream, "+refs/heads/main:refs/heads/main")
+    assert helper_result(cache).returncode == 1
+
+    real_git = shutil.which("git")
+    assert real_git
+    fake_bin, _ = install_command_shims(root, real_git)
+    calls = root / "wait-git-calls"
+    curl_calls = root / "wait-curl-calls"
+
+    def warm() -> None:
+        # Mirrors warm-vecta-source-cache.sh: unshallow main from its upstream.
+        subprocess.run(
+            [
+                "git", f"--git-dir={cache}", "fetch", "--unshallow", "--force", "--quiet",
+                f"file://{upstream}", "refs/heads/main:refs/heads/main",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+
+    warmer = threading.Timer(2.0, warm)
+    warmer.start()
+    result = run_fetch(
+        root, cache, selected_sha, fake_bin, calls, curl_calls, HISTORY_HELPER,
+        extra_env={"VECTA_CACHE_WAIT_SECONDS": "30", "VECTA_CACHE_WAIT_STEP": "1"},
+    )
+    warmer.join()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Using cached VectA main history" in result.stdout, result.stdout
+    github_fetches = [
+        line for line in calls.read_text().splitlines()
+        if "fetch" in line.split() and GITHUB_SOURCE in line
+    ]
+    assert not github_fetches, github_fetches
+    print("fetch-vecta-source warmer-wait contract: main boundary waited out, cache used, no GitHub fetch")
 
 
 if __name__ == "__main__":
