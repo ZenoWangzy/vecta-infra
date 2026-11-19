@@ -198,7 +198,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf -- "$GITHUB_WORKSPACE/zenoforge"
-          bash scripts/resilient-fetch.sh https://github.com/ZenoWangzy/zenoforge "$ENGINE_SHA" "$GITHUB_WORKSPACE/zenoforge"
+          bash scripts/resilient-fetch.sh https://github.com/ZenoWangzy/zenoforge "$ENGINE_SHA" "$GITHUB_WORKSPACE/zenoforge" /home/github-runner/.cache/zenoforge-engine.git
 
       - name: Build the pinned Vecta engine pack
         env:

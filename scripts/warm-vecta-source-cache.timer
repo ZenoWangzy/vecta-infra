@@ -1,5 +1,5 @@
 [Unit]
-Description=Ticket 143: run warm-vecta-source-cache.service every 10 minutes
+Description=Refresh Vecta and Zenoforge source caches every 10 minutes
 
 [Timer]
 OnBootSec=2min

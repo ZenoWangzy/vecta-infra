@@ -12,6 +12,7 @@ proving the second run adds no new line.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -228,6 +229,24 @@ def assert_shallow_backup_ref_does_not_block_main_and_is_idempotent() -> None:
         )
         assert complete_before.returncode == 0, complete_before.stdout + complete_before.stderr
 
+        engine_seed, engine_origin = root / "engine-seed", root / "engine-origin.git"
+        engine_cache = root / "engine-cache.git"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(engine_seed)], check=True)
+        subprocess.run(["git", "-C", str(engine_seed), "config", "user.name", "Cache contract"], check=True)
+        subprocess.run(["git", "-C", str(engine_seed), "config", "user.email", "cache-contract@example.invalid"], check=True)
+        (engine_seed / "engine.txt").write_text("engine source\n")
+        subprocess.run(["git", "-C", str(engine_seed), "add", "engine.txt"], check=True)
+        subprocess.run(["git", "-C", str(engine_seed), "commit", "-q", "-m", "engine source"], check=True)
+        engine_sha = subprocess.run(
+            ["git", "-C", str(engine_seed), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(["git", "init", "-q", "--bare", str(engine_origin)], check=True)
+        subprocess.run(
+            ["git", "-C", str(engine_seed), "push", "-q", str(engine_origin), "HEAD:refs/heads/main"],
+            check=True,
+        )
+
         # Run the real warmer and shared helper against disposable paths. The
         # sudo shim drops only its user switch; all Git work stays in this fixture.
         script_text = SCRIPT.read_text()
@@ -235,8 +254,15 @@ def assert_shallow_backup_ref_does_not_block_main_and_is_idempotent() -> None:
         script_text = script_text.replace(
             "CACHE=/home/github-runner/.cache/vecta-main.git", f"CACHE='{cache}'"
         )
+        script_text = script_text.replace(
+            "ENGINE_CACHE=/home/github-runner/.cache/zenoforge-engine.git", f"ENGINE_CACHE='{engine_cache}'"
+        )
+        script_text = script_text.replace(
+            "ENGINE_REMOTE=https://github.com/ZenoWangzy/zenoforge.git", f"ENGINE_REMOTE='file://{engine_origin}'"
+        )
         assert "OCEE=/data/ocee" not in script_text
         assert "CACHE=/home/github-runner/.cache/vecta-main.git" not in script_text
+        assert "ENGINE_CACHE=/home/github-runner/.cache/zenoforge-engine.git" not in script_text
         scripts_dir = root / "scripts"
         scripts_dir.mkdir()
         (scripts_dir / "vecta-main-history.sh").write_text(HISTORY_HELPER.read_text())
@@ -253,6 +279,17 @@ def assert_shallow_backup_ref_does_not_block_main_and_is_idempotent() -> None:
         sudo.chmod(0o755)
         global_config = root / "gitconfig"
         global_config.touch()
+        # Stand-in for the mypc includeIf bridge: the runner's global config rewrites the engine
+        # remote to a decoy cache. The warmer's own GitHub fetch must ignore it.
+        decoy = root / "decoy.git"
+        subprocess.run(["git", "clone", "-q", "--bare", str(engine_origin), str(decoy)], check=True)
+        subprocess.run(["git", "-C", str(engine_seed), "commit", "-q", "--allow-empty", "-m", "decoy"], check=True)
+        subprocess.run(["git", "-C", str(engine_seed), "push", "-q", "-f", str(decoy), "HEAD:refs/heads/main"], check=True)
+        subprocess.run(["git", "-C", str(engine_seed), "reset", "-q", "--hard", engine_sha], check=True)
+        subprocess.run(
+            ["git", "config", "--file", str(global_config), f"url.file://{decoy}.insteadOf", f"file://{engine_origin}"],
+            check=True,
+        )
         environment = os.environ.copy()
         environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
         environment["GIT_CONFIG_GLOBAL"] = str(global_config)
@@ -286,6 +323,17 @@ def assert_shallow_backup_ref_does_not_block_main_and_is_idempotent() -> None:
                 capture_output=True,
             )
             assert "cache warm: refs/heads/main = " in result.stdout, result.stdout
+            assert "Zenoforge cache warm: refs/heads/main = " in result.stdout, result.stdout
+            engine_tip = subprocess.run(
+                ["git", f"--git-dir={engine_cache}", "rev-parse", "refs/heads/main"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            assert engine_tip == engine_sha, (engine_tip, engine_sha)
+            engine_commit = subprocess.run(
+                ["git", f"--git-dir={engine_cache}", "cat-file", "-e", f"{engine_sha}^{{commit}}"],
+                check=False, capture_output=True, text=True,
+            )
+            assert engine_commit.returncode == 0, engine_commit.stderr
             if run_number == 1:
                 warm_line = next(
                     line for line in result.stdout.splitlines()
@@ -318,7 +366,52 @@ def assert_shallow_backup_ref_does_not_block_main_and_is_idempotent() -> None:
                 f"run {run_number}: expected one safe.directory entry, got {entries}"
             )
 
+        def run_warmer(script_path: Path) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["bash", str(script_path)], cwd=ROOT, env=environment, check=False, text=True, capture_output=True,
+            )
+
+        def engine_cache_tip() -> str:
+            return subprocess.run(
+                ["git", f"--git-dir={engine_cache}", "rev-parse", "refs/heads/main"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+        # Vecta hop broken: the engine hop still runs, and the unit still fails.
+        subprocess.run(["git", "-C", str(engine_seed), "commit", "-q", "--allow-empty", "-m", "engine next"], check=True)
+        engine_next = subprocess.run(
+            ["git", "-C", str(engine_seed), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(["git", "-C", str(engine_seed), "push", "-q", str(engine_origin), "HEAD:refs/heads/main"], check=True)
+        (ocee / ".git").rename(ocee / ".git.away")
+        vecta_down = run_warmer(warm_script)
+        (ocee / ".git.away").rename(ocee / ".git")
+        assert vecta_down.returncode != 0, vecta_down.stdout
+        assert "Zenoforge cache warm: refs/heads/main = " in vecta_down.stdout, vecta_down.stdout + vecta_down.stderr
+        assert engine_cache_tip() == engine_next, (engine_cache_tip(), engine_next)
+
+        # Engine hop broken: the Vecta cache is still refreshed, and the unit still fails.
+        engine_down_script = scripts_dir / "warm-engine-down.sh"
+        engine_down_script.write_text(script_text.replace(f"ENGINE_REMOTE='file://{engine_origin}'", f"ENGINE_REMOTE='file://{root}/missing.git'"))
+        engine_down = run_warmer(engine_down_script)
+        assert engine_down.returncode != 0, engine_down.stdout
+        assert "Zenoforge cache fetch FAILED" in engine_down.stdout, engine_down.stdout
+        assert "] cache warm: refs/heads/main = " in engine_down.stdout, engine_down.stdout
+        print("warm-vecta-source-cache hops: each hop runs when the other fails, unit still exits non-zero")
+
     print("warm-vecta-source-cache shallow backup ref: main stays complete and 2 runs are idempotent")
+
+
+def assert_service_timeout_covers_every_hop(script: str, service: str) -> None:
+    """Worst case = every bounded step hits its timeout; the unit limit must still be larger."""
+    budget = {
+        name: int(re.search(rf"^{name}=(\d+)", script, re.MULTILINE).group(1))
+        for name in ("UPSTREAM_TIMEOUT", "CACHE_TIMEOUT", "ENGINE_TIMEOUT", "GC_TIMEOUT")
+    }
+    unit_limit = int(re.search(r"^TimeoutStartSec=(\d+)min$", service, re.MULTILINE).group(1)) * 60
+    assert budget["ENGINE_TIMEOUT"] > budget["UPSTREAM_TIMEOUT"], "first full Zenoforge fetch needs its own longer budget"
+    assert sum(budget.values()) + 120 <= unit_limit, (budget, unit_limit)
+    print(f"warm-vecta-source-cache timeout budget: {sum(budget.values())}s worst case within {unit_limit}s unit limit")
 
 
 def main() -> None:
@@ -333,10 +426,13 @@ def main() -> None:
     assert 'fetch --depth=1' not in script
     assert 'cache main history is incomplete after a successful fetch' in script
     assert 'sudo -u github-runner git --git-dir="$CACHE" gc --auto' in script
+    assert 'timeout "$GC_TIMEOUT" sudo -u github-runner git --git-dir="$CACHE" gc --auto' in script
+    assert 'sudo -u github-runner git --git-dir="$ENGINE_CACHE"' in script
+    assert 'fetch "${engine_history_args[@]}" --force --quiet "$ENGINE_REMOTE"' in script
     assert 'trap log_cache_size EXIT' in script
     assert 'du -sh "$CACHE"' in script
     service = (ROOT / "scripts" / "warm-vecta-source-cache.service").read_text()
-    assert "TimeoutStartSec=30min" in service
+    assert_service_timeout_covers_every_hop(script, service)
     assert_full_history_cache_fetch()
 
     guard = extract_guard()

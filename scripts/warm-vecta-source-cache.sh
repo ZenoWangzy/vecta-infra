@@ -10,7 +10,11 @@
 # Keep blobs in the cache: the build workflow's depth-1 local fetch asks for a
 # complete selected tree, and upload-pack cannot serve promised blobs from a
 # filtered bare cache on this local path. The VectA pack is about 276 MiB here.
-# Both hops are `fetch` only. Nothing here ever touches a working tree,
+# A third, independent hop keeps a full-history Zenoforge cache for the engine pin: it runs
+# first, and a failure in either side never skips the other (the unit still exits non-zero).
+# Every step is bounded; worst case is the sum of the *_TIMEOUT values below and must stay
+# under TimeoutStartSec in warm-vecta-source-cache.service (a contract test enforces it).
+# All fetch hops are `fetch` only. Nothing here ever touches a working tree,
 # checks out a branch, or resets anything -- /data/ocee's checked-out state
 # is not this script's concern and must not be disturbed.
 #
@@ -29,8 +33,12 @@ source "$SCRIPT_DIR/vecta-main-history.sh"
 
 OCEE=/data/ocee
 CACHE=/home/github-runner/.cache/vecta-main.git
+ENGINE_CACHE=/home/github-runner/.cache/zenoforge-engine.git
+ENGINE_REMOTE=https://github.com/ZenoWangzy/zenoforge.git
 UPSTREAM_TIMEOUT=120 # seconds; fetching /data/ocee from GitHub is incremental
 CACHE_TIMEOUT=1800 # seconds; the first unshallow fetch copies main's history
+ENGINE_TIMEOUT=900 # seconds; the first full-history Zenoforge fetch (about 13 MB) over the slow link
+GC_TIMEOUT=300 # seconds; `git gc --auto` on the Vecta cache must not hold the unit open
 
 log() { printf '%s [warm-vecta-source-cache] %s\n' "$(date -u +%FT%TZ)" "$1"; }
 
@@ -42,6 +50,35 @@ log_cache_size() {
   log "runner cache size: ${size:-unavailable}"
 }
 trap log_cache_size EXIT
+
+warm_engine_cache() {
+  mkdir -p "$(dirname "$ENGINE_CACHE")" || return 1
+  if [ ! -d "$ENGINE_CACHE" ]; then
+    log "engine cache missing at $ENGINE_CACHE -- bootstrapping a full-history bare repository"
+    sudo -u github-runner git init --bare "$ENGINE_CACHE" --quiet || return 1
+  fi
+  local engine_shallow engine_tip
+  local -a engine_history_args=()
+  engine_shallow="$(sudo -u github-runner git --git-dir="$ENGINE_CACHE" rev-parse --is-shallow-repository)" || return 1
+  if [ "$engine_shallow" = true ]; then
+    log "engine cache is shallow; fetching full main history"
+    engine_history_args+=(--unshallow)
+  fi
+  log "engine hop: fetching Zenoforge main into $ENGINE_CACHE"
+  # GIT_CONFIG_GLOBAL/SYSTEM=/dev/null: this GitHub fetch must never be rewritten by a url.*.insteadOf
+  # (e.g. the temporary includeIf cache bridge) in github-runner's global config.
+  if ! timeout "$ENGINE_TIMEOUT" sudo -u github-runner env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git --git-dir="$ENGINE_CACHE" fetch "${engine_history_args[@]}" --force --quiet "$ENGINE_REMOTE" \
+    "refs/heads/main:refs/heads/main"; then
+    log "Zenoforge cache fetch FAILED (timeout or network) -- next timer tick retries"
+    return 1
+  fi
+  engine_tip="$(sudo -u github-runner git --git-dir="$ENGINE_CACHE" rev-parse refs/heads/main)" || return 1
+  log "Zenoforge cache warm: refs/heads/main = $engine_tip"
+}
+
+engine_rc=0
+warm_engine_cache || engine_rc=1
 
 if [ ! -d "$OCEE/.git" ]; then
   log "FATAL: $OCEE is not a git checkout -- not this script's job to bootstrap it, fix separately"
@@ -103,5 +140,7 @@ if ! sudo -u github-runner bash -c 'source "$1" && vecta_main_history_is_complet
   log "FATAL: cache main history is incomplete after a successful fetch"
   exit 1
 fi
-sudo -u github-runner git --git-dir="$CACHE" gc --auto
+timeout "$GC_TIMEOUT" sudo -u github-runner git --git-dir="$CACHE" gc --auto \
+  || log "gc --auto did not finish within ${GC_TIMEOUT}s or failed -- cache is warm, next tick retries"
 log "cache warm: refs/heads/main = $cache_tip"
+exit "$engine_rc"
