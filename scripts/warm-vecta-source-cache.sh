@@ -109,9 +109,11 @@ fi
 # this is config-only, never touches objects or a tree. `--add` on its own is
 # NOT idempotent -- it appends every run, growing github-runner's shared
 # ~/.gitconfig without bound (ticket 136: a 10-minute timer, forever). Check
-# before adding so a second run leaves the file unchanged.
+# before adding so a second run leaves the file unchanged. Not `grep -q`: it
+# exits on the first match, SIGPIPEs the still-writing git (rc 141), and under
+# pipefail that reads as "absent" -- it re-added on every run (ticket 139).
 if ! sudo -u github-runner git config --global --get-all safe.directory 2>/dev/null \
-  | grep -qxF "$OCEE/.git"; then
+  | grep -xF -- "$OCEE/.git" >/dev/null; then
   sudo -u github-runner git config --global --add safe.directory "$OCEE/.git" 2>/dev/null || true
 fi
 
