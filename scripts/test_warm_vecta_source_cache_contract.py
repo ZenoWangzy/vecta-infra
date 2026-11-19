@@ -368,7 +368,8 @@ def main() -> None:
     assert 'prune' not in script
     assert 'fetch --depth=1' not in script
     assert 'cache main history is incomplete after a successful fetch' in script
-    assert 'sudo -u github-runner git --git-dir="$CACHE" gc --auto' in script
+    assert 'sudo -u github-runner git --git-dir="$ENGINE_CACHE"' in script
+    assert 'fetch "${engine_history_args[@]}" --force --quiet "$ENGINE_REMOTE"' in script
     assert 'trap log_cache_size EXIT' in script
     assert 'du -sh "$CACHE"' in script
     service = (ROOT / "scripts" / "warm-vecta-source-cache.service").read_text()

@@ -111,20 +111,20 @@ log "cache warm: refs/heads/main = $cache_tip"
 mkdir -p "$(dirname "$ENGINE_CACHE")"
 if [ ! -d "$ENGINE_CACHE" ]; then
   log "engine cache missing at $ENGINE_CACHE -- bootstrapping a full-history bare repository"
-  git init --bare "$ENGINE_CACHE" --quiet
+  sudo -u github-runner git init --bare "$ENGINE_CACHE" --quiet
 fi
-engine_shallow="$(git --git-dir="$ENGINE_CACHE" rev-parse --is-shallow-repository)"
+engine_shallow="$(sudo -u github-runner git --git-dir="$ENGINE_CACHE" rev-parse --is-shallow-repository)"
 engine_history_args=()
 if [ "$engine_shallow" = true ]; then
   log "engine cache is shallow; fetching full main history"
   engine_history_args+=(--unshallow)
 fi
 log "hop 3: fetching Zenoforge main into $ENGINE_CACHE"
-if ! timeout "$UPSTREAM_TIMEOUT" git --git-dir="$ENGINE_CACHE" \
+if ! timeout "$UPSTREAM_TIMEOUT" sudo -u github-runner git --git-dir="$ENGINE_CACHE" \
   fetch "${engine_history_args[@]}" --force --quiet "$ENGINE_REMOTE" \
   "refs/heads/main:refs/heads/main"; then
   log "Zenoforge cache fetch FAILED (timeout or network) -- next timer tick retries"
   exit 1
 fi
-engine_tip="$(git --git-dir="$ENGINE_CACHE" rev-parse refs/heads/main)"
+engine_tip="$(sudo -u github-runner git --git-dir="$ENGINE_CACHE" rev-parse refs/heads/main)"
 log "Zenoforge cache warm: refs/heads/main = $engine_tip"
