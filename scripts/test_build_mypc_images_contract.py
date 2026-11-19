@@ -314,16 +314,17 @@ def assert_static_contract(workflow: str) -> None:
         'GIT_ALTERNATE_OBJECT_DIRECTORIES="$old_objects"',
         'printf \'%s\\n\' "$GITHUB_SHA" > "$target/.git/shallow"',
         'git -C "$target" repack -a -d',
-        "for attempt in 1 2 3; do",
-        "timeout 10m git -C \"$target\" fetch --depth=1 origin",
+        'boot="$(mktemp)"',
+        "https://api.github.com/repos/ZenoWangzy/vecta-infra/contents/scripts/resilient-fetch.sh?ref=$GITHUB_SHA",
+        'bash "$boot" https://github.com/ZenoWangzy/vecta-infra.git "$GITHUB_SHA" "$target"',
         'git -C "$target" fsck --connectivity-only "$GITHUB_SHA"',
         'git -C "$target" checkout --detach --force "$GITHUB_SHA"',
         'test "$(git -C "$target" rev-parse HEAD)" = "$GITHUB_SHA"',
         'git -C "$target" status --porcelain --untracked-files=all',
-        "GIT_ASKPASS_REQUIRE=force",
-        "GIT_TERMINAL_PROMPT=0",
     ):
         assert literal in infra_script, literal
+    assert not re.search(r"\bgit\b[^\n]*\bfetch\b", infra_script)
+    assert "GIT_ASKPASS_REQUIRE" not in infra_script
     assert not re.search(r"https://[^\s/]*@github\.com", infra_script)
     assert not re.search(r"\bset\s+-x\b|\bxtrace\b", infra_script)
     download_step = extract_step_script(workflow, "Download selected VectA source")
@@ -671,7 +672,7 @@ def assert_local_checkout_isolation(workflow: str) -> None:
                 "GITHUB_SHA": good_sha,
                 "GITHUB_WORKSPACE": str(workspace),
                 "PWD": str(workspace),
-                "INFRA_READ_TOKEN": "unused-local-object",
+                "FETCH_TOKEN": "unused-local-object",
                 "RUNNER_TEMP": str(runner_temp),
                 "GIT_CONFIG_GLOBAL": "/dev/null",
                 "GIT_CONFIG_SYSTEM": "/dev/null",

@@ -121,7 +121,7 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
-          [ -n "${INFRA_READ_TOKEN:-}" ] || {
+          [ -n "${FETCH_TOKEN:-}" ] || {
             echo "github.token is required" >&2
             exit 1
           }
@@ -149,38 +149,13 @@ jobs:
               git -C "$target" repack -a -d
           fi
           if ! git -C "$target" cat-file -e "$GITHUB_SHA^{commit}" 2>/dev/null; then
-            askpass="$(mktemp)"
-            trap 'rm -f "$askpass"' EXIT
-            chmod 700 "$askpass"
-            cat > "$askpass" <<'ASKPASS'
-          #!/bin/sh
-          case "$1" in
-            *Username*) printf '%s\n' x-access-token ;;
-            *Password*) printf '%s\n' "$INFRA_READ_TOKEN" ;;
-            *) exit 1 ;;
-          esac
-          ASKPASS
-            command -v timeout >/dev/null || {
-              echo "timeout is required" >&2
-              exit 1
-            }
-            # ponytail: exact local object avoids GitHub; fetch only on a cold runner.
-            for attempt in 1 2 3; do
-              if GIT_HTTP_LOW_SPEED_LIMIT=0 \
-                LC_ALL=C \
-                GIT_ASKPASS="$askpass" \
-                GIT_ASKPASS_REQUIRE=force \
-                GIT_TERMINAL_PROMPT=0 \
-                timeout 10m git -C "$target" fetch --depth=1 origin \
-                  "+$GITHUB_SHA:refs/remotes/origin/main"; then
-                break
-              fi
-              if [ "$attempt" -eq 3 ]; then
-                echo "infra fetch failed after 3 attempts" >&2
-                exit 1
-              fi
-              echo "Retrying infra fetch after transient network failure"
-            done
+            # The fetch script lives in the infra checkout it fetches, so bootstrap it at GITHUB_SHA first (bounded curl).
+            boot="$(mktemp)"
+            trap 'rm -f "$boot"' EXIT
+            curl -fsSL --retry 3 --retry-delay 10 --connect-timeout 30 --max-time 60 \
+              --config <(printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github.raw+json"\n' "$FETCH_TOKEN") \
+              -o "$boot" "https://api.github.com/repos/ZenoWangzy/vecta-infra/contents/scripts/resilient-fetch.sh?ref=$GITHUB_SHA"
+            bash "$boot" https://github.com/ZenoWangzy/vecta-infra.git "$GITHUB_SHA" "$target"
           fi
           git -C "$target" fsck --connectivity-only "$GITHUB_SHA"
           git -C "$target" checkout --detach --force "$GITHUB_SHA"
@@ -194,7 +169,7 @@ jobs:
             exit 1
           fi
         env:
-          INFRA_READ_TOKEN: ${{ github.token }}
+          FETCH_TOKEN: ${{ github.token }}
 
       - name: Validate selected SHA
         run: |
