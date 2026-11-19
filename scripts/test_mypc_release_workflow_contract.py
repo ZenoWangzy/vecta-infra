@@ -216,7 +216,7 @@ def main() -> None:
     assert len(engine_checkouts) == 1
     engine_run = str(engine_checkouts[0].get("run", ""))
     assert (
-        'bash scripts/resilient-fetch.sh https://github.com/ZenoWangzy/zenoforge "$ENGINE_SHA" "$GITHUB_WORKSPACE/zenoforge"'
+        'bash scripts/resilient-fetch.sh https://github.com/ZenoWangzy/zenoforge "$ENGINE_SHA" "$GITHUB_WORKSPACE/zenoforge" /home/github-runner/.cache/zenoforge-engine.git'
         in engine_run
     ), engine_run
     assert engine_checkouts[0].get("env", {}).get("ENGINE_SHA") == "${{ steps.engine-pin.outputs.sha }}"

@@ -228,6 +228,24 @@ def assert_shallow_backup_ref_does_not_block_main_and_is_idempotent() -> None:
         )
         assert complete_before.returncode == 0, complete_before.stdout + complete_before.stderr
 
+        engine_seed, engine_origin = root / "engine-seed", root / "engine-origin.git"
+        engine_cache = root / "engine-cache.git"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(engine_seed)], check=True)
+        subprocess.run(["git", "-C", str(engine_seed), "config", "user.name", "Cache contract"], check=True)
+        subprocess.run(["git", "-C", str(engine_seed), "config", "user.email", "cache-contract@example.invalid"], check=True)
+        (engine_seed / "engine.txt").write_text("engine source\n")
+        subprocess.run(["git", "-C", str(engine_seed), "add", "engine.txt"], check=True)
+        subprocess.run(["git", "-C", str(engine_seed), "commit", "-q", "-m", "engine source"], check=True)
+        engine_sha = subprocess.run(
+            ["git", "-C", str(engine_seed), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(["git", "init", "-q", "--bare", str(engine_origin)], check=True)
+        subprocess.run(
+            ["git", "-C", str(engine_seed), "push", "-q", str(engine_origin), "HEAD:refs/heads/main"],
+            check=True,
+        )
+
         # Run the real warmer and shared helper against disposable paths. The
         # sudo shim drops only its user switch; all Git work stays in this fixture.
         script_text = SCRIPT.read_text()
@@ -235,8 +253,15 @@ def assert_shallow_backup_ref_does_not_block_main_and_is_idempotent() -> None:
         script_text = script_text.replace(
             "CACHE=/home/github-runner/.cache/vecta-main.git", f"CACHE='{cache}'"
         )
+        script_text = script_text.replace(
+            "ENGINE_CACHE=/home/github-runner/.cache/zenoforge-engine.git", f"ENGINE_CACHE='{engine_cache}'"
+        )
+        script_text = script_text.replace(
+            "ENGINE_REMOTE=https://github.com/ZenoWangzy/zenoforge.git", f"ENGINE_REMOTE='file://{engine_origin}'"
+        )
         assert "OCEE=/data/ocee" not in script_text
         assert "CACHE=/home/github-runner/.cache/vecta-main.git" not in script_text
+        assert "ENGINE_CACHE=/home/github-runner/.cache/zenoforge-engine.git" not in script_text
         scripts_dir = root / "scripts"
         scripts_dir.mkdir()
         (scripts_dir / "vecta-main-history.sh").write_text(HISTORY_HELPER.read_text())
@@ -286,6 +311,17 @@ def assert_shallow_backup_ref_does_not_block_main_and_is_idempotent() -> None:
                 capture_output=True,
             )
             assert "cache warm: refs/heads/main = " in result.stdout, result.stdout
+            assert "Zenoforge cache warm: refs/heads/main = " in result.stdout, result.stdout
+            engine_tip = subprocess.run(
+                ["git", f"--git-dir={engine_cache}", "rev-parse", "refs/heads/main"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            assert engine_tip == engine_sha, (engine_tip, engine_sha)
+            engine_commit = subprocess.run(
+                ["git", f"--git-dir={engine_cache}", "cat-file", "-e", f"{engine_sha}^{{commit}}"],
+                check=False, capture_output=True, text=True,
+            )
+            assert engine_commit.returncode == 0, engine_commit.stderr
             if run_number == 1:
                 warm_line = next(
                     line for line in result.stdout.splitlines()
@@ -336,7 +372,7 @@ def main() -> None:
     assert 'trap log_cache_size EXIT' in script
     assert 'du -sh "$CACHE"' in script
     service = (ROOT / "scripts" / "warm-vecta-source-cache.service").read_text()
-    assert "TimeoutStartSec=30min" in service
+    assert "TimeoutStartSec=35min" in service
     assert_full_history_cache_fetch()
 
     guard = extract_guard()

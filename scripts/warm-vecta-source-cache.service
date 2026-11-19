@@ -6,6 +6,6 @@ Description=Ticket 143: keep the vecta-main.git source cache warm for build-mypc
 
 [Service]
 Type=oneshot
-TimeoutStartSec=30min
+TimeoutStartSec=35min
 ExecStart=/usr/local/sbin/warm-vecta-source-cache.sh
 User=root

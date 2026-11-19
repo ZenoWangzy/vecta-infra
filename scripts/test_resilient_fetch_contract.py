@@ -80,6 +80,8 @@ def static() -> None:
     assert "timeout 4m git -C \"$dir\" fetch" in source
     assert "GIT_HTTP_LOW_SPEED_LIMIT=1024" in source and "GIT_HTTP_LOW_SPEED_TIME=60" in source
     assert 'trap \'rm -f "$askpass"\' EXIT' in source
+    assert 'git -C "$warm_cache" cat-file -e "$sha^{commit}"' in source
+    assert 'git -C "$dir" fetch -q --depth=1 "$warm_cache" "$sha"' in source
     assert "GIT_ASKPASS_REQUIRE" not in source, "git ignores GIT_ASKPASS_REQUIRE"
     assert not re.search(r"\bset\s+-x\b|\bxtrace\b", source)
     assert not re.search(r"\becho\b[^\n]*\$FETCH_TOKEN", source), "token must not be echoed"
