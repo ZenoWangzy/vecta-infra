@@ -60,6 +60,26 @@ def behaviour() -> None:
         assert fallback_head == next_sha, (fallback_head, next_sha)
         print(f"warm-cache missing-SHA fallback: HEAD={fallback_head} (exit code: {fallback.returncode})")
 
+        # Commit object present but a blob missing: cat-file passes, the cache fetch fails, and the
+        # script must still fall back to GitHub instead of dying under `set -e`.
+        (seed / "payload.txt").write_text("payload\n")
+        assert git(["add", "payload.txt"], cwd=seed).returncode == 0
+        assert git([*IDENTITY, "commit", "-q", "-m", "payload"], cwd=seed).returncode == 0
+        blob_sha = git(["rev-parse", "HEAD:payload.txt"], cwd=seed).stdout.strip()
+        payload_sha = git(["rev-parse", "HEAD"], cwd=seed).stdout.strip()
+        assert git(["push", "-q", str(origin), "HEAD:refs/heads/main"], cwd=seed).returncode == 0
+        broken_cache = root / "broken-cache.git"
+        assert git(["init", "-q", "--bare", str(broken_cache)]).returncode == 0
+        assert git(["push", "-q", str(broken_cache), f"{payload_sha}:refs/heads/main"], cwd=seed).returncode == 0
+        (broken_cache / "objects" / blob_sha[:2] / blob_sha[2:]).unlink()
+        assert git(["cat-file", "-e", f"{payload_sha}^{{commit}}"], cwd=broken_cache).returncode == 0
+        broken_dest = root / "broken-cache-fallback"
+        broken = run_script(f"file://{origin}", payload_sha, broken_dest, broken_cache)
+        assert broken.returncode == 0, f"broken warm cache must fall back to GitHub: {broken.returncode}: {broken.stderr}"
+        assert git(["rev-parse", "HEAD"], cwd=broken_dest).stdout.strip() == payload_sha
+        assert "Using warm source cache" not in broken.stdout, broken.stdout
+        print(f"warm-cache missing-blob fallback: HEAD={payload_sha} (exit code: {broken.returncode})")
+
         dest = root / "checkout"
         ok = run_script(f"file://{origin}", sha, dest)
         assert ok.returncode == 0, ok.stderr

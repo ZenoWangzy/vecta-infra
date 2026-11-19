@@ -6,6 +6,6 @@ Description=Keep Vecta and Zenoforge source caches warm for mypc releases
 
 [Service]
 Type=oneshot
-TimeoutStartSec=35min
+TimeoutStartSec=55min
 ExecStart=/usr/local/sbin/warm-vecta-source-cache.sh
 User=root

@@ -29,12 +29,15 @@ ASKPASS
 git init -q "$dir"
 git -C "$dir" config remote.origin.url "$repo_url"
 fetched=false
+# The cache fetch sits in the `if` condition so a cache with the commit but a missing tree or blob
+# (cat-file passes, fetch fails) falls through to GitHub instead of exiting under `set -e`.
 if [ -n "$warm_cache" ] && [ -d "$warm_cache" ] \
-  && git -C "$warm_cache" cat-file -e "$sha^{commit}" 2>/dev/null; then
-  git -C "$dir" fetch -q --depth=1 "$warm_cache" "$sha"
+  && git -C "$warm_cache" cat-file -e "$sha^{commit}" 2>/dev/null \
+  && git -C "$dir" fetch -q --depth=1 "$warm_cache" "$sha"; then
   fetched=true
   echo "Using warm source cache for $sha"
 else
+  [ -z "$warm_cache" ] || echo "warm source cache unusable for $sha; fetching from $repo_url" >&2
   for attempt in 1 2 3; do
     if GIT_HTTP_LOW_SPEED_LIMIT=1024 GIT_HTTP_LOW_SPEED_TIME=60 \
       GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
