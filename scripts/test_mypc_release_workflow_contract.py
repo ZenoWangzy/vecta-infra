@@ -4,6 +4,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -169,8 +170,12 @@ def main() -> None:
                 assert options.get("fetch-depth") not in (0, "0"), step
     assert not vecta_checkouts, "VectA source must use the shared fetch script, not actions/checkout"
 
-    # vecta-infra checkout: actions/checkout has no slow-link retry (run 44391317843, 44417360328).
-    # Each job's infra checkout must be an inline bounded fetch of the exact SHA with a low-speed abort.
+    # actions/checkout has no slow-link retry (runs 44391317843, 44417360328, 44442533925).
+    assert "uses: actions/checkout" not in RELEASE, "every GitHub fetch must go through scripts/resilient-fetch.sh"
+    # Every GitHub git fetch goes through the shared script; the workflows never call git fetch themselves.
+    for source, label in ((RELEASE, "mypc-release.yml"), (BUILD, "build-mypc-images.yml")):
+        assert not re.search(r"\bgit\b[^\n]*\bfetch\b", source), label
+    # vecta-infra checkout: the script lives in the infra checkout, so validate/deploy fetch it first (curl, bounded).
     for job_name in ("validate", "deploy"):
         infra_checkouts = [
             step for step in steps_for(release, job_name)
@@ -178,17 +183,44 @@ def main() -> None:
         ]
         assert len(infra_checkouts) == 1, job_name
         assert "uses" not in infra_checkouts[0], infra_checkouts[0]
-        infra_run = str(infra_checkouts[0].get("run", ""))
+        infra_step = infra_checkouts[0]
+        assert infra_step.get("env", {}).get("FETCH_TOKEN") == "${{ github.token }}", job_name
+        infra_run = str(infra_step.get("run", ""))
         for fragment in (
-            "https://github.com/ZenoWangzy/vecta-infra.git",
-            "for attempt in 1 2 3 4 5; do",
-            "GIT_HTTP_LOW_SPEED_LIMIT=1024",
-            "GIT_HTTP_LOW_SPEED_TIME=60",
-            'git -C "$target" fetch --depth=1 origin "$GITHUB_SHA"',
+            'boot="$(mktemp)"',
+            'https://api.github.com/repos/ZenoWangzy/vecta-infra/contents/scripts/resilient-fetch.sh?ref=$GITHUB_SHA',
+            'bash "$boot" https://github.com/ZenoWangzy/vecta-infra.git "$GITHUB_SHA" "$target"',
             'test "$(git -C "$target" rev-parse HEAD)" = "$GITHUB_SHA"',
         ):
             assert fragment in infra_run, (job_name, fragment)
         assert "extraheader" not in infra_run and "git config --global" not in infra_run
+    # validate documented worst case: infra checkout 17 min (bootstrap 4.5 + fetch 12.5), VectA fetch 30.
+    # Each step carries its cap, and the job cap must cover the sum of those caps.
+    validate_steps = {str(step.get("name", "")): step for step in steps_for(release, "validate")}
+    step_budgets = {
+        "Checkout infra contract": 17,
+        "Fetch selected Vecta source and main history": 30,
+    }
+    step_cap_total = 0
+    for name, minimum in step_budgets.items():
+        cap = validate_steps.get(name, {}).get("timeout-minutes")
+        assert isinstance(cap, int) and cap >= minimum, (name, cap)
+        step_cap_total += cap
+    validate_cap = release["jobs"]["validate"].get("timeout-minutes")
+    assert isinstance(validate_cap, int) and validate_cap >= step_cap_total, (validate_cap, step_cap_total)
+
+    engine_checkouts = [
+        step for step in steps_for(release, "deploy")
+        if step.get("name") == "Checkout pinned Zenoforge engine source"
+    ]
+    assert len(engine_checkouts) == 1
+    engine_run = str(engine_checkouts[0].get("run", ""))
+    assert (
+        'bash scripts/resilient-fetch.sh https://github.com/ZenoWangzy/zenoforge "$ENGINE_SHA" "$GITHUB_WORKSPACE/zenoforge"'
+        in engine_run
+    ), engine_run
+    assert engine_checkouts[0].get("env", {}).get("ENGINE_SHA") == "${{ steps.engine-pin.outputs.sha }}"
+    assert engine_checkouts[0].get("env", {}).get("FETCH_TOKEN") == "${{ github.token }}"
 
     for job_name in ("validate", "deploy"):
         fetch_steps = [

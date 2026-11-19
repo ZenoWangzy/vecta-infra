@@ -41,44 +41,27 @@ jobs:
       github.ref == 'refs/heads/main'
     runs-on: [self-hosted, mypc, prod-build]
     environment: production
-    timeout-minutes: 20
+    # Documented worst case: infra checkout 17 min (bootstrap 4.5 + fetch 12.5) + VectA fetch 30 min = 47 min.
+    # 60 leaves 13 min for postsubmit (no documented bound, up to 100 ancestor lookups) and the quick checks.
+    timeout-minutes: 60
     steps:
       - name: Checkout infra contract
+        timeout-minutes: 17
         env:
-          INFRA_ASKPASS_TOKEN: ${{ github.token }}
+          FETCH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "GITHUB_SHA must be a full lowercase Git SHA" >&2; exit 1; }
           target="${GITHUB_WORKSPACE:?}"
           # actions/checkout has no slow-link retry: one 30 s stall killed runs 44391317843 and 44417360328.
           find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          git init -q "$target"
-          git -C "$target" remote add origin https://github.com/ZenoWangzy/vecta-infra.git
-          askpass="$(mktemp)"
-          trap 'rm -f "$askpass"' EXIT
-          chmod 700 "$askpass"
-          cat > "$askpass" <<'ASKPASS'
-          #!/bin/sh
-          case "$1" in
-            *Username*) printf '%s\n' x-access-token ;;
-            *Password*) printf '%s\n' "$INFRA_ASKPASS_TOKEN" ;;
-            *) exit 1 ;;
-          esac
-          ASKPASS
-          # shortcut: bounded retry, no warm mirror for vecta-infra yet; upgrade to a host mirror if fetches still stall.
-          fetched=false
-          for attempt in 1 2 3 4 5; do
-            if GIT_HTTP_LOW_SPEED_LIMIT=1024 GIT_HTTP_LOW_SPEED_TIME=60 \
-              GIT_ASKPASS="$askpass" GIT_ASKPASS_REQUIRE=force GIT_TERMINAL_PROMPT=0 \
-              timeout 10m git -C "$target" fetch --depth=1 origin "$GITHUB_SHA"; then
-              fetched=true
-              break
-            fi
-            echo "infra fetch attempt $attempt failed" >&2
-            [ "$attempt" -eq 5 ] || sleep $((attempt * 10))
-          done
-          [ "$fetched" = true ] || { echo "infra fetch failed after 5 attempts" >&2; exit 1; }
-          git -C "$target" checkout --detach --force "$GITHUB_SHA"
+          # The fetch script lives in the infra checkout it fetches, so bootstrap it at GITHUB_SHA first (bounded curl).
+          boot="$(mktemp)"
+          trap 'rm -f "$boot"' EXIT
+          curl -fsSL --retry 3 --retry-delay 10 --connect-timeout 30 --max-time 60 \
+            --config <(printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github.raw+json"\n' "$FETCH_TOKEN") \
+            -o "$boot" "https://api.github.com/repos/ZenoWangzy/vecta-infra/contents/scripts/resilient-fetch.sh?ref=$GITHUB_SHA"
+          bash "$boot" https://github.com/ZenoWangzy/vecta-infra.git "$GITHUB_SHA" "$target"
           test "$(git -C "$target" rev-parse HEAD)" = "$GITHUB_SHA"
           [ -z "$(git -C "$target" status --porcelain --untracked-files=all)" ]
 
@@ -98,6 +81,7 @@ jobs:
           }
 
       - name: Fetch selected Vecta source and main history
+        timeout-minutes: 30
         run: bash scripts/fetch-vecta-source.sh --with-main-history
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -168,40 +152,20 @@ jobs:
 
       - name: Checkout infra release contract
         env:
-          INFRA_ASKPASS_TOKEN: ${{ github.token }}
+          FETCH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "GITHUB_SHA must be a full lowercase Git SHA" >&2; exit 1; }
           target="${GITHUB_WORKSPACE:?}"
           # actions/checkout has no slow-link retry: one 30 s stall killed runs 44391317843 and 44417360328.
           find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          git init -q "$target"
-          git -C "$target" remote add origin https://github.com/ZenoWangzy/vecta-infra.git
-          askpass="$(mktemp)"
-          trap 'rm -f "$askpass"' EXIT
-          chmod 700 "$askpass"
-          cat > "$askpass" <<'ASKPASS'
-          #!/bin/sh
-          case "$1" in
-            *Username*) printf '%s\n' x-access-token ;;
-            *Password*) printf '%s\n' "$INFRA_ASKPASS_TOKEN" ;;
-            *) exit 1 ;;
-          esac
-          ASKPASS
-          # shortcut: bounded retry, no warm mirror for vecta-infra yet; upgrade to a host mirror if fetches still stall.
-          fetched=false
-          for attempt in 1 2 3 4 5; do
-            if GIT_HTTP_LOW_SPEED_LIMIT=1024 GIT_HTTP_LOW_SPEED_TIME=60 \
-              GIT_ASKPASS="$askpass" GIT_ASKPASS_REQUIRE=force GIT_TERMINAL_PROMPT=0 \
-              timeout 10m git -C "$target" fetch --depth=1 origin "$GITHUB_SHA"; then
-              fetched=true
-              break
-            fi
-            echo "infra fetch attempt $attempt failed" >&2
-            [ "$attempt" -eq 5 ] || sleep $((attempt * 10))
-          done
-          [ "$fetched" = true ] || { echo "infra fetch failed after 5 attempts" >&2; exit 1; }
-          git -C "$target" checkout --detach --force "$GITHUB_SHA"
+          # The fetch script lives in the infra checkout it fetches, so bootstrap it at GITHUB_SHA first (bounded curl).
+          boot="$(mktemp)"
+          trap 'rm -f "$boot"' EXIT
+          curl -fsSL --retry 3 --retry-delay 10 --connect-timeout 30 --max-time 60 \
+            --config <(printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github.raw+json"\n' "$FETCH_TOKEN") \
+            -o "$boot" "https://api.github.com/repos/ZenoWangzy/vecta-infra/contents/scripts/resilient-fetch.sh?ref=$GITHUB_SHA"
+          bash "$boot" https://github.com/ZenoWangzy/vecta-infra.git "$GITHUB_SHA" "$target"
           test "$(git -C "$target" rev-parse HEAD)" = "$GITHUB_SHA"
           [ -z "$(git -C "$target" status --porcelain --untracked-files=all)" ]
 
@@ -228,14 +192,13 @@ jobs:
           echo "sha=$engine_sha" >> "$GITHUB_OUTPUT"
 
       - name: Checkout pinned Zenoforge engine source
-        uses: actions/checkout@v4
-        with:
-          repository: ZenoWangzy/zenoforge
-          ref: ${{ steps.engine-pin.outputs.sha }}
-          token: ${{ github.token }}
-          path: zenoforge
-          fetch-depth: 0
-          persist-credentials: false
+        env:
+          ENGINE_SHA: ${{ steps.engine-pin.outputs.sha }}
+          FETCH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf -- "$GITHUB_WORKSPACE/zenoforge"
+          bash scripts/resilient-fetch.sh https://github.com/ZenoWangzy/zenoforge "$ENGINE_SHA" "$GITHUB_WORKSPACE/zenoforge"
 
       - name: Build the pinned Vecta engine pack
         env:

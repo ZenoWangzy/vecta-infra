@@ -220,7 +220,7 @@ def main() -> None:
     assert "uses: actions/checkout@" not in workflow
     assert 'git -C "$target" checkout --detach --force "$GITHUB_SHA"' in workflow
     assert 'test "$(git -C "$target" rev-parse HEAD)" = "$GITHUB_SHA"' in workflow
-    assert "INFRA_READ_TOKEN: ${{ github.token }}" in workflow
+    assert "FETCH_TOKEN: ${{ github.token }}" in workflow
     assert "Validate Fruit V4 isolated Compose contract" in workflow
     assert "python3 scripts/test_fruit_v4_isolated_compose_contract.py" in workflow
     assert "approved-one-shot" not in base_source + migration_source + runbook
