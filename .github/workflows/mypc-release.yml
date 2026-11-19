@@ -41,9 +41,12 @@ jobs:
       github.ref == 'refs/heads/main'
     runs-on: [self-hosted, mypc, prod-build]
     environment: production
-    timeout-minutes: 20
+    # Documented worst case: infra checkout 17 min (bootstrap 4.5 + fetch 12.5) + VectA fetch 30 min = 47 min.
+    # 60 leaves 13 min for postsubmit (no documented bound, up to 100 ancestor lookups) and the quick checks.
+    timeout-minutes: 60
     steps:
       - name: Checkout infra contract
+        timeout-minutes: 17
         env:
           FETCH_TOKEN: ${{ github.token }}
         run: |
@@ -78,6 +81,7 @@ jobs:
           }
 
       - name: Fetch selected Vecta source and main history
+        timeout-minutes: 30
         run: bash scripts/fetch-vecta-source.sh --with-main-history
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}

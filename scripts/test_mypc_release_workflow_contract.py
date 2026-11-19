@@ -194,6 +194,21 @@ def main() -> None:
         ):
             assert fragment in infra_run, (job_name, fragment)
         assert "extraheader" not in infra_run and "git config --global" not in infra_run
+    # validate documented worst case: infra checkout 17 min (bootstrap 4.5 + fetch 12.5), VectA fetch 30.
+    # Each step carries its cap, and the job cap must cover the sum of those caps.
+    validate_steps = {str(step.get("name", "")): step for step in steps_for(release, "validate")}
+    step_budgets = {
+        "Checkout infra contract": 17,
+        "Fetch selected Vecta source and main history": 30,
+    }
+    step_cap_total = 0
+    for name, minimum in step_budgets.items():
+        cap = validate_steps.get(name, {}).get("timeout-minutes")
+        assert isinstance(cap, int) and cap >= minimum, (name, cap)
+        step_cap_total += cap
+    validate_cap = release["jobs"]["validate"].get("timeout-minutes")
+    assert isinstance(validate_cap, int) and validate_cap >= step_cap_total, (validate_cap, step_cap_total)
+
     engine_checkouts = [
         step for step in steps_for(release, "deploy")
         if step.get("name") == "Checkout pinned Zenoforge engine source"
