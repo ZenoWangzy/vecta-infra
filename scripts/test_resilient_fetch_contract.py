@@ -18,10 +18,15 @@ def git(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess
     return subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True)
 
 
-def run_script(url: str, sha: str, dest: Path) -> subprocess.CompletedProcess[str]:
+def run_script(
+    url: str, sha: str, dest: Path, warm_cache: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "FETCH_TOKEN": TOKEN, "RESILIENT_FETCH_BACKOFF": "0", "GIT_TERMINAL_PROMPT": "0"}
+    arguments = ["bash", str(SCRIPT_PATH), url, sha, str(dest)]
+    if warm_cache is not None:
+        arguments.append(str(warm_cache))
     return subprocess.run(
-        ["bash", str(SCRIPT_PATH), url, sha, str(dest)], env=env, text=True, capture_output=True, timeout=120,
+        arguments, env=env, text=True, capture_output=True, timeout=120,
     )
 
 
@@ -34,6 +39,26 @@ def behaviour() -> None:
         sha = git(["rev-parse", "HEAD"], cwd=seed).stdout.strip()
         assert git(["init", "-q", "--bare", str(origin)]).returncode == 0
         assert git(["push", "-q", str(origin), "HEAD:refs/heads/main"], cwd=seed).returncode == 0
+
+        cached_dest = root / "cached-checkout"
+        cached = run_script(f"file://{root / 'missing.git'}", sha, cached_dest, origin)
+        assert cached.returncode == 0, f"warm-cache exact-SHA reproduction exit code: {cached.returncode}: {cached.stderr}"
+        cached_head = git(["rev-parse", "HEAD"], cwd=cached_dest).stdout.strip()
+        assert cached_head == sha, (cached_head, sha)
+        print(f"warm-cache exact-SHA reproduction: HEAD={cached_head} (exit code: {cached.returncode})")
+
+        missing_sha_cache = root / "missing-sha-cache.git"
+        assert git(["init", "-q", "--bare", str(missing_sha_cache)]).returncode == 0
+        assert git(["push", "-q", str(missing_sha_cache), f"{sha}:refs/heads/main"], cwd=seed).returncode == 0
+        assert git([*IDENTITY, "commit", "-q", "--allow-empty", "-m", "next"], cwd=seed).returncode == 0
+        next_sha = git(["rev-parse", "HEAD"], cwd=seed).stdout.strip()
+        assert git(["push", "-q", str(origin), "HEAD:refs/heads/main"], cwd=seed).returncode == 0
+        fallback_dest = root / "cache-miss-fallback"
+        fallback = run_script(f"file://{origin}", next_sha, fallback_dest, missing_sha_cache)
+        assert fallback.returncode == 0, fallback.stderr
+        fallback_head = git(["rev-parse", "HEAD"], cwd=fallback_dest).stdout.strip()
+        assert fallback_head == next_sha, (fallback_head, next_sha)
+        print(f"warm-cache missing-SHA fallback: HEAD={fallback_head} (exit code: {fallback.returncode})")
 
         dest = root / "checkout"
         ok = run_script(f"file://{origin}", sha, dest)
