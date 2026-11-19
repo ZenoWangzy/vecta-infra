@@ -414,6 +414,32 @@ def assert_service_timeout_covers_every_hop(script: str, service: str) -> None:
     print(f"warm-vecta-source-cache timeout budget: {sum(budget.values())}s worst case within {unit_limit}s unit limit")
 
 
+def assert_guard_idempotent_under_pipefail_with_many_entries(guard: str) -> None:
+    """A long existing list must not make the guard re-add (SIGPIPE, rc 141).
+
+    The script runs under `set -euo pipefail`. A `grep -q` that exits on the
+    first match kills the still-writing `git config --get-all` with SIGPIPE;
+    pipefail then reports the pipeline as failed and the guard appends again.
+    The empty-config run above can never see that: it needs a list bigger
+    than the pipe buffer (mypc's github-runner had 10371 entries).
+    """
+    with tempfile.TemporaryDirectory(prefix=".safe-directory-pipefail-", dir=ROOT) as tmp:
+        config = Path(tmp) / "gitconfig"
+        config.write_text("[safe]\n" + "\tdirectory = /fake/ocee/.git\n" * 5000)
+        env = {"GIT_CONFIG_GLOBAL": str(config), "PATH": "/usr/bin:/bin", "OCEE": "/fake/ocee"}
+        run_script = "set -euo pipefail\n" + guard.replace("sudo -u github-runner ", "")
+        for i in (1, 2):
+            subprocess.run(["bash", "-c", run_script], env=env, check=True)
+            entries = subprocess.run(
+                ["git", "config", "--file", str(config), "--get-all", "safe.directory"],
+                capture_output=True, text=True, check=True,
+            ).stdout.splitlines()
+            assert len(entries) == 5000, (
+                f"pipefail run {i}: expected 5000 safe.directory entries, got {len(entries)}"
+            )
+    print("warm-vecta-source-cache safe.directory guard: no growth under pipefail with 5000 entries, ok")
+
+
 def main() -> None:
     script = SCRIPT.read_text()
     assert_installed_warmer_requires_helper()
@@ -459,6 +485,7 @@ def main() -> None:
             )
 
     print("warm-vecta-source-cache safe.directory guard: idempotent across 2 runs, ok")
+    assert_guard_idempotent_under_pipefail_with_many_entries(guard)
     assert_shallow_backup_ref_does_not_block_main_and_is_idempotent()
 
 
