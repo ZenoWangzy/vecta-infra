@@ -41,12 +41,12 @@ jobs:
       github.ref == 'refs/heads/main'
     runs-on: [self-hosted, mypc, prod-build]
     environment: production
-    # Documented worst case: infra checkout 17 min (bootstrap 4.5 + fetch 12.5) + VectA fetch 30 min = 47 min.
-    # 60 leaves 13 min for postsubmit (no documented bound, up to 100 ancestor lookups) and the quick checks.
+    # Documented worst case: infra checkout 18 min (bootstrap 4.5 + route probes and fetch 13) + VectA fetch 30 min = 48 min.
+    # 60 leaves 12 min for postsubmit (no documented bound, up to 100 ancestor lookups) and the quick checks.
     timeout-minutes: 60
     steps:
       - name: Checkout infra contract
-        timeout-minutes: 17
+        timeout-minutes: 18
         env:
           FETCH_TOKEN: ${{ github.token }}
         run: |
@@ -56,6 +56,7 @@ jobs:
           # actions/checkout has no slow-link retry: one 30 s stall killed runs 44391317843 and 44417360328.
           find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           # The fetch script lives in the infra checkout it fetches, so bootstrap it at GITHUB_SHA first (bounded curl).
+          # The bootstrap goes to api.github.com, which mypc reaches directly; the script then picks its own proxy route.
           boot="$(mktemp)"
           trap 'rm -f "$boot"' EXIT
           curl -fsSL --retry 3 --retry-delay 10 --connect-timeout 30 --max-time 60 \
@@ -160,6 +161,7 @@ jobs:
           # actions/checkout has no slow-link retry: one 30 s stall killed runs 44391317843 and 44417360328.
           find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           # The fetch script lives in the infra checkout it fetches, so bootstrap it at GITHUB_SHA first (bounded curl).
+          # The bootstrap goes to api.github.com, which mypc reaches directly; the script then picks its own proxy route.
           boot="$(mktemp)"
           trap 'rm -f "$boot"' EXIT
           curl -fsSL --retry 3 --retry-delay 10 --connect-timeout 30 --max-time 60 \
@@ -198,7 +200,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf -- "$GITHUB_WORKSPACE/zenoforge"
-          bash scripts/resilient-fetch.sh https://github.com/ZenoWangzy/zenoforge "$ENGINE_SHA" "$GITHUB_WORKSPACE/zenoforge" /home/github-runner/.cache/zenoforge-engine.git
+          bash scripts/resilient-fetch.sh https://github.com/ZenoWangzy/zenoforge "$ENGINE_SHA" "$GITHUB_WORKSPACE/zenoforge" /home/github-runner/.cache/zenoforge.git
 
       - name: Build the pinned Vecta engine pack
         env:
