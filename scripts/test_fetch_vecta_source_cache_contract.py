@@ -89,6 +89,9 @@ def install_command_shims(root: Path, real_git: str) -> tuple[Path, Path]:
     git_shim.write_text(
         "#!/bin/sh\n"
         "printf '%s\\n' \"$*\" >> \"$GIT_CALLS\"\n"
+        "for arg in \"$@\"; do\n"
+        "  [ \"$arg\" != ls-remote ] || exit \"${STUB_PROBE_RC:-1}\"\n"  # route probe: by default no proxy answers, so the route is direct and offline
+        "done\n"
         "fetching=false\n"
         "for arg in \"$@\"; do\n"
         "  [ \"$arg\" != fetch ] || fetching=true\n"
@@ -127,6 +130,7 @@ def run_fetch(
     assert 'cache="/home/github-runner/.cache/vecta-main.git"' not in script_text
     (scripts_dir / "fetch-vecta-source.sh").write_text(script_text)
     shutil.copyfile(helper, scripts_dir / "vecta-main-history.sh")
+    shutil.copyfile(ROOT / "scripts" / "resilient-fetch.sh", scripts_dir / "resilient-fetch.sh")
 
     env = os.environ.copy()
     env.update(
@@ -238,6 +242,25 @@ def main() -> None:
         ]
         assert shallow_github_fetches, shallow_calls.read_text()
         print("fetch-vecta-source main-history contract: shallow main rejected; GitHub fallback selected")
+        assert any("ls-remote" in line for line in shallow_calls.read_text().splitlines())
+        assert not any("http.proxy" in line for line in shallow_github_fetches), shallow_github_fetches
+        proxied_cache = root / "shallow-main-proxied.git"
+        shutil.copytree(shallow_cache, proxied_cache)
+        proxied_calls = root / "proxied-git-calls"
+        proxied = run_fetch(
+            root, proxied_cache, selected_sha, fake_bin, proxied_calls, root / "proxied-curl-calls",
+            HISTORY_HELPER, extra_env={"VECTA_CACHE_WAIT_SECONDS": "0", "STUB_PROBE_RC": "0"},
+        )
+        assert proxied.returncode != 0, proxied.stdout + proxied.stderr
+        proxied_github_fetches = [
+            line for line in proxied_calls.read_text().splitlines()
+            if "fetch" in line.split() and GITHUB_SOURCE in line
+        ]
+        assert proxied_github_fetches and all(
+            "http.proxy=http://127.0.0.1:3129" in line for line in proxied_github_fetches
+        ), proxied_calls.read_text()
+        assert "contract-token" not in proxied.stdout + proxied.stderr
+        print("fetch-vecta-source route contract: GitHub fetch goes through the selected local proxy")
         test_publish_boundary_shapes(root / "publish-shapes")
         test_main_boundary_waits_for_warmer(root / "warm-wait")
 

@@ -146,23 +146,36 @@ if [ "$include_main_history" = true ]; then
   load_cache_main_history
 fi
 
+# GitHub route (local proxy, VPS proxy, direct) comes from resilient-fetch.sh and is picked once, on the first GitHub fetch.
+egress_args=()
+egress_selected=false
+select_egress() {
+  [ "$egress_selected" = false ] || return 0
+  egress_selected=true
+  local proxy
+  proxy="$(FETCH_TOKEN="$VECTA_READ_TOKEN" bash "$SCRIPT_DIR/resilient-fetch.sh" --select-route "$remote")"
+  [ -z "$proxy" ] || egress_args=(-c "http.proxy=$proxy")
+}
+
 fetch_with_auth() {
   GIT_HTTP_LOW_SPEED_LIMIT=0 \
     LC_ALL=C \
     GIT_ASKPASS="$askpass" \
     GIT_ASKPASS_REQUIRE=force \
     GIT_TERMINAL_PROMPT=0 \
-    timeout 30m git -C "$target" fetch "$@"
+    timeout 30m git "${egress_args[@]}" -C "$target" fetch "$@"
 }
 
 fetch_exact() {
   local source="$1"
+  [ "$source" != "$remote" ] || select_egress
   fetch_with_auth --depth=1 "$source" "$SOURCE_SHA" || return 1
   git -C "$target" fsck --connectivity-only "$SOURCE_SHA"
 }
 
 fetch_main_from_github() {
   local attempt shallow
+  select_egress
   for attempt in 1 2 3; do
     shallow="$(git -C "$target" rev-parse --is-shallow-repository)"
     local history_args=()

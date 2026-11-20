@@ -194,11 +194,11 @@ def main() -> None:
         ):
             assert fragment in infra_run, (job_name, fragment)
         assert "extraheader" not in infra_run and "git config --global" not in infra_run
-    # validate documented worst case: infra checkout 17 min (bootstrap 4.5 + fetch 12.5), VectA fetch 30.
+    # validate documented worst case: infra checkout 18 min (bootstrap 4.5 + route probes and fetch 13), VectA fetch 30.
     # Each step carries its cap, and the job cap must cover the sum of those caps.
     validate_steps = {str(step.get("name", "")): step for step in steps_for(release, "validate")}
     step_budgets = {
-        "Checkout infra contract": 17,
+        "Checkout infra contract": 18,
         "Fetch selected Vecta source and main history": 30,
     }
     step_cap_total = 0
@@ -216,7 +216,7 @@ def main() -> None:
     assert len(engine_checkouts) == 1
     engine_run = str(engine_checkouts[0].get("run", ""))
     assert (
-        'bash scripts/resilient-fetch.sh https://github.com/ZenoWangzy/zenoforge "$ENGINE_SHA" "$GITHUB_WORKSPACE/zenoforge" /home/github-runner/.cache/zenoforge-engine.git'
+        'bash scripts/resilient-fetch.sh https://github.com/ZenoWangzy/zenoforge "$ENGINE_SHA" "$GITHUB_WORKSPACE/zenoforge" /home/github-runner/.cache/zenoforge.git'
         in engine_run
     ), engine_run
     assert engine_checkouts[0].get("env", {}).get("ENGINE_SHA") == "${{ steps.engine-pin.outputs.sha }}"
