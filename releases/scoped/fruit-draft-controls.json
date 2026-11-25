@@ -1,0 +1,16 @@
+{
+  "pull_request": 8187,
+  "baseline": "8265652876f54dd788b3b66540dcadb309d0f2ac",
+  "merged_revision": "17e3a84f547a1638a2fade58d5388c279900deaf",
+  "expected_tree": "c5b707f6f5c4c242fe153bc6a887efe145e0354e",
+  "documentation_only": [
+    "docs/adr/ADR-114-document-review-workspace.md"
+  ],
+  "services": [
+    "admin-console",
+    "fleet-gateway",
+    "fruit-industry-pack",
+    "open-webui"
+  ],
+  "release_issue": 8232
+}

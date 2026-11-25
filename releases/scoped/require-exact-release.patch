@@ -1,0 +1,205 @@
+--- a/scripts/release/mypc-release.sh
++++ b/scripts/release/mypc-release.sh
+@@ -87,49 +87,9 @@
+ anchor_issue=""
+ anchor_pr=""
+ resolve_anchor() {
+-  local awaiting awaiting_set walk commit prs encoded pr issue_ref issue
+-  awaiting="$(gh issue list --repo "$REPO" --state open --label awaiting-release --limit 2000 --json number)" || {
+-    echo 'mypc-release: could not list open awaiting-release issues' >&2
+-    exit 75
+-  }
+-  jq -e 'type == "array" and length < 2000' <<< "$awaiting" >/dev/null || {
+-    echo 'mypc-release: awaiting-release issue list is malformed or at its cap' >&2
+-    exit 75
+-  }
+-  awaiting_set="$(jq -r '.[].number' <<< "$awaiting")"
+-  walk="$(git -C "$REPO_DIR" log --first-parent --format=%H -n 200 "$SOURCE_SHA")" || {
+-    echo "mypc-release: could not walk main history from $SOURCE_SHA" >&2
+-    exit 75
+-  }
+-  while IFS= read -r commit; do
+-    [[ -n "$commit" ]] || continue
+-    prs="$(gh api "repos/$REPO/commits/$commit/pulls?per_page=100")" || {
+-      echo "mypc-release: could not read merged PRs for $commit" >&2
+-      exit 75
+-    }
+-    jq -e 'type == "array"' <<< "$prs" >/dev/null || {
+-      echo "mypc-release: malformed PR list for $commit" >&2
+-      exit 75
+-    }
+-    while IFS= read -r encoded; do
+-      pr="$(base64 --decode <<< "$encoded")"
+-      [[ "$(jq -r '.base.ref // empty' <<< "$pr")" == main &&
+-         "$(jq -r '.merged_at // empty' <<< "$pr")" != "" &&
+-         "$(jq -r '.merge_commit_sha // empty' <<< "$pr")" == "$commit" ]] || continue
+-      while IFS= read -r issue_ref; do
+-        issue="${issue_ref#*#}"
+-        if grep -qx -- "$issue" <<< "$awaiting_set"; then
+-          anchor_issue="$issue"
+-          anchor_pr="$(jq -r '.number' <<< "$pr")"
+-          break 3
+-        fi
+-      done < <(grep -Eio 'Refs #[0-9]+' <<< "$(jq -r '.body // empty' <<< "$pr")" || true)
+-    done < <(jq -r '.[] | @base64' <<< "$prs")
+-  done <<< "$walk"
+-  [[ -n "$anchor_issue" && -n "$anchor_pr" ]] || {
+-    echo "mypc-release: no open awaiting-release issue with a merged main PR in $SOURCE_SHA's ancestry and a 'Refs #N' PR body" >&2
+-    exit 65
+-  }
++  # The infra verifier checks the issue, the PR's reference and its merged main SHA.
++  anchor_issue="${SCOPED_ISSUE:?}"
++  anchor_pr="${SCOPED_PR:?}"
+ }
+ 
+ # Latest successful production Deployment SHA, the record run-release writes on each deploy.
+--- a/scripts/release/release-candidate.sh
++++ b/scripts/release/release-candidate.sh
+@@ -132,7 +132,7 @@
+       if [[ -n "$selected" ]] && ! git -C "$REPO_DIR" merge-base --is-ancestor "$selected" "$(jq -r .head_sha <<< "$saved")"; then
+         echo 'run-release: selected candidate exceeds its captured head' >&2; return 1;
+       fi
+-      git -C "$REPO_DIR" merge-base --is-ancestor "$MERGE_SHA" "$head" \
++      git -C "$REPO_DIR" merge-base --is-ancestor "$SCOPED_SOURCE" "$head" \
+         && git -C "$REPO_DIR" merge-base --is-ancestor "$head" origin/main || {
+           echo 'run-release: retained candidate is no longer on the requested main ancestry' >&2; return 1;
+         }
+@@ -202,7 +202,7 @@
+       return 75
+     fi
+   fi
+-  git -C "$REPO_DIR" merge-base --is-ancestor "$MERGE_SHA" "$head" \
++  git -C "$REPO_DIR" merge-base --is-ancestor "$SCOPED_SOURCE" "$head" \
+     && git -C "$REPO_DIR" merge-base --is-ancestor "$head" origin/main || return 1
+   record="$(jq -cn --arg head "$head" --arg merge "$MERGE_SHA" --arg target "$target" \
+     --arg baseline "$OLD_DEPLOYED_SHA" --arg carried "$carried_ahead" \
+--- a/scripts/release/run-release.sh
++++ b/scripts/release/run-release.sh
+@@ -44,6 +44,7 @@
+ fi
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ DEPLOY_DIR="/data/ocee"
++source "${SCOPED_GUARDS:?}"
+ source "$SCRIPT_DIR/fruit-chain-restore.sh"
+ # Sourced before the deploy-block modes exit: their refusal lines print deploy_block_clear_command (V613).
+ source "$SCRIPT_DIR/release-candidate.sh"
+@@ -2333,6 +2334,8 @@
+   exit 1
+ fi
+ 
++scoped_require_anchor || exit 65
++
+ # The release E2E leases the founder Chrome on 9222 with an isolated browser context. `env -u` prevents
+ # inherited credentials reaching the runner; the full journey flags and
+ # production URL are fixed here. On failure, retain the redacted report and
+@@ -2783,7 +2786,7 @@
+   done
+   [ "${#eligible[@]}" -gt 0 ] || return 0
+   while IFS=$'\t' read -r ticket ticket_pr merge_sha; do
+-    git -C "$REPO_DIR" merge-base --is-ancestor "$merge_sha" "$DEPLOYED_SHA" 2>/dev/null || continue
++    scoped_ticket_deployed "$ticket" "$merge_sha" "$DEPLOYED_SHA" || continue
+     echo "$ticket"
+   done < <(release_merged_pr_rows "${eligible[@]}")
+ }
+@@ -2912,7 +2915,7 @@
+   done
+   [ "${#cohort[@]}" -gt 0 ] || { printf '%s' "$RELEASE_BATCH_FEATURE_MAP"; return 0; }
+   while IFS=$'\t' read -r ticket ticket_pr merge_sha; do
+-    git -C "$REPO_DIR" merge-base --is-ancestor "$merge_sha" "$DEPLOYED_SHA" 2>/dev/null || continue
++    scoped_ticket_deployed "$ticket" "$merge_sha" "$DEPLOYED_SHA" || continue
+     ids="$(release_feature_ids "$merge_sha" 2>/dev/null)" || continue
+     RELEASE_BATCH_FEATURE_MAP+="$ticket"$'\t'"$merge_sha"$'\t'"$ids"$'\n'
+   done < <(release_merged_pr_rows "${cohort[@]}")
+@@ -3505,13 +3508,18 @@
+   exit 75
+ }
+ PRODUCTION_DEPLOYMENT_SHA="$(jq -r '.[0].sha // empty' <<< "$PRODUCTION_DEPLOYMENTS")" || exit 75
++# A scoped dispatch pins the actual baseline while the normal production lock is held.
++if [[ "$PRODUCTION_DEPLOYMENT_SHA" != "${SCOPED_BASELINE:?scoped baseline missing}" ]]; then
++  echo "run-release: scoped baseline moved; rebuild against the live release" >&2
++  exit 75
++fi
+ if [[ "${RELEASE_MYPC_WORKFLOW:-0}" == 1 && "$PRODUCTION_DEPLOYMENT_SHA" != "${RELEASE_MYPC_BASELINE_SHA:-}" ]]; then
+   echo "run-release: production baseline changed after the mypc workflow lock was taken (expected ${RELEASE_MYPC_BASELINE_SHA:-missing}, found ${PRODUCTION_DEPLOYMENT_SHA:-missing}); rebuild and retry" >&2
+   exit 75
+ fi
+ if [[ "$PRODUCTION_DEPLOYMENT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+   candidate="$PRODUCTION_DEPLOYMENT_SHA"
+-  if git -C "$REPO_DIR" merge-base --is-ancestor "$MERGE_SHA" "$candidate" 2>/dev/null &&
++  if git -C "$REPO_DIR" merge-base --is-ancestor "$SCOPED_SOURCE" "$candidate" 2>/dev/null &&
+     { [ -z "$RELEASE_BATCH_SHA" ] ||
+       git -C "$REPO_DIR" merge-base --is-ancestor "$RELEASE_BATCH_SHA" "$candidate" 2>/dev/null ||
+       { git -C "$REPO_DIR" merge-base --is-ancestor "$candidate" "$RELEASE_BATCH_SHA" 2>/dev/null &&
+@@ -3600,6 +3608,7 @@
+ # the next reconcile keeps the same image-to-tag mapping (#4293).
+ record_production_deployment() {
+   local sha="$1" description="${2:-}" svc images image_shas image_revisions service_image_records deployed_at open_webui_image body response deployment_id gh_timeout_seconds="${RELEASE_GH_TIMEOUT_SECONDS:-30}"
++  if [[ "$sha" == "$SCOPED_SOURCE" ]]; then scoped_require_readbacks || return 1; fi
+   [ -n "$description" ] || description="deployed ${sha:0:12}"
+   if [ "$sha" = "$OLD_DEPLOYED_SHA" ] && [ "${#RELEASE_RECREATE[@]}" -eq 0 ] \
+     && [ "$RELEASE_FRUIT_V4_RECREATE" != 1 ] && [ "$RELEASE_FLEET_DIFFERENT" != 1 ] \
+@@ -3821,6 +3830,10 @@
+     exit 0
+   fi
+   release_candidate_bind || exit $?
++  if [[ "$RELEASE_BATCH_SHA" != "${SCOPED_SOURCE:?scoped candidate missing}" ]]; then
++    echo 'run-release: retained batch differs from scoped candidate' >&2
++    exit 75
++  fi
+   # Resolve the newest release-ready main commit that contains this PR merge.
+   # The verifier accepts exact green Postsubmit evidence, plus [skip ci] or
+   # other commits whose packages/ tree still matches the newest green ancestor.
+@@ -3850,7 +3863,7 @@
+     # 200 with it. lib.sh's main_merge_clear() uses `gh api` for the separate
+     # optimistic merge gate; this call still needs verify-branch-promotion-evidence.mjs
+     # to resolve a release SHA, so it keeps node fetch and makes it proxy-aware.
+-    release_preflight_args=(--mode release --merge-sha "$MERGE_SHA")
++    release_preflight_args=(--mode release --merge-sha "$SCOPED_SOURCE")
+     release_head_ref=origin/main
+     if [ -n "$RELEASE_BATCH_SHA" ]; then
+       if ! git -C "$REPO_DIR" merge-base --is-ancestor "$RELEASE_BATCH_SHA" origin/main; then
+@@ -3866,7 +3879,7 @@
+       "${release_preflight_args[@]}" >"$RELEASE_LOG" 2>&1; then
+       candidate="$(sed -n 's/^RELEASE_SHA=//p' "$RELEASE_LOG" | tail -1)"
+       if [[ "$candidate" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+-        && git -C "$REPO_DIR" merge-base --is-ancestor "$MERGE_SHA" "$candidate" \
++        && git -C "$REPO_DIR" merge-base --is-ancestor "$SCOPED_SOURCE" "$candidate" \
+         && git -C "$REPO_DIR" merge-base --is-ancestor "$candidate" "$release_head_ref"; then
+         release_candidate_selected "$candidate" || exit 1
+         DEPLOYED_SHA="$candidate"
+@@ -3942,6 +3955,10 @@
+   done
+ fi
+ 
++if [[ "$DEPLOYED_SHA" != "${SCOPED_SOURCE:?scoped candidate missing}" ]]; then
++  echo 'run-release: refusing to reconcile or deploy a different candidate' >&2
++  exit 75
++fi
+ source "$SCRIPT_DIR/release-reconcile.sh"
+ release_reconcile_markers || exit 1
+ RECORDED_SERVICES=""
+@@ -4848,6 +4865,7 @@
+   RELEASE_TARGET_SERVICES=("${RESOLVABLE_SERVICES[@]}")
+   release_reconcile_fleet_scope || exit 1
+   release_reconcile_compose || { echo 'run-release: actual/desired image state is unreadable; no containers recreated' >&2; exit 1; }
++  scoped_require_plan || exit 75
+   if ((${#RELEASE_IMAGE_DRIFT_BLOCKED_SERVICES[@]} > 0)); then
+     deployable_services=()
+     for svc in "${RELEASE_TARGET_SERVICES[@]}"; do
+@@ -7772,6 +7790,7 @@
+ DEPLOY_CLOSE_E2E_ENV_DEFERRED_ISSUES=()
+ CLOSED_RELEASE_ISSUES=()
+ for ticket in $DEPLOY_CLOSE_ISSUES; do
++  [[ "$ticket" == "$SCOPED_ISSUE" ]] || continue
+   [ "$ticket" = 1449 ] && continue
+   ticket_state="$(state_read "$ticket")"
+   [ "$(jq -r '.released // false' <<< "$ticket_state")" != true ] || continue
+@@ -7809,7 +7828,7 @@
+     exit 1
+   }
+   ticket_merge_sha="${ticket_row#*$'\t'}"
+-  if git -C "$REPO_DIR" merge-base --is-ancestor "$ticket_merge_sha" "$DEPLOYED_SHA"; then
++  if scoped_ticket_deployed "$ticket" "$ticket_merge_sha" "$DEPLOYED_SHA"; then
+     :
+   else
+     ancestry_status=$?
