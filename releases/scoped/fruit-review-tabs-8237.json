@@ -1,0 +1,14 @@
+{
+  "pull_request": 8238,
+  "baseline": "14b1fdbd662851d6a0a7bbcceada3baf5dc7b378",
+  "merged_revision": "13ac6546fb2e3457a93e5b33edc55acb1c234444",
+  "expected_tree": "06ce2f67de733574e26fb69d5853584c629f6c0a",
+  "documentation_only": [],
+  "services": [
+    "admin-console",
+    "fleet-gateway",
+    "fruit-industry-pack",
+    "open-webui"
+  ],
+  "release_issue": 8237
+}
