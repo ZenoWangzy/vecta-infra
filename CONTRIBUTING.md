@@ -92,3 +92,22 @@ health claim.
   image evidence.
 - Stateful adoption: backup/checksum evidence, original mount mapping, service
   health, and full post-adoption regression.
+
+### Scoped production backports
+
+When the authorized change is narrower than the image changes since production,
+record the live baseline, the merged product PR and the expected backport tree
+in `releases/scoped/`. Only named Markdown documentation may be left out.
+Recompute the commit with `scripts/scoped-release-source.py`, run the normal
+exact-commit Postsubmit on a retained train branch, and integrate that commit
+into main history by regular merge after confirming the integration changes
+no tracked main files. A squash loses the backport ancestry.
+
+Dispatch the normal mypc release with the candidate commit, the manifest name
+and its complete ordered image list. Run a dry run before deployment. The
+scoped release verifies the PR and reconstructs the tree independently. Its
+temporary deployment driver adds checks for the manifest baseline under the
+production lock and for the selected candidate before reconciliation. A moved
+baseline, changed deployment-driver interface or extra required image stops
+the release. The normal build, migrations analysis, rollback, authenticated
+acceptance and deployment audit use the original candidate checkout.

@@ -1,0 +1,36 @@
+--- a/scripts/release/run-release.sh
++++ b/scripts/release/run-release.sh
+@@ -3505,6 +3505,11 @@
+   exit 75
+ }
+ PRODUCTION_DEPLOYMENT_SHA="$(jq -r '.[0].sha // empty' <<< "$PRODUCTION_DEPLOYMENTS")" || exit 75
++# A scoped dispatch pins the actual baseline while the normal production lock is held.
++if [[ "$PRODUCTION_DEPLOYMENT_SHA" != "${SCOPED_BASELINE:?scoped baseline missing}" ]]; then
++  echo "run-release: scoped baseline moved; rebuild against the live release" >&2
++  exit 75
++fi
+ if [[ "${RELEASE_MYPC_WORKFLOW:-0}" == 1 && "$PRODUCTION_DEPLOYMENT_SHA" != "${RELEASE_MYPC_BASELINE_SHA:-}" ]]; then
+   echo "run-release: production baseline changed after the mypc workflow lock was taken (expected ${RELEASE_MYPC_BASELINE_SHA:-missing}, found ${PRODUCTION_DEPLOYMENT_SHA:-missing}); rebuild and retry" >&2
+   exit 75
+@@ -3821,6 +3826,10 @@
+     exit 0
+   fi
+   release_candidate_bind || exit $?
++  if [[ "$RELEASE_BATCH_SHA" != "${SCOPED_SOURCE:?scoped candidate missing}" ]]; then
++    echo 'run-release: retained batch differs from scoped candidate' >&2
++    exit 75
++  fi
+   # Resolve the newest release-ready main commit that contains this PR merge.
+   # The verifier accepts exact green Postsubmit evidence, plus [skip ci] or
+   # other commits whose packages/ tree still matches the newest green ancestor.
+@@ -3942,6 +3951,10 @@
+   done
+ fi
+ 
++if [[ "$DEPLOYED_SHA" != "${SCOPED_SOURCE:?scoped candidate missing}" ]]; then
++  echo 'run-release: refusing to reconcile or deploy a different candidate' >&2
++  exit 75
++fi
+ source "$SCRIPT_DIR/release-reconcile.sh"
+ release_reconcile_markers || exit 1
+ RECORDED_SERVICES=""

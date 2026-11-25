@@ -20,6 +20,11 @@ name: Release Vecta on mypc
         required: false
         default: ""
         description: Optional comma-separated production images to build and deploy
+      scoped_manifest:
+        type: string
+        required: false
+        default: ""
+        description: Optional reviewed releases/scoped manifest name to constrain this release
       dry_run:
         type: boolean
         required: false
@@ -98,6 +103,15 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           VECTA_READ_TOKEN: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
+
+      - name: Verify approved backport and exact Postsubmit evidence
+        if: inputs.scoped_manifest != ''
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_SERVICES: ${{ inputs.services }}
+          SCOPED_MANIFEST: ${{ inputs.scoped_manifest }}
+          VECTA_READ_TOKEN: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
+        run: bash scripts/check-scoped-release.sh
 
       - name: Validate requested image names
         env:
@@ -247,6 +261,7 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_MODE: ${{ inputs.mode }}
           RELEASE_SERVICES: ${{ inputs.services }}
+          SCOPED_MANIFEST: ${{ inputs.scoped_manifest }}
           DRY_RUN: ${{ inputs.dry_run }}
           DEPLOY_HOST: root@127.0.0.1
         run: |
@@ -265,6 +280,10 @@ jobs:
           args=(--source-sha "$SOURCE_SHA" --mode "$RELEASE_MODE")
           if [[ -n "$RELEASE_SERVICES" ]]; then args+=(--services "$RELEASE_SERVICES"); fi
           if [[ "$DRY_RUN" == true ]]; then args+=(--dry-run); fi
+          if [[ -n "$SCOPED_MANIFEST" ]]; then
+            GH_TOKEN="$GH_TOKEN" VECTA_READ_TOKEN="$GH_TOKEN" bash scripts/run-scoped-release.sh "${args[@]}"
+            exit
+          fi
           GH_TOKEN="$GH_TOKEN" VECTA_READ_TOKEN="$GH_TOKEN" \
             bash vecta/scripts/release/mypc-release.sh "${args[@]}"
 
