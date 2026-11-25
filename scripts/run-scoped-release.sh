@@ -11,6 +11,9 @@ export SCOPED_SERVICES="$(jq -er '.services | join(",")' "$manifest")"
 export SCOPED_GUARDS="$PWD/scripts/scoped-driver-guards.sh"
 export SCOPED_SOURCE="${SOURCE_SHA:?}"
 export VECTA_REPO_DIR="$PWD/vecta"
+if [[ ",$SCOPED_SERVICES," == *,fruit-industry-pack,* ]]; then
+  bash scripts/prepare-scoped-fruit-publisher.sh "$VECTA_REPO_DIR"
+fi
 scratch="$(mktemp -d)"
 driver="$scratch/driver"
 cleanup() {

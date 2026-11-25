@@ -101,6 +101,42 @@ declare -A DEPLOYED_IMAGE_IDS=([fruit]=$image [web]=$image) DEPLOYED_IMAGE_REVIS
         self.assertIn('release_preflight_args=(--mode release --merge-sha "$SCOPED_SOURCE")', patch)
         self.assertIn('if [[ "$PRODUCTION_DEPLOYMENT_SHA" != "${SCOPED_BASELINE:', patch)
 
+    def test_publisher_preflight_uses_verified_source_before_release(self):
+        wrapper = (HERE / "run-scoped-release.sh").read_text()
+        preflight = wrapper.index('bash scripts/prepare-scoped-fruit-publisher.sh "$VECTA_REPO_DIR"')
+        self.assertLess(wrapper.index("bash scripts/check-scoped-release.sh"), preflight)
+        self.assertLess(preflight, wrapper.index('bash "$driver/scripts/release/mypc-release.sh"'))
+        self.assertIn('if [[ ",$SCOPED_SERVICES," == *,fruit-industry-pack,* ]]', wrapper)
+
+        fake = self.repo / "pnpm"
+        fake.write_text("""#!/bin/sh
+set -eu
+test -z "${GH_TOKEN:-}${VECTA_READ_TOKEN:-}${FLEET_FRUIT_PLATFORM_TOKEN:-}"
+echo "$*" >> invocations
+case "$*" in
+  *install*) test ! -f fail-install ;;
+  *) echo '> pnpm run'; cat result.json ;;
+esac
+""")
+        fake.chmod(0o755)
+        env = dict(os.environ, PATH=str(self.repo) + os.pathsep + os.environ["PATH"],
+                   GH_TOKEN="fixture", VECTA_READ_TOKEN="fixture", FLEET_FRUIT_PLATFORM_TOKEN="fixture")
+        command = ["bash", str(HERE / "prepare-scoped-fruit-publisher.sh"), str(self.repo)]
+        log = self.repo / "invocations"
+        result = self.repo / "result.json"
+        result.write_text('{"mode":"dry-run","manifest":{"packId":"fruit-v4-workbench","version":"v1"}}')
+        subprocess.run(command, check=True, env=env, capture_output=True)
+        install, dry = log.read_text().splitlines()
+        for arg in ("--frozen-lockfile", "--prod=false", "--ignore-scripts"):
+            self.assertIn(arg, install)
+        self.assertIn("platform:publish-v4-workbench -- --dry-run", dry)
+        result.write_text('{"mode":"dry-run","manifest":{"packId":"wrong","version":"v1"}}')
+        self.assertNotEqual(subprocess.run(command, env=env, capture_output=True).returncode, 0)
+        log.unlink()
+        (self.repo / "fail-install").touch()
+        self.assertNotEqual(subprocess.run(command, env=env, capture_output=True).returncode, 0)
+        self.assertEqual(log.read_text().splitlines(), [install])
+
 
 if __name__ == "__main__":
     unittest.main()
