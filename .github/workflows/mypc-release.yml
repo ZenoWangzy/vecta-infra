@@ -191,6 +191,8 @@ jobs:
           AGENT_HOME="$HOME/.vecta-agent/mypc-release"
           mkdir -p "$AGENT_HOME/engine-versions" "$AGENT_HOME/engine-sync"
           chmod 700 "$AGENT_HOME" "$AGENT_HOME/engine-versions" "$AGENT_HOME/engine-sync"
+          # Owner ruling 2026-10-26: acceptance HOLD is fix-forward, never rollback; the release script exits 0 on HOLD only when this file exists.
+          [[ -e "$AGENT_HOME/FIX-FORWARD" ]] || : > "$AGENT_HOME/FIX-FORWARD"
           echo "AGENT_HOME=$AGENT_HOME" >> "$GITHUB_ENV"
 
       - name: Fetch selected Vecta source and main history
