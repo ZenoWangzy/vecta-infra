@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -67,12 +68,38 @@ class ScopedRelease(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             scoped.prepare(self.repo, self.manifest, self.base)
 
-    def test_scoped_driver_patch_only_adds_guard_statements(self):
+    def test_driver_guards(self):
+        bash = os.environ.get("BASH_FOR_TEST", "bash")
+        guards = HERE / "scoped-driver-guards.sh"
+        prelude = f"""set -eu; source "{guards}"
+SCOPED_ISSUE=8232; SCOPED_PR=8187; SCOPED_UPSTREAM=upstream; SCOPED_SOURCE=backport
+N=8232; PR_NUM=8187; MERGE_SHA=upstream
+SCOPED_SERVICES=fruit,web
+declare -a RELEASE_TARGET_SERVICES=(fruit web) RELEASE_IMAGE_DRIFT_BLOCKED_SERVICES=() FLEET_ROLL_PENDING_SERVICES=()
+image=sha256:{'a' * 64}
+declare -A DEPLOYED_IMAGE_IDS=([fruit]=$image [web]=$image) DEPLOYED_IMAGE_REVISIONS=([fruit]=backport [web]=backport)
+"""
+        for command, expected in (
+            ("scoped_require_anchor && scoped_require_plan && scoped_require_readbacks", 0),
+            ("N=100; scoped_require_anchor", 1),
+            ("scoped_ticket_deployed 8232 upstream backport", 0),
+            ("scoped_ticket_deployed 100 upstream backport", 1),
+            ("RELEASE_IMAGE_DRIFT_BLOCKED_SERVICES=(web); scoped_require_plan", 1),
+            ("RELEASE_TARGET_SERVICES=(fruit); scoped_require_plan", 1),
+            ("unset 'DEPLOYED_IMAGE_IDS[web]'; scoped_require_readbacks", 1),
+            ("DEPLOYED_IMAGE_REVISIONS[web]=wrong; scoped_require_readbacks", 1),
+        ):
+            with self.subTest(command=command):
+                result = subprocess.run([bash, "-c", prelude + command], capture_output=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_guarded_driver_boundaries(self):
         patch = (HERE.parent / "releases/scoped/require-exact-release.patch").read_text()
-        self.assertFalse(any(line.startswith("-") and not line.startswith("--- ") for line in patch.splitlines()))
-        self.assertEqual(patch.count("+++ b/scripts/release/run-release.sh"), 1)
+        self.assertIn('  scoped_require_plan || exit 75\n   if ((${#RELEASE_IMAGE_DRIFT_BLOCKED_SERVICES', patch)
+        self.assertIn('scoped_require_readbacks || return 1', patch)
+        self.assertIn('scoped_require_anchor || exit 65', patch)
+        self.assertIn('release_preflight_args=(--mode release --merge-sha "$SCOPED_SOURCE")', patch)
         self.assertIn('if [[ "$PRODUCTION_DEPLOYMENT_SHA" != "${SCOPED_BASELINE:', patch)
-        self.assertIn('if [[ "$DEPLOYED_SHA" != "${SCOPED_SOURCE:', patch)
 
 
 if __name__ == "__main__":

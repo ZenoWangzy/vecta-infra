@@ -106,8 +106,9 @@ no tracked main files. A squash loses the backport ancestry.
 Dispatch the normal mypc release with the candidate commit, the manifest name
 and its complete ordered image list. Run a dry run before deployment. The
 scoped release verifies the PR and reconstructs the tree independently. Its
-temporary deployment driver adds checks for the manifest baseline under the
-production lock and for the selected candidate before reconciliation. A moved
+temporary deployment driver binds feature acceptance to the named issue and upstream PR.
+It checks the baseline under the production lock, requires the whole service set before
+rollout, and verifies every image ID and revision plus the authenticated acceptance result. A moved
 baseline, changed deployment-driver interface or extra required image stops
 the release. The normal build, migrations analysis, rollback, authenticated
 acceptance and deployment audit use the original candidate checkout.

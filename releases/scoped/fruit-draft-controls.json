@@ -11,5 +11,6 @@
     "fleet-gateway",
     "fruit-industry-pack",
     "open-webui"
-  ]
+  ],
+  "release_issue": 8232
 }

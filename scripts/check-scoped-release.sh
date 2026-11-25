@@ -16,6 +16,10 @@ pr="$(jq -er '.pull_request | numbers' "$manifest")"
 merge="$(jq -er '.merged_revision' "$manifest")"
 pr_record="$(GH_TOKEN="${VECTA_READ_TOKEN:?}" gh api "repos/ZenoWangzy/vecta/pulls/$pr")"
 jq -e --arg sha "$merge" '.merged and .base.ref == "main" and .merge_commit_sha == $sha' <<< "$pr_record" >/dev/null
+issue="$(jq -er '.release_issue | numbers' "$manifest")"
+jq -e --arg issue "$issue" '.body | test("(?im)^refs #" + $issue + "([^0-9]|$)")' <<< "$pr_record" >/dev/null
+issue_record="$(GH_TOKEN="$VECTA_READ_TOKEN" gh api "repos/ZenoWangzy/vecta/issues/$issue")"
+jq -e '.state == "open" and (.pull_request == null) and any(.labels[]; .name == "awaiting-release")' <<< "$issue_record" >/dev/null
 candidate="$(python3 scripts/scoped-release-source.py --repo vecta --manifest "$manifest" --production-baseline "$live_sha")"
 [[ "$candidate" == "${SOURCE_SHA:?}" && "$(git -C vecta rev-parse HEAD)" == "$candidate" ]] || {
   echo 'selected source or checkout differs from approved patch on production' >&2; exit 65;
