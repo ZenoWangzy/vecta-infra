@@ -200,6 +200,17 @@ jobs:
           SOURCE_BRANCH: main
           VECTA_READ_TOKEN: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
 
+      - name: Prepare unscoped Fruit workbench publisher
+        if: inputs.scoped_manifest == ''
+        env:
+          REQUESTED_IMAGES: ${{ inputs.services }}
+        run: |
+          set -euo pipefail
+          services="${REQUESTED_IMAGES//[[:space:]]/}"
+          if [[ -z "$services" || ",$services," == *,fruit-industry-pack,* ]]; then
+            bash scripts/prepare-scoped-fruit-publisher.sh "$PWD/vecta"
+          fi
+
       - name: Read the selected Vecta engine pin
         id: engine-pin
         run: |
