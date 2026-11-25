@@ -3,11 +3,18 @@
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import http.client
 import importlib.util
+import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
 
 MODULE_PATH = Path(__file__).with_name("verify-vecta-postsubmit.py")
@@ -225,6 +232,7 @@ class EvidenceQueryTests(unittest.TestCase):
                 def get_json(self, path, query):
                     if '/compare/' in path:
                         assert path.endswith(f'/compare/{SHA}...main')
+                        assert query == {'per_page': '1', 'page': '2'}
                         return {'status': status}
                     if path.endswith('/jobs'):
                         return {'jobs': [job()]}
@@ -265,6 +273,110 @@ class EvidenceQueryTests(unittest.TestCase):
                 self.assertEqual(len(reads), before + (sha == SHA and branch == 'main'))
         finally:
             MODULE.GitHubClient = original
+
+
+class GitHubRequestRetryTests(unittest.TestCase):
+    def test_incomplete_read_retries_then_verify_succeeds(self) -> None:
+        calls = 0
+
+        def open_response(request, timeout):
+            nonlocal calls
+            calls += 1
+            if calls <= 2:
+                raise http.client.IncompleteRead(b"partial", 1)
+            if "/compare/" in request.full_url:
+                return io.BytesIO(b'{"status":"identical"}')
+            if "/actions/workflows/ci.yml/runs?" in request.full_url:
+                return io.BytesIO(json.dumps({"workflow_runs": [run()]}).encode())
+            if "/actions/runs/10/jobs" in request.full_url:
+                return io.BytesIO(json.dumps({"jobs": [job()]}).encode())
+            raise AssertionError(f"unexpected request {request.full_url}")
+
+        with patch.object(MODULE, "urlopen", side_effect=open_response), patch("time.sleep"):
+            result = MODULE.verify(
+                repo="ZenoWangzy/vecta",
+                sha=SHA,
+                branch="main",
+                token="fixture",
+                api_url="https://api.github.com",
+            )
+
+        self.assertEqual(result, MODULE.EvidenceResult(10, 20, SHA))
+        self.assertEqual(calls, 5)
+
+    def test_persistent_incomplete_read_fails_closed_after_three_attempts(self) -> None:
+        calls = 0
+        error_output = io.StringIO()
+        args = argparse.Namespace(
+            repo="ZenoWangzy/vecta",
+            sha=SHA,
+            branch="main",
+            vecta_checkout=None,
+        )
+
+        def open_incomplete(request, timeout):
+            nonlocal calls
+            calls += 1
+            raise http.client.IncompleteRead(b"partial", 1)
+
+        with (
+            patch.object(MODULE, "parse_args", return_value=args),
+            patch.dict(os.environ, {"VECTA_READ_TOKEN": "fixture"}),
+            patch.object(MODULE, "urlopen", side_effect=open_incomplete),
+            patch("time.sleep"),
+            contextlib.redirect_stderr(error_output),
+        ):
+            exit_code = MODULE.main()
+
+        self.assertEqual(calls, 3)
+        self.assertEqual(exit_code, 1)
+        self.assertIn("postsubmit evidence rejected:", error_output.getvalue())
+        self.assertNotIn("Traceback", error_output.getvalue())
+
+    def test_retries_network_decode_and_http_5xx_errors(self) -> None:
+        failures = [
+            lambda url: http.client.IncompleteRead(b"partial", 1),
+            lambda url: URLError("network down"),
+            lambda url: TimeoutError("timed out"),
+            lambda url: json.JSONDecodeError("invalid JSON", "", 0),
+            lambda url: HTTPError(url, 503, "service unavailable", None, io.BytesIO()),
+        ]
+
+        for failure in failures:
+            with self.subTest(failure=failure):
+                calls = 0
+
+                def open_once_then_succeed(request, timeout):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        raise failure(request.full_url)
+                    return io.BytesIO(b'{"ok":true}')
+
+                with patch.object(MODULE, "urlopen", side_effect=open_once_then_succeed), patch("time.sleep"):
+                    self.assertEqual(
+                        MODULE.GitHubClient(api_url="https://api.github.com", token="fixture").get_json(
+                            "/retry", {}
+                        ),
+                        {"ok": True},
+                    )
+                self.assertEqual(calls, 2)
+
+    def test_auth_and_not_found_errors_are_not_retried(self) -> None:
+        client = MODULE.GitHubClient(api_url="https://api.github.com", token="fixture")
+        for status in (401, 403, 404):
+            with self.subTest(status=status):
+                calls = 0
+
+                def reject_request(request, timeout):
+                    nonlocal calls
+                    calls += 1
+                    raise HTTPError(request.full_url, status, "rejected", None, io.BytesIO())
+
+                with patch.object(MODULE, "urlopen", side_effect=reject_request), patch("time.sleep"):
+                    with self.assertRaises(MODULE.EvidenceError):
+                        client.get_json("/protected", {})
+                self.assertEqual(calls, 1)
 
 
 class LastStageCopyPrefixTests(unittest.TestCase):

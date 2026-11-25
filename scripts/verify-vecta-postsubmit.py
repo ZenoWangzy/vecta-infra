@@ -23,10 +23,12 @@ erring toward "yes" costs nothing worse than an avoidable exact-SHA wait.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
 import sys
+import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -241,11 +243,25 @@ class GitHubClient:
                 "User-Agent": "vecta-infra-postsubmit-gate",
             },
         )
-        try:
-            with urlopen(request, timeout=30) as response:
-                return json.load(response)
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as error:
-            raise EvidenceError("GitHub evidence API request failed") from error
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                with urlopen(request, timeout=30) as response:
+                    return json.load(response)
+            except HTTPError as error:
+                if not 500 <= error.code < 600:
+                    raise EvidenceError("GitHub evidence API request failed") from error
+                last_error = error
+            except (
+                http.client.IncompleteRead,
+                URLError,
+                TimeoutError,
+                json.JSONDecodeError,
+            ) as error:
+                last_error = error
+            if attempt < 2:
+                time.sleep(0.1 * (attempt + 1))
+        raise EvidenceError("GitHub evidence API request failed after 3 attempts") from last_error
 
     def get_json(self, path: str, query: dict[str, str]) -> dict[str, Any]:
         payload = self._request(path, query)
@@ -282,7 +298,10 @@ def verify(
 
     # Train evidence is produced before main contains the SHA; only a SHA that
     # main reached may be built.
-    on_main = client.get_json(f"/repos/{repo}/compare/{sha}...{branch}", {})
+    on_main = client.get_json(
+        f"/repos/{repo}/compare/{sha}...{branch}",
+        {"per_page": "1", "page": "2"},
+    )
     if on_main.get("status") not in {"ahead", "identical"}:
         raise EvidenceError(
             f"{sha} is not on {branch} (compare status={on_main.get('status')!r})"
