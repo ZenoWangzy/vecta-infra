@@ -232,6 +232,7 @@ class EvidenceQueryTests(unittest.TestCase):
                 def get_json(self, path, query):
                     if '/compare/' in path:
                         assert path.endswith(f'/compare/{SHA}...main')
+                        assert query == {'per_page': '1', 'page': '2'}
                         return {'status': status}
                     if path.endswith('/jobs'):
                         return {'jobs': [job()]}
