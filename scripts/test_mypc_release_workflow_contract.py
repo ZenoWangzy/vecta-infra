@@ -182,6 +182,7 @@ def main() -> None:
     require("bash vecta/scripts/release/mypc-release.sh")
     require("RELEASE_BUILD_ALREADY_COMPLETED:")
     require("$HOME/.vecta-agent/mypc-release")
+    require('[[ -e "$AGENT_HOME/FIX-FORWARD" ]] || : > "$AGENT_HOME/FIX-FORWARD"')
     require("secrets.VECTA_PRODUCTION_ACCEPTANCE_ENV")
     require("secrets.VECTA_PRODUCTION_RELEASE_TOKEN")
     require("secrets.VECTA_PRODUCTION_READ_TOKEN")
