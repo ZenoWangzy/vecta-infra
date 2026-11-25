@@ -121,9 +121,44 @@ def steps_for(workflow: dict[str, object], job_name: str) -> list[dict[str, obje
     return steps
 
 
+def publisher_preflight_proof(workflow: dict[str, object]) -> None:
+    """Catch missing operator dependencies before a production recreate, including dry runs."""
+    steps = steps_for(workflow, "deploy")
+    names = [step.get("name") for step in steps]
+    name = "Prepare unscoped Fruit workbench publisher"
+    step = steps[names.index(name)]
+    assert names.index("Fetch selected Vecta source and main history") < names.index(name)
+    assert names.index(name) < names.index("Prepare authenticated acceptance credentials")
+    assert names.index(name) < names.index("Deploy or print dry-run plan")
+    assert step.get("if") == "inputs.scoped_manifest == ''", "dry runs must prepare the publisher too"
+    assert step.get("env") == {"REQUESTED_IMAGES": "${{ inputs.services }}"}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "scripts").mkdir()
+        (root / "vecta").mkdir()
+        helper = root / "scripts/prepare-scoped-fruit-publisher.sh"
+        helper.write_text('set -eu\ntest "$1" = "$PWD/vecta"\ntouch prepared\n[ ! -f fail-prepare ]\n')
+        for services, expected in (("", True), ("fruit-industry-pack", True),
+                                   ("admin-console, fruit-industry-pack ", True),
+                                   ("admin-console,open-webui", False)):
+            marker = root / "prepared"
+            marker.unlink(missing_ok=True)
+            env = {**os.environ, "REQUESTED_IMAGES": services}
+            result = subprocess.run(["bash", "-c", str(step["run"])], cwd=root,
+                                    env=env, text=True, capture_output=True)
+            assert result.returncode == 0, result.stderr
+            assert marker.exists() == expected, services
+        (root / "fail-prepare").touch()
+        failed = subprocess.run(["bash", "-c", str(step["run"])], cwd=root,
+                                env={**os.environ, "REQUESTED_IMAGES": ""}, capture_output=True)
+        assert failed.returncode != 0, "publisher preparation failure must stop deployment"
+
+
 def main() -> None:
     release = parse_workflow_yaml(RELEASE)
     build = parse_workflow_yaml(BUILD)
+    publisher_preflight_proof(release)
 
     for name in ("source_sha", "mode", "services", "dry_run"):
         require(f"      {name}:")
