@@ -345,22 +345,50 @@ jobs:
           fi
           cat "$release_summary"
           summary_first_line="$(head -n 1 "$release_summary")"
-          if [[ "$summary_first_line" == '已上线 '* ]]; then
-            after_step_failure=false
-            grep -q '^后续步骤未完成：' "$release_summary" && after_step_failure=true || true
-            [[ "$release_rc" -eq 0 ]] || after_step_failure=true
+
+          acceptance_hold_only() {
+            local summary_file="$1" line
+            local -a after_steps=()
+            [[ "$(head -n 1 "$summary_file")" == '已上线 '* ]] || return 1
+            mapfile -t after_steps < <(sed -n '2,$p' "$summary_file" | sed '/^[[:space:]]*$/d')
+            [[ "${#after_steps[@]}" -eq 1 ]] || return 1
+            line="${after_steps[0]}"
+            [[ "$line" == '后续步骤未完成：批次验收回归（'* \
+              || "$line" == '后续步骤未完成：批次验收 HOLD'* ]]
+          }
+
+          write_release_outcome_flags() {
+            local summary_file="$1" release_status="$2" first_line
+            local after_step_failure=false acceptance_hold=false
+            first_line="$(head -n 1 "$summary_file")"
+            if [[ "$first_line" == '已上线 '* ]]; then
+              grep -q '^后续步骤未完成：' "$summary_file" && after_step_failure=true || true
+              [[ "$release_status" -eq 0 ]] || after_step_failure=true
+              if [[ "$after_step_failure" == true ]] && acceptance_hold_only "$summary_file"; then
+                acceptance_hold=true
+              fi
+            fi
             printf 'release_after_step_failure=%s\n' "$after_step_failure" >> "$GITHUB_OUTPUT"
+            printf 'release_acceptance_hold=%s\n' "$acceptance_hold" >> "$GITHUB_OUTPUT"
+          }
+
+          write_release_outcome_flags "$release_summary" "$release_rc"
+          if [[ "$summary_first_line" == '已上线 '* ]]; then
             exit 0
           fi
-          printf 'release_after_step_failure=false\n' >> "$GITHUB_OUTPUT"
           exit "$release_rc"
 
       - name: Remove authenticated acceptance credentials
         if: always()
         run: rm -f -- "$HOME/.vecta-agent/mypc-release/acceptance-l1.env"
 
+      - name: Warn when release acceptance is held
+        if: always() && steps.release.outputs.release_acceptance_hold == 'true'
+        run: |
+          echo "::warning title=Release acceptance held::Services are deployed; release acceptance remains held. See the job summary."
+
       - name: Fail job when a release after-step remains incomplete
-        if: always() && steps.release.outputs.release_after_step_failure == 'true'
+        if: always() && steps.release.outputs.release_after_step_failure == 'true' && steps.release.outputs.release_acceptance_hold != 'true'
         run: |
           echo 'Services are deployed, but a release after-step remains incomplete; see the release summary.' >&2
           exit 1

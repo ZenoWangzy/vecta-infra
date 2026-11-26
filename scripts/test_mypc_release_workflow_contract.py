@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import unittest
 
 try:
     import yaml
@@ -178,6 +179,10 @@ def release_outcome_workflow_proof(workflow: dict[str, object]) -> None:
         "grep -E 'IncompleteRead|TimeoutError|HTTPError|URLError|failed|error' \"$release_log\"",
         "重新运行发布工作流（HTTP 读取已有自动重试）",
         "Postsubmit 验证失败",
+        "acceptance_hold_only()",
+        "write_release_outcome_flags()",
+        "release_acceptance_hold=",
+        'write_release_outcome_flags "$release_summary" "$release_rc"',
         "release_after_step_failure=",
         "summary_first_line",
         "已上线 ",
@@ -185,19 +190,150 @@ def release_outcome_workflow_proof(workflow: dict[str, object]) -> None:
     ):
         assert fragment in release_run, fragment
     deployed_branch = release_run.index("if [[ \"$summary_first_line\" == '已上线 '* ]]; then")
-    nondeployed_output = release_run.index(
-        "printf 'release_after_step_failure=false\\n' >> \"$GITHUB_OUTPUT\"",
-        deployed_branch,
-    )
-    assert release_run.index("exit 0", deployed_branch) < nondeployed_output
-    assert release_run.index('exit "$release_rc"', nondeployed_output) > nondeployed_output
+    assert release_run.index('write_release_outcome_flags "$release_summary" "$release_rc"') < deployed_branch
+    assert release_run.index("exit 0", deployed_branch) < release_run.index('exit "$release_rc"', deployed_branch)
 
     cleanup_index = next(i for i, step in enumerate(deploy_steps) if step.get("name") == "Remove authenticated acceptance credentials")
+    warning_index = next(i for i, step in enumerate(deploy_steps) if step.get("name") == "Warn when release acceptance is held")
     failure_index = next(i for i, step in enumerate(deploy_steps) if step.get("name") == "Fail job when a release after-step remains incomplete")
+    warning_step = deploy_steps[warning_index]
     failure_step = deploy_steps[failure_index]
-    assert cleanup_index < failure_index
-    assert failure_step.get("if") == "always() && steps.release.outputs.release_after_step_failure == 'true'"
+    assert cleanup_index < warning_index < failure_index
+    assert warning_step.get("if") == "always() && steps.release.outputs.release_acceptance_hold == 'true'"
+    assert "::warning" in str(warning_step.get("run", ""))
+    assert failure_step.get("if") == (
+        "always() && steps.release.outputs.release_after_step_failure == 'true' "
+        "&& steps.release.outputs.release_acceptance_hold != 'true'"
+    )
     assert "exit 1" in str(failure_step.get("run", ""))
+
+
+class ReleaseAcceptanceOutcomeTests(unittest.TestCase):
+    def run_outcome_probe(self, summary: str, release_rc: int) -> tuple[int, dict[str, str], str]:
+        workflow = parse_workflow_yaml(RELEASE)
+        release_step = next(
+            step for step in steps_for(workflow, "deploy")
+            if step.get("name") == "Deploy or print dry-run plan"
+        )
+        release_run = str(release_step.get("run", ""))
+        functions = []
+        for name in ("acceptance_hold_only", "write_release_outcome_flags"):
+            match = re.search(rf"(?ms)^{re.escape(name)}\(\) \{{\n.*?^\}}", release_run)
+            if match:
+                functions.append(match.group(0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            summary_path = root / "summary.md"
+            output_path = root / "output"
+            summary_path.write_text(summary)
+            env = {**os.environ, "GITHUB_OUTPUT": str(output_path)}
+            script = "\n".join(functions) + '\nwrite_release_outcome_flags "$1" "$2"'
+            result = subprocess.run(
+                ["bash", "-c", script, "outcome-probe", str(summary_path), str(release_rc)],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            flags = {}
+            if output_path.exists():
+                flags = dict(line.split("=", 1) for line in output_path.read_text().splitlines())
+            return result.returncode, flags, result.stderr
+
+    def assert_outcome(self, summary: str, release_rc: int, failure: str, hold: str) -> None:
+        result, flags, stderr = self.run_outcome_probe(summary, release_rc)
+        self.assertEqual(result, 0, stderr)
+        self.assertEqual(flags.get("release_after_step_failure"), failure)
+        self.assertEqual(flags.get("release_acceptance_hold"), hold)
+
+    def test_deployed_batch_regression_is_an_acceptance_hold(self) -> None:
+        self.assert_outcome(
+            "已上线 " + "a" * 40 + "\n"
+            "后续步骤未完成：批次验收回归（ACCEPTANCE REGRESSION fail=1）；下一步：修复验收回归后重新运行该 SHA 的验收\n",
+            1,
+            "true",
+            "true",
+        )
+
+    def test_deployed_demo_set_regression_hold_is_an_acceptance_hold(self) -> None:
+        self.assert_outcome(
+            "已上线 " + "b" * 40 + "\n"
+            "后续步骤未完成：批次验收 HOLD（DEMO_SET status=regression，cases=source-sha）；下一步：在 WSL 启动 vecta-autopilot-scheduler.service，让 release-events-sync 消费待确认验收事件\n",
+            1,
+            "true",
+            "true",
+        )
+
+    def test_deployed_demo_set_hold_is_an_acceptance_hold(self) -> None:
+        self.assert_outcome(
+            "已上线 " + "c" * 40 + "\n"
+            "后续步骤未完成：批次验收 HOLD（DEMO_SET status=hold）；下一步：在 WSL 启动 vecta-autopilot-scheduler.service，让 release-events-sync 消费待确认验收事件\n",
+            1,
+            "true",
+            "true",
+        )
+
+    def test_deployed_batch_acceptance_hold_is_an_acceptance_hold(self) -> None:
+        self.assert_outcome(
+            "已上线 " + "d" * 40 + "\n"
+            "后续步骤未完成：批次验收 HOLD（生产 E2E runner unavailable）；下一步：在 WSL 启动 vecta-autopilot-scheduler.service，让 release-events-sync 消费待确认验收事件\n",
+            1,
+            "true",
+            "true",
+        )
+
+    def test_deployed_publication_failure_remains_a_job_failure(self) -> None:
+        self.assert_outcome(
+            "已上线 " + "e" * 40 + "\n"
+            "后续步骤未完成：Fruit V4 workbench publication failed；下一步：修复 Fruit V4 发布器错误后重新运行发布工作流\n",
+            1,
+            "true",
+            "false",
+        )
+
+    def test_acceptance_hold_with_a_second_failure_remains_a_job_failure(self) -> None:
+        self.assert_outcome(
+            "已上线 " + "f" * 40 + "\n"
+            "后续步骤未完成：批次验收 HOLD（DEMO_SET status=regression）；下一步：消费待确认验收事件\n"
+            "后续步骤未完成：批次结果事件未能记账；下一步：修复事件记账\n",
+            1,
+            "true",
+            "false",
+        )
+
+    def test_undeployed_release_stays_a_job_failure(self) -> None:
+        self.assert_outcome(
+            "未上线\n后续步骤未完成：批次验收 HOLD；下一步：处理发布错误\n",
+            1,
+            "false",
+            "false",
+        )
+
+    def test_acceptance_hold_warns_and_skips_the_failure_step(self) -> None:
+        workflow = parse_workflow_yaml(RELEASE)
+        deploy_steps = steps_for(workflow, "deploy")
+        warning = next(
+            (step for step in deploy_steps if step.get("name") == "Warn when release acceptance is held"),
+            None,
+        )
+        self.assertIsNotNone(warning)
+        self.assertEqual(
+            warning.get("if"),
+            "always() && steps.release.outputs.release_acceptance_hold == 'true'",
+        )
+        self.assertIn("::warning", str(warning.get("run", "")))
+        failure = next(
+            step for step in deploy_steps
+            if step.get("name") == "Fail job when a release after-step remains incomplete"
+        )
+        self.assertIn("steps.release.outputs.release_acceptance_hold != 'true'", str(failure.get("if", "")))
+
+
+def release_acceptance_outcome_tests() -> bool:
+    result = unittest.TextTestRunner(verbosity=2).run(
+        unittest.defaultTestLoader.loadTestsFromTestCase(ReleaseAcceptanceOutcomeTests)
+    )
+    return result.wasSuccessful()
 
 
 def main() -> None:
@@ -205,6 +341,8 @@ def main() -> None:
     build = parse_workflow_yaml(BUILD)
     publisher_preflight_proof(release)
     release_outcome_workflow_proof(release)
+    if not release_acceptance_outcome_tests():
+        raise SystemExit(1)
 
     for name in ("source_sha", "mode", "services", "dry_run"):
         require(f"      {name}:")
