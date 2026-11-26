@@ -325,8 +325,14 @@ jobs:
           if [[ ! -s "$release_summary" ]]; then
             printf '未上线\n' > "$release_summary"
             if [[ "$release_rc" -ne 0 ]]; then
-              printf '后续步骤未完成：发布脚本未生成结果摘要（exit=%s）；下一步：检查本步骤首条错误并修复后重新运行发布工作流\n' \
-                "$release_rc" >> "$release_summary"
+              reason="$(grep -E 'IncompleteRead|TimeoutError|HTTPError|URLError|failed|error' "$release_log" | tail -n 1 | tr '\r\n' '  ' | sed -E 's/[[:space:]]+/ /g; s/^ | $//g' | cut -c1-240 || true)"
+              [[ -n "$reason" ]] || reason="发布脚本未生成结果摘要（exit=$release_rc）"
+              action='检查发布日志中的错误并修复后重新运行发布工作流'
+              if [[ "$reason" == *IncompleteRead* || "$reason" == *TimeoutError* || "$reason" == *URLError* ]]; then
+                action='重新运行发布工作流（HTTP 读取已有自动重试）'
+              fi
+              printf '后续步骤未完成：发布脚本未生成摘要（%s）；下一步：%s\n' \
+                "$reason" "$action" >> "$release_summary"
             fi
           fi
           if [[ -n "$summary_target" ]]; then
