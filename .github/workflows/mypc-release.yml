@@ -107,8 +107,12 @@ jobs:
           if [[ "$rc" -ne 0 ]]; then
             reason="$(grep -E 'IncompleteRead|TimeoutError|HTTPError|URLError|failed|error' "$log" | tail -n 1 | tr '\r\n' '  ' | sed -E 's/[[:space:]]+/ /g; s/^ | $//g' | cut -c1-240 || true)"
             [[ -n "$reason" ]] || reason="Postsubmit evidence check failed (exit=$rc)"
-            printf '未上线\n后续步骤未完成：Postsubmit 验证失败（%s）；下一步：修复报告的校验问题后重新运行发布工作流\n' \
-              "$reason" >> "$GITHUB_STEP_SUMMARY"
+            action='修复报告的校验问题后重新运行发布工作流'
+            if [[ "$reason" == *IncompleteRead* || "$reason" == *TimeoutError* || "$reason" == *URLError* ]]; then
+              action='重新运行发布工作流（HTTP 读取已有自动重试）'
+            fi
+            printf '未上线\n后续步骤未完成：Postsubmit 验证失败（%s）；下一步：%s\n' \
+              "$reason" "$action" >> "$GITHUB_STEP_SUMMARY"
           fi
           exit "$rc"
         env:

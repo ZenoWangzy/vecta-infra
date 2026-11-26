@@ -159,7 +159,14 @@ def release_outcome_workflow_proof(workflow: dict[str, object]) -> None:
     validate_steps = steps_for(workflow, "validate")
     postsubmit = next(step for step in validate_steps if step.get("name") == "Require selected source on main with green Postsubmit evidence")
     postsubmit_run = str(postsubmit.get("run", ""))
-    for fragment in ("IncompleteRead", "未上线", "$GITHUB_STEP_SUMMARY", "exit \"$rc\""):
+    for fragment in (
+        "IncompleteRead",
+        "重新运行发布工作流（HTTP 读取已有自动重试）",
+        "修复报告的校验问题后重新运行发布工作流",
+        "未上线",
+        "$GITHUB_STEP_SUMMARY",
+        "exit \"$rc\"",
+    ):
         assert fragment in postsubmit_run, fragment
 
     deploy_steps = steps_for(workflow, "deploy")
