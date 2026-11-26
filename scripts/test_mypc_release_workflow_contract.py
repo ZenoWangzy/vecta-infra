@@ -155,10 +155,39 @@ def publisher_preflight_proof(workflow: dict[str, object]) -> None:
         assert failed.returncode != 0, "publisher preparation failure must stop deployment"
 
 
+def release_outcome_workflow_proof(workflow: dict[str, object]) -> None:
+    validate_steps = steps_for(workflow, "validate")
+    postsubmit = next(step for step in validate_steps if step.get("name") == "Require selected source on main with green Postsubmit evidence")
+    postsubmit_run = str(postsubmit.get("run", ""))
+    for fragment in ("IncompleteRead", "未上线", "$GITHUB_STEP_SUMMARY", "exit \"$rc\""):
+        assert fragment in postsubmit_run, fragment
+
+    deploy_steps = steps_for(workflow, "deploy")
+    release = next(step for step in deploy_steps if step.get("name") == "Deploy or print dry-run plan")
+    release_run = str(release.get("run", ""))
+    assert release.get("id") == "release"
+    for fragment in (
+        'GITHUB_STEP_SUMMARY="$release_summary"',
+        "release_after_step_failure=",
+        "summary_first_line",
+        "已上线 ",
+        'exit "$release_rc"',
+    ):
+        assert fragment in release_run, fragment
+
+    cleanup_index = next(i for i, step in enumerate(deploy_steps) if step.get("name") == "Remove authenticated acceptance credentials")
+    failure_index = next(i for i, step in enumerate(deploy_steps) if step.get("name") == "Fail job when a release after-step remains incomplete")
+    failure_step = deploy_steps[failure_index]
+    assert cleanup_index < failure_index
+    assert failure_step.get("if") == "always() && steps.release.outputs.release_after_step_failure == 'true'"
+    assert "exit 1" in str(failure_step.get("run", ""))
+
+
 def main() -> None:
     release = parse_workflow_yaml(RELEASE)
     build = parse_workflow_yaml(BUILD)
     publisher_preflight_proof(release)
+    release_outcome_workflow_proof(release)
 
     for name in ("source_sha", "mode", "services", "dry_run"):
         require(f"      {name}:")
