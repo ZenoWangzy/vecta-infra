@@ -177,6 +177,7 @@ def release_outcome_workflow_proof(workflow: dict[str, object]) -> None:
         'GITHUB_STEP_SUMMARY="$release_summary"',
         "grep -E 'IncompleteRead|TimeoutError|HTTPError|URLError|failed|error' \"$release_log\"",
         "重新运行发布工作流（HTTP 读取已有自动重试）",
+        "Postsubmit 验证失败",
         "release_after_step_failure=",
         "summary_first_line",
         "已上线 ",
