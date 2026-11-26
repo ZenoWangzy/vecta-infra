@@ -95,11 +95,26 @@ jobs:
           VECTA_READ_TOKEN: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
 
       - name: Require selected source on main with green Postsubmit evidence
+        id: postsubmit
         run: |
           set -euo pipefail
+          log="$RUNNER_TEMP/postsubmit-evidence.log"
+          rc=0
           python3 scripts/verify-vecta-postsubmit.py \
             --repo ZenoWangzy/vecta --sha "$SOURCE_SHA" --branch main \
-            --vecta-checkout vecta
+            --vecta-checkout vecta > "$log" 2>&1 || rc=$?
+          cat "$log"
+          if [[ "$rc" -ne 0 ]]; then
+            reason="$(grep -E 'IncompleteRead|TimeoutError|HTTPError|URLError|failed|error' "$log" | tail -n 1 | tr '\r\n' '  ' | sed -E 's/[[:space:]]+/ /g; s/^ | $//g' | cut -c1-240 || true)"
+            [[ -n "$reason" ]] || reason="Postsubmit evidence check failed (exit=$rc)"
+            action='修复报告的校验问题后重新运行发布工作流'
+            if [[ "$reason" == *IncompleteRead* || "$reason" == *TimeoutError* || "$reason" == *URLError* ]]; then
+              action='重新运行发布工作流（HTTP 读取已有自动重试）'
+            fi
+            printf '未上线\n后续步骤未完成：Postsubmit 验证失败（%s）；下一步：%s\n' \
+              "$reason" "$action" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$rc"
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           VECTA_READ_TOKEN: ${{ secrets.VECTA_PRODUCTION_READ_TOKEN }}
@@ -268,6 +283,7 @@ jobs:
           chmod 600 "$AGENT_HOME/acceptance-l1.env"
 
       - name: Deploy or print dry-run plan
+        id: release
         env:
           GH_TOKEN: ${{ inputs.dry_run && secrets.VECTA_PRODUCTION_READ_TOKEN || secrets.VECTA_PRODUCTION_RELEASE_TOKEN }}
           RELEASE_BUILD_ALREADY_COMPLETED: ${{ inputs.dry_run != true && '1' || '0' }}
@@ -293,13 +309,86 @@ jobs:
           args=(--source-sha "$SOURCE_SHA" --mode "$RELEASE_MODE")
           if [[ -n "$RELEASE_SERVICES" ]]; then args+=(--services "$RELEASE_SERVICES"); fi
           if [[ "$DRY_RUN" == true ]]; then args+=(--dry-run); fi
+          summary_target="${GITHUB_STEP_SUMMARY:-}"
+          release_summary="$RUNNER_TEMP/vecta-release-summary.md"
+          release_log="$RUNNER_TEMP/vecta-release-output.log"
+          : > "$release_summary"
+          release_rc=0
           if [[ -n "$SCOPED_MANIFEST" ]]; then
-            GH_TOKEN="$GH_TOKEN" VECTA_READ_TOKEN="$GH_TOKEN" bash scripts/run-scoped-release.sh "${args[@]}"
-            exit
+            GH_TOKEN="$GH_TOKEN" VECTA_READ_TOKEN="$GH_TOKEN" GITHUB_STEP_SUMMARY="$release_summary" \
+              bash scripts/run-scoped-release.sh "${args[@]}" > "$release_log" 2>&1 || release_rc=$?
+          else
+            GH_TOKEN="$GH_TOKEN" VECTA_READ_TOKEN="$GH_TOKEN" GITHUB_STEP_SUMMARY="$release_summary" \
+              bash vecta/scripts/release/mypc-release.sh "${args[@]}" > "$release_log" 2>&1 || release_rc=$?
           fi
-          GH_TOKEN="$GH_TOKEN" VECTA_READ_TOKEN="$GH_TOKEN" \
-            bash vecta/scripts/release/mypc-release.sh "${args[@]}"
+          cat "$release_log"
+          if [[ ! -s "$release_summary" ]]; then
+            printf '未上线\n' > "$release_summary"
+            if [[ "$release_rc" -ne 0 ]]; then
+              reason="$(grep -E 'IncompleteRead|TimeoutError|HTTPError|URLError|failed|error' "$release_log" | tail -n 1 | tr '\r\n' '  ' | sed -E 's/[[:space:]]+/ /g; s/^ | $//g' | cut -c1-240 || true)"
+              [[ -n "$reason" ]] || reason="发布脚本未生成结果摘要（exit=$release_rc）"
+              failure_step='发布脚本未生成摘要'
+              action='检查发布日志中的错误并修复后重新运行发布工作流'
+              if [[ "$reason" == *IncompleteRead* || "$reason" == *TimeoutError* \
+                || "$reason" == *HTTPError* || "$reason" == *URLError* ]]; then
+                failure_step='Postsubmit 验证失败'
+              fi
+              if [[ "$reason" == *IncompleteRead* || "$reason" == *TimeoutError* || "$reason" == *URLError* ]]; then
+                action='重新运行发布工作流（HTTP 读取已有自动重试）'
+              fi
+              printf '后续步骤未完成：%s（%s）；下一步：%s\n' \
+                "$failure_step" "$reason" "$action" >> "$release_summary"
+            fi
+          fi
+          if [[ -n "$summary_target" ]]; then
+            cat "$release_summary" >> "$summary_target"
+          fi
+          cat "$release_summary"
+          summary_first_line="$(head -n 1 "$release_summary")"
+
+          acceptance_hold_only() {
+            local summary_file="$1" line
+            local -a after_steps=()
+            [[ "$(head -n 1 "$summary_file")" == '已上线 '* ]] || return 1
+            mapfile -t after_steps < <(sed -n '2,$p' "$summary_file" | sed '/^[[:space:]]*$/d')
+            [[ "${#after_steps[@]}" -eq 1 ]] || return 1
+            line="${after_steps[0]}"
+            [[ "$line" == '后续步骤未完成：批次验收回归（'* \
+              || "$line" == '后续步骤未完成：批次验收 HOLD'* ]]
+          }
+
+          write_release_outcome_flags() {
+            local summary_file="$1" release_status="$2" first_line
+            local after_step_failure=false acceptance_hold=false
+            first_line="$(head -n 1 "$summary_file")"
+            if [[ "$first_line" == '已上线 '* ]]; then
+              grep -q '^后续步骤未完成：' "$summary_file" && after_step_failure=true || true
+              [[ "$release_status" -eq 0 ]] || after_step_failure=true
+              if [[ "$after_step_failure" == true ]] && acceptance_hold_only "$summary_file"; then
+                acceptance_hold=true
+              fi
+            fi
+            printf 'release_after_step_failure=%s\n' "$after_step_failure" >> "$GITHUB_OUTPUT"
+            printf 'release_acceptance_hold=%s\n' "$acceptance_hold" >> "$GITHUB_OUTPUT"
+          }
+
+          write_release_outcome_flags "$release_summary" "$release_rc"
+          if [[ "$summary_first_line" == '已上线 '* ]]; then
+            exit 0
+          fi
+          exit "$release_rc"
 
       - name: Remove authenticated acceptance credentials
         if: always()
         run: rm -f -- "$HOME/.vecta-agent/mypc-release/acceptance-l1.env"
+
+      - name: Warn when release acceptance is held
+        if: always() && steps.release.outputs.release_acceptance_hold == 'true'
+        run: |
+          echo "::warning title=Release acceptance held::Services are deployed; release acceptance remains held. See the job summary."
+
+      - name: Fail job when a release after-step remains incomplete
+        if: always() && steps.release.outputs.release_after_step_failure == 'true' && steps.release.outputs.release_acceptance_hold != 'true'
+        run: |
+          echo 'Services are deployed, but a release after-step remains incomplete; see the release summary.' >&2
+          exit 1
