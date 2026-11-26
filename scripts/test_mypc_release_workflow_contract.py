@@ -183,6 +183,13 @@ def release_outcome_workflow_proof(workflow: dict[str, object]) -> None:
         'exit "$release_rc"',
     ):
         assert fragment in release_run, fragment
+    deployed_branch = release_run.index("if [[ \"$summary_first_line\" == '已上线 '* ]]; then")
+    nondeployed_output = release_run.index(
+        "printf 'release_after_step_failure=false\\n' >> \"$GITHUB_OUTPUT\"",
+        deployed_branch,
+    )
+    assert release_run.index("exit 0", deployed_branch) < nondeployed_output
+    assert release_run.index('exit "$release_rc"', nondeployed_output) > nondeployed_output
 
     cleanup_index = next(i for i, step in enumerate(deploy_steps) if step.get("name") == "Remove authenticated acceptance credentials")
     failure_index = next(i for i, step in enumerate(deploy_steps) if step.get("name") == "Fail job when a release after-step remains incomplete")

@@ -340,13 +340,14 @@ jobs:
           fi
           cat "$release_summary"
           summary_first_line="$(head -n 1 "$release_summary")"
-          after_step_failure=false
-          grep -q '^后续步骤未完成：' "$release_summary" && after_step_failure=true || true
-          [[ "$release_rc" -eq 0 ]] || after_step_failure=true
-          printf 'release_after_step_failure=%s\n' "$after_step_failure" >> "$GITHUB_OUTPUT"
           if [[ "$summary_first_line" == '已上线 '* ]]; then
+            after_step_failure=false
+            grep -q '^后续步骤未完成：' "$release_summary" && after_step_failure=true || true
+            [[ "$release_rc" -eq 0 ]] || after_step_failure=true
+            printf 'release_after_step_failure=%s\n' "$after_step_failure" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          printf 'release_after_step_failure=false\n' >> "$GITHUB_OUTPUT"
           exit "$release_rc"
 
       - name: Remove authenticated acceptance credentials
